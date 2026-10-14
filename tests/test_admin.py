@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -6,6 +7,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from eqoa_server.admin import AdminContext, AdminCredentials, AdminServer
 from eqoa_server.auth import LOGIN_GOOD, LOGIN_REQUEST, AuthRequest
@@ -153,7 +155,9 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(raw["accounts"][0]["username"], "backup")
 
+    @mock.patch.dict(os.environ, {"EQOA_LAUNCHER": ""})
     def test_update_status_without_updater(self):
+        # The updater runs this suite from a launcher-started server; behave as if started directly.
         self.login()
         status, update = self.request("/api/update")
         self.assertEqual(status, 200)
@@ -173,6 +177,10 @@ class GeneratedPasswordTests(unittest.TestCase):
     """A generated admin password must be changed at first sign-in."""
 
     def setUp(self):
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("EQOA_ADMIN_PASSWORD", None)
         self.config = ServerConfig(data_path=Path(tempfile.mkdtemp()) / "server_state.json", log_packets=False)
         self.credentials = AdminCredentials.load(self.config)
         self.generated = self.credentials.generated_password

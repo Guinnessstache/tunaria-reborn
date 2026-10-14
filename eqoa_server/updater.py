@@ -142,7 +142,7 @@ class Updater:
             result = subprocess.run(
                 self.test_command, cwd=self.repo_dir, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT,
-                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                env=_test_environment(),
             )
         except subprocess.TimeoutExpired:
             return False, f"tests timed out after {TEST_TIMEOUT}s"
@@ -192,6 +192,13 @@ class Updater:
                       "output": ""}
             self._save_state(previous=None, last_result=result)
             return result
+
+
+def _test_environment() -> dict[str, str]:
+    """The running server's EQOA_* settings (launcher flag, admin password) must not leak into tests."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("EQOA_")}
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def running_under_launcher() -> bool:
