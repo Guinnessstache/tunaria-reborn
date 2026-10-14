@@ -22,15 +22,16 @@ Early but playable to the point of logging in and walking around.
 - Server list, character list and character creation.
 - Entering the world, with reliable delivery (retransmits, acks, keepalives),
   so the session stays up while you play.
-- Your own character is visible in the world.
+- Your own character is visible in the world with its own race, class, model,
+  hair and face, starting at its race's (or home city's) starting point.
 - A web **admin panel**: start / stop / restart services, players online,
   accounts, MOTD, live log, and one-click updates from GitHub.
 
 **Not yet**
 
 - Game account passwords are not checked (any password logs in).
-- Your character's appearance, gear, stats and spells come from a captured
-  template character; race / class / gender chosen at creation are not saved yet.
+- Inventory, stats and spells still come from a captured template character,
+  and no armor or weapons are shown yet.
 - No other players, NPCs, combat or quests in the world yet.
 - The server list drops you if you wait on it too long.
 
@@ -173,7 +174,9 @@ preservation community:
 - **Project ReturnHome** and its C# server, **EQOAGameServer**
   (https://github.com/devin103/EQOAGameServer, AGPL-3.0). Auth message IDs,
   packet header and bundle flags, message types, opcode IDs and parts of the
-  protocol handling were learned from or modelled on it.
+  protocol handling were learned from or modelled on it, including the character
+  creation and character list formats; the character models and starting
+  characters in `eqoa_server/game_data.py` come from its database.
 - **Sandstorm** (https://eqoa.live/), whose live server traffic in
   `captures/from_sandstorm.pcapng` is the reference this server is checked
   against.

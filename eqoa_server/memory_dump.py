@@ -141,6 +141,11 @@ SELF_OBJECT_UPDATE_TEMPLATE = bytes.fromhex(
     "7271"
 )
 OBJECT_ID_OFFSET = 1
+MODEL_OFFSET = 28
+WEAPONS_OFFSET = 67  # primary, secondary, shield models (int32 each)
+ARMOR_OFFSET = 93  # chest, bracer, gloves, legs, boots, helm models, then their 6 colors
+HAIR_OFFSET = 105  # hair color, hair length, hair style, face
+ROBE_OFFSET = 109
 POSITION_OFFSET = 5
 HEADING_BYTE_OFFSET = 15
 HEADING_FLOAT_OFFSET = 54
@@ -166,6 +171,15 @@ def build_object_update(character: Character, object_id: int) -> bytes:
     update[LEVEL_OFFSET] = max(1, min(character.level, 60))
     update[RACE_OFFSET] = character.race & 0xFF
     update[CLASS_OFFSET] = character.klass & 0xFF
+    # Appearance: this character's model and hair / face; no weapons or armor yet
+    # (the template's are the captured character's).
+    _write_u32(update, MODEL_OFFSET, character.model_id)
+    update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = bytes(12)
+    update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = bytes(12)
+    update[HAIR_OFFSET : HAIR_OFFSET + 4] = bytes(
+        value & 0xFF for value in (character.hair_color, character.hair_length, character.hair_style, character.face)
+    )
+    update[ROBE_OFFSET] = 0xFF
     return bytes(update)
 
 

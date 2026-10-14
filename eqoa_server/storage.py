@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import time
 
+from . import game_data
+
 
 @dataclass(slots=True)
 class Account:
@@ -37,6 +39,18 @@ class Character:
     z: float = 0.0
     heading: float = 0.0
     appearance: str = ""
+    # Chosen at character creation.
+    hair_color: int = 0
+    hair_length: int = 0
+    hair_style: int = 0
+    face: int = 0
+    human_type: int = 0
+    training_points: list[int] = field(default_factory=lambda: [0] * 7)
+    tunar: int = 0
+
+    @property
+    def model_id(self) -> int:
+        return game_data.model_id(self.race, self.gender)
 
 
 class JsonStore:
@@ -59,7 +73,7 @@ class JsonStore:
                 for row in payload.get("accounts", [])
             }
             self.characters = {
-                int(row["character_id"]): Character(**row)
+                int(row["character_id"]): Character(**{k: v for k, v in row.items() if k in Character.__dataclass_fields__})
                 for row in payload.get("characters", [])
             }
             self._next_account_id = payload.get("next_account_id", 1)
@@ -136,8 +150,13 @@ class JsonStore:
             character = self.characters.get(character_id)
             if character is None:
                 return False
-            character.zone_id, character.x, character.y, character.z = _starting_position(character.race)
-            character.heading = 0.0
+            start = game_data.starting_character(character.klass, character.race, character.human_type)
+            if start is not None:
+                character.zone_id, character.x, character.y, character.z = start.world, start.x, start.y, start.z
+                character.heading = start.facing
+            else:
+                character.zone_id, character.x, character.y, character.z = _starting_position(character.race)
+                character.heading = 0.0
             self.save()
             return True
 
@@ -168,6 +187,12 @@ class JsonStore:
         klass: int = 10,
         gender: int = 0,
         appearance: bytes = b"",
+        hair_color: int = 0,
+        hair_length: int = 0,
+        hair_style: int = 0,
+        face: int = 0,
+        human_type: int = 0,
+        training_points: list[int] | None = None,
     ) -> Character:
         with self._lock:
             for character in self.characters.values():
@@ -175,6 +200,10 @@ class JsonStore:
                     return character
             hp, mana = _starting_vitals(race, klass)
             zone_id, x, y, z = _starting_position(race)
+            heading, tunar = 0.0, 0
+            start = game_data.starting_character(klass, race, human_type)
+            if start is not None:
+                zone_id, x, y, z, heading, tunar = start.world, start.x, start.y, start.z, start.facing, start.tunar
             character = Character(
                 character_id=self._next_character_id,
                 account_id=account_id,
@@ -190,7 +219,15 @@ class JsonStore:
                 x=x,
                 y=y,
                 z=z,
+                heading=heading,
                 appearance=appearance.hex(),
+                hair_color=hair_color,
+                hair_length=hair_length,
+                hair_style=hair_style,
+                face=face,
+                human_type=human_type,
+                training_points=list(training_points or [0] * 7),
+                tunar=tunar,
             )
             self._next_character_id += 1
             self.characters[character.character_id] = character

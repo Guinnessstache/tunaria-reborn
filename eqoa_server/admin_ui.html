@@ -285,7 +285,7 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
 <script>
 const $ = (sel) => document.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-// Name order is a best guess; the raw ids are shown alongside.
+// Same order as eqoa_server/game_data.py (RACES, CLASSES).
 const RACES = ["Human","Elf","Dark Elf","Gnome","Dwarf","Troll","Barbarian","Halfling","Erudite","Ogre"];
 const CLASSES = ["Warrior","Ranger","Paladin","Shadowknight","Monk","Bard","Rogue","Druid","Shaman","Cleric","Magician","Necromancer","Enchanter","Wizard","Alchemist"];
 let activeTab = "dashboard", lastLogId = 0, logLines = [], logPaused = false, motdLimit = 400, pollTimer = null;

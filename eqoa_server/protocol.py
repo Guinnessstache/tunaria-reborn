@@ -471,8 +471,8 @@ def build_old_world_ack(client_endpoint: int, auth_byte: int = 0x01) -> bytes:
     return bytes(ack)
 
 
-def build_phase2_character_select_ack(client_endpoint: int, instance_id: int) -> bytes:
-    messages = _phase2_character_select_messages()
+def build_phase2_character_select_ack(client_endpoint: int, instance_id: int, character_list: bytes = b"\x00") -> bytes:
+    messages = _phase2_character_select_messages(character_list)
     body = bytearray()
     body.append(0x63)
     body += struct.pack("<I", instance_id)
@@ -491,11 +491,12 @@ def build_phase2_character_select_resend(
     client_endpoint: int,
     instance_id: int,
     arrival: int = 1,
+    character_list: bytes = b"\x00",
 ) -> bytes:
     body = bytearray()
     body.append(PacketBundleFlags.PROCESS_MESSAGES)
     body += struct.pack("<H", arrival)
-    body += _phase2_character_select_messages()
+    body += _phase2_character_select_messages(character_list)
 
     header = struct.pack("<HH", OLD_WORLD_SERVER_ENDPOINT, client_endpoint)
     flags = write_varuint(0x3000 + len(body))
@@ -749,6 +750,71 @@ def parse_create_character_payload(payload: bytes) -> tuple[bytes, bytes]:
     return name, appearance
 
 
+def _read_zigzag(data: bytes, offset: int) -> tuple[int, int]:
+    value, offset = read_varuint(data, offset)
+    return (value >> 1) ^ -(value & 1), offset
+
+
+def _write_zigzag(value: int) -> bytes:
+    return write_varuint((value << 1) ^ (value >> 63) if value < 0 else value << 1)
+
+
+CREATE_CHARACTER_FIELDS = (
+    "level", "race", "klass", "gender", "hair_color", "hair_length", "hair_style", "face", "human_type",
+)
+
+
+def parse_create_character(payload: bytes) -> dict:
+    """CreateCharacter (0x002B): name, zigzag varints for level, race, class, gender,
+    hair color / length / style, face and human type (home city), then seven int32
+    training-point allocations (STR, STA, AGI, DEX, WIS, INT, CHA)."""
+    name, _ = parse_create_character_payload(payload)
+    offset = 4 + len(name)
+    fields: dict = {"name": name.decode("ascii", "replace")}
+    for key in CREATE_CHARACTER_FIELDS:
+        fields[key], offset = _read_zigzag(payload, offset)
+    if offset + 28 <= len(payload):
+        fields["training_points"] = list(struct.unpack_from("<7i", payload, offset))
+    return fields
+
+
+def build_character_list_payload(characters) -> bytes:
+    """CharacterSelect (0x002C) payload: zigzag count, then one record per character.
+
+    Record layout checked against the Sandstorm capture (Frontiers): name, zigzag
+    varints (server id, model, class, race, level, hair color / length / style,
+    face), robe (int32, -1 = none), robe color, primary / secondary / shield models
+    (int32), three stance bytes, six armor models (chest, bracer, gloves, legs, boots,
+    helm) and their six colors.
+    """
+    out = bytearray(_write_zigzag(len(characters)))
+    for character in characters:
+        name = character.name.encode("ascii", "replace")
+        out += struct.pack("<I", len(name)) + name
+        for value in (
+            character.character_id, character.model_id, character.klass, character.race,
+            character.level, character.hair_color, character.hair_length, character.hair_style, character.face,
+        ):
+            out += _write_zigzag(value)
+        out += struct.pack("<i", -1) + b"\x00"  # robe, robe color
+        out += struct.pack("<iii", 0, 0, 0)  # primary, secondary, shield
+        out += b"\x01\x00\x00"  # stance
+        out += bytes(6) + bytes(6)  # armor models, armor colors
+    return bytes(out)
+
+
+def build_character_list_response(
+    client_endpoint: int, instance_id: int, arrival: int, message_number: int, characters
+) -> bytes:
+    payload = build_character_list_payload(characters)
+    message_data = struct.pack("<HH", message_number, 0x002C) + payload
+    message = bytes([MessageType.RELIABLE]) + _write_size(len(message_data) - 2) + message_data
+    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", arrival) + message + b"\x00\x00"
+    header = struct.pack("<HH", OLD_WORLD_SERVER_ENDPOINT, client_endpoint)
+    packet = header + write_varuint(0x3000 + len(body)) + struct.pack("<I", instance_id) + body
+    return packet + struct.pack("<I", rdp_crc(packet))
+
+
 def _entity_id(character_id: int | None, name: bytes) -> bytes:
     if character_id is not None:
         return struct.pack("<I", character_id) + b"\x01\x00\x00"
@@ -756,10 +822,11 @@ def _entity_id(character_id: int | None, name: bytes) -> bytes:
     return struct.pack("<I", crc) + b"\x01\x00\x00"
 
 
-def _phase2_character_select_messages() -> bytes:
+def _phase2_character_select_messages(character_list: bytes = b"\x00") -> bytes:
     disc_msg = bytes([0xFB, 0x06, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00])
     null_sep = bytes([0x00, 0x00])
     camera_msg = bytes([0xFB, 0x06, 0x02, 0x00, 0xD1, 0x07, 0xFF, 0xFF])
     ff_pad = bytes([0xFF, 0xFF])
-    char_list_msg = bytes([0xFB, 0x03, 0x03, 0x00, 0x2C, 0x00, 0x00])
+    list_data = struct.pack("<H", 0x002C) + character_list
+    char_list_msg = bytes([0xFB]) + _write_size(len(list_data)) + struct.pack("<H", 3) + list_data
     return disc_msg + null_sep + camera_msg + ff_pad + char_list_msg

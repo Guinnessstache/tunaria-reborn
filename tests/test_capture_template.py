@@ -49,7 +49,7 @@ class CaptureTemplateTests(unittest.TestCase):
         self.assertEqual(segments[0][2][:2], struct.pack("<H", 0x000D))
         payload = segments[0][2][2:] + b"".join(data for _type, _message, data in segments[1:])
         template = sandstorm_memory_dump_payload()
-        core = build_memory_dump_core(character, server_id=zlib.crc32(b"Magey"))
+        core = build_memory_dump_core(character, server_id=character.character_id)
         self.assertEqual(payload, core + template[memory_dump_core_length(template) :])
 
 

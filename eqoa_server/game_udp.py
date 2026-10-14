@@ -4,18 +4,19 @@ import socketserver
 import struct
 import threading
 import time
-import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .capture_template import SANDSTORM_CAPTURE, memory_dump_core_length, sandstorm_memory_dump_payload
+from . import game_data
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
     OLD_WORLD_SERVER_ENDPOINT,
     GAME_OPCODES,
     PHASE3_MAGIC,
-    build_create_character_response,
+    build_character_list_payload,
+    build_character_list_response,
     build_minimal_ack,
     build_old_world_ack,
     build_old_world_list,
@@ -34,7 +35,7 @@ from .protocol import (
     _rle_zero_encode,
     parse_messages,
     parse_phase3_client_packet,
-    parse_create_character_payload,
+    parse_create_character,
     parse_udp_packet,
     read_varuint,
 )
@@ -63,7 +64,6 @@ class GameSession:
     phase3_last_client_arrival: int = 0
     phase3_last_server_ping_arrival: int = 0
     selected_character: Character | None = None
-    external_character_id: int | None = None
     # Reliable phase3 bundles the server has sent: (highest message number, inner body).
     phase3_reliable: list[tuple[int, bytes]] = field(default_factory=list)
     phase3_next_message: int = 1
@@ -118,29 +118,17 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 instance_id = packet.instance_id or 0
                 session = GameSession(packet.client_endpoint, instance_id)
                 server.sessions[self.client_address] = session
-                ack = build_phase2_character_select_ack(packet.client_endpoint, instance_id)
-                resend = build_phase2_character_select_resend(packet.client_endpoint, instance_id)
+                account = server.store.latest_account()
+                characters = server.store.list_characters(account.account_id) if account is not None else []
+                character_list = build_character_list_payload(characters)
+                ack = build_phase2_character_select_ack(packet.client_endpoint, instance_id, character_list)
+                resend = build_phase2_character_select_resend(packet.client_endpoint, instance_id, character_list=character_list)
                 sock.sendto(ack, self.client_address)
                 sock.sendto(resend, self.client_address)
-                account = server.store.latest_account()
-                if account is not None:
-                    characters = server.store.list_characters(account.account_id)
-                    if characters:
-                        character = characters[0]
-                        sock.sendto(
-                            build_create_character_response(
-                                packet.client_endpoint,
-                                instance_id,
-                                3,
-                                4,
-                                _create_payload_from_character(character),
-                            ),
-                            self.client_address,
-                        )
                 if server.log_packets:
                     print(
                         f"UDP phase2 char-list sent to {self.client_address[0]}:{self.client_address[1]} "
-                        f"ack_len={len(ack)} resend_len={len(resend)} inst=0x{instance_id:08x}"
+                        f"characters={[c.name for c in characters]} ack_len={len(ack)} inst=0x{instance_id:08x}"
                     )
             elif packet.target_endpoint == OLD_WORLD_SERVER_ENDPOINT and any(
                 msg.opcode == 0x002B for msg in packet.messages
@@ -159,24 +147,29 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     client_message_number,
                 )
                 session.next_arrival += 1
-                name, appearance = parse_create_character_payload(create_msg.payload)
+                fields = parse_create_character(create_msg.payload)
                 account = server.store.latest_account()
+                account_id = account.account_id if account is not None else 1
                 character = server.store.create_character(
-                    account.account_id if account is not None else 1,
-                    name.decode("ascii", "replace"),
-                    race=0,
-                    klass=10,
-                    gender=0,
-                    appearance=appearance,
+                    account_id,
+                    fields["name"],
+                    race=fields["race"],
+                    klass=fields["klass"],
+                    gender=fields["gender"],
+                    hair_color=fields["hair_color"],
+                    hair_length=fields["hair_length"],
+                    hair_style=fields["hair_style"],
+                    face=fields["face"],
+                    human_type=fields["human_type"],
+                    training_points=fields.get("training_points"),
                 )
                 session.selected_character = character
-                session.external_character_id = zlib.crc32(name) & 0xFFFFFFFF
-                response = build_create_character_response(
+                response = build_character_list_response(
                     packet.client_endpoint,
                     session.instance_id,
                     session.next_arrival,
                     session.next_message,
-                    create_msg.payload,
+                    server.store.list_characters(account_id),
                 )
                 session.next_arrival += 1
                 session.next_message += 1
@@ -184,8 +177,12 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 sock.sendto(response, self.client_address)
                 if server.log_packets:
                     print(
-                        f"UDP create-char response sent to {self.client_address[0]}:{self.client_address[1]} "
-                        f"name={character.name!r} id={character.character_id} ack_len={len(ack)} resp_len={len(response)} "
+                        f"UDP create-char {self.client_address[0]}:{self.client_address[1]} "
+                        f"name={character.name!r} id={character.character_id} "
+                        f"race={game_data.name_of(game_data.RACES, character.race)} "
+                        f"class={game_data.name_of(game_data.CLASSES, character.klass)} "
+                        f"gender={game_data.name_of(game_data.GENDERS, character.gender)} "
+                        f"start=({character.x:.0f}, {character.z:.0f}) resp_len={len(response)} "
                         f"client_msg={client_message_number}"
                     )
             elif packet.target_endpoint == OLD_WORLD_SERVER_ENDPOINT and any(
@@ -216,7 +213,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     if selected_id is not None:
                         previous_character = session.selected_character
                         session.selected_character = server.store.get_character(selected_id)
-                        if session.selected_character is None and selected_id == session.external_character_id:
+                        if session.selected_character is None:
                             session.selected_character = previous_character
                         if session.selected_character is None:
                             account = server.store.latest_account()
@@ -601,8 +598,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         f"{phase3_root} and no {SANDSTORM_CAPTURE.name}) - sending world-entry only."
                     )
                 return packets
-            external_id = zlib.crc32(character.name.encode("utf-8")) & 0xFFFFFFFF
-            memory_payload = build_memory_dump_core(character, server_id=external_id) + captured_payload[core_length:]
+            memory_payload = build_memory_dump_core(character, server_id=character.character_id) + captured_payload[core_length:]
             memory_packets, next_arrival, next_message = build_phase3_memory_dump_packets(
                 client_endpoint,
                 instance_id,
@@ -671,15 +667,6 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     )
                 )
         return packets
-
-
-def _create_payload_from_character(character: Character) -> bytes:
-    appearance = bytes.fromhex(character.appearance) if character.appearance else bytes(8)
-    return (
-        len(character.name).to_bytes(4, "little")
-        + character.name.encode("ascii", "replace")
-        + appearance
-    )
 
 
 def _is_plausible_client_message_sequence(current: int, candidate: int) -> bool:
