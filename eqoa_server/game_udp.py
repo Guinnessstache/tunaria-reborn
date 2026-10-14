@@ -98,6 +98,13 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     f"bundle={packet.client_bundle_number} flags={int(packet.bundle_flags):#04x} "
                     f"messages=[{message_summary}]"
                 )
+            if server.log_packets:
+                for msg in packet.messages:
+                    if msg.opcode in HANDSHAKE_OPCODES:
+                        print(
+                            f"UDP {self.client_address[0]}:{self.client_address[1]} "
+                            f"{msg.opcode_name} payload={_masked_handshake(msg.payload)}"
+                        )
             if any(msg.opcode == 0x0904 for msg in packet.messages):
                 world_list = build_old_world_list(
                     packet.client_endpoint,
@@ -770,3 +777,20 @@ def _track_phase3_initial_packets(session: GameSession, packets: list[bytes]) ->
     session.phase3_next_arrival = highest_arrival + 1
     session.phase3_next_message = highest_message + 1
     session.phase3_acked_message = 0
+
+
+# DiscVersion, Authenticate and Authenticate2: logged in full (minus the session key)
+# so differences between clients, e.g. two memory cards, can be compared.
+HANDSHAKE_OPCODES = (0x0000, 0x0904, 0x0001)
+AUTH_KEY_SIZE = 32
+
+
+def _masked_handshake(payload: bytes) -> str:
+    marker = payload.find(b"EQOA")
+    if marker >= 0 and marker + 8 <= len(payload):
+        name_len = int.from_bytes(payload[marker + 4 : marker + 8], "little")
+        key = marker + 8 + name_len + 1
+        if key + AUTH_KEY_SIZE <= len(payload):
+            payload = payload[:key] + b"\x00" * AUTH_KEY_SIZE + payload[key + AUTH_KEY_SIZE :]
+            return payload[:key].hex(" ") + " <key masked> " + payload[key + AUTH_KEY_SIZE :].hex(" ")
+    return payload.hex(" ")
