@@ -99,6 +99,16 @@ class NetworkAdminTests(unittest.TestCase):
         self.assertEqual(result["public_host"], "10.0.0.5")
         self.assertEqual(self.request("/api/network/public-host", {"public_host": "example.com"})[0], 409)
 
+    def test_start_at_boot(self):
+        self.request("/api/network")  # first status report from the helper
+        _, status = self.request("/api/status")
+        self.assertEqual(status["boot"], {"available": True, "enabled": True, "raw": "enabled"})
+        code, result = self.request("/api/boot", {"enabled": False})
+        self.assertEqual(code, 200, result)
+        self.assertFalse(result["boot"]["enabled"])
+        _, status = self.request("/api/status")
+        self.assertFalse(status["boot"]["enabled"])
+
     def test_helper_missing(self):
         self.admin.context.network = NetworkHelper(Path(tempfile.mkdtemp()) / "nope", Path("/nonexistent/status.json"))
         status, network = self.request("/api/network")

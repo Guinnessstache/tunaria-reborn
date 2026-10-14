@@ -26,6 +26,9 @@ case "$(basename "$0") $*" in
   "netplan generate") [ -e "{root}/stub/fail-generate" ] && {{ echo "bad yaml" >&2; exit 1; }} ;;
   "ip -j -4 addr show") echo '[{{"ifname":"lo","addr_info":[{{"local":"127.0.0.1","prefixlen":8}}]}},{{"ifname":"eth0","flags":["UP"],"addr_info":[{{"local":"192.168.1.65","prefixlen":24}}]}}]' ;;
   "ip -j -4 route show default") echo '[{{"gateway":"192.168.1.1"}}]' ;;
+  "systemctl is-enabled tunaria-reborn.service") cat "{root}/stub/boot" 2>/dev/null || echo enabled ;;
+  "systemctl enable tunaria-reborn.service") echo enabled > "{root}/stub/boot" ;;
+  "systemctl disable tunaria-reborn.service") echo disabled > "{root}/stub/boot" ;;
 esac
 exit 0
 """
@@ -167,6 +170,17 @@ class NetconfigHelperTests(unittest.TestCase):
         status = self.request({"id": "a1", "action": "apply", "config": {"interface": "eth0", "method": "dhcp"}})
         self.assertTrue(status["ok"], status["message"])
         self.assertIn("dhcp4: true", (self.root / "etc/netplan/90-tunaria.yaml").read_text())
+
+    def test_start_at_boot(self):
+        self.assertEqual(self.request({"id": "s", "action": "status"})["state"]["service_boot"], "enabled")
+        status = self.request({"id": "b1", "action": "boot", "config": {"enabled": False}})
+        self.assertTrue(status["ok"], status["message"])
+        self.assertEqual(status["state"]["service_boot"], "disabled")
+        self.assertIn("systemctl disable tunaria-reborn.service", self.calls())
+        status = self.request({"id": "b2", "action": "boot", "config": {"enabled": True}})
+        self.assertEqual(status["state"]["service_boot"], "enabled")
+        status = self.request({"id": "b3", "action": "boot", "config": {"enabled": "yes; rm -rf /"}})
+        self.assertFalse(status["ok"])
 
     def test_symlinked_request_is_refused(self):
         target = self.root / "secret"

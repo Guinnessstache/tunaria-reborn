@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Root helper that lets the Tunaria Reborn admin panel change this server's IP.
+"""Root helper that lets the Tunaria Reborn admin panel change this server's IP
+and whether the server starts at boot.
 
 The game server runs unprivileged. To change the network it writes a request to
 /opt/tunaria-reborn/netconfig/request.json; a systemd path unit then runs this
@@ -39,6 +40,7 @@ OUR_NETPLAN = NETPLAN_DIR + "/90-tunaria.yaml"
 CLOUD_CFG_DIR = ROOT + "/etc/cloud/cloud.cfg.d"
 OUR_CLOUD_CFG = CLOUD_CFG_DIR + "/99-tunaria-disable-network-config.cfg"
 REVERT_UNIT = "tunaria-netconfig-revert"
+SERVER_UNIT = "tunaria-reborn.service"
 REVERT_AFTER = int(os.environ.get("TUNARIA_NETCONFIG_REVERT_AFTER", "120"))
 MAX_REQUEST = 8192
 OTHER_NETWORK_TYPES = ("wifis", "bonds", "bridges", "vlans", "tunnels", "modems", "vrfs")
@@ -97,8 +99,9 @@ def current_state() -> dict:
             continue
         if dns and dns != ["127.0.0.53"]:
             break
+    boot = run("systemctl", "is-enabled", SERVER_UNIT, check=False).strip() or "unknown"
     state: dict = {"interfaces": interfaces, "gateway": gateway, "dns": dns, "configured": [],
-                   "supported": True, "reason": None, "method": None}
+                   "supported": True, "reason": None, "method": None, "service_boot": boot}
     try:
         ethernets = configured_ethernets()
         others = [kind for kind in OTHER_NETWORK_TYPES if netplan_get(kind) not in ("", "null", "{}")]
@@ -303,6 +306,14 @@ def revert(request_id: str | None) -> str:
     return "Undid the network change; the previous settings are back."
 
 
+def set_boot(config: dict) -> str:
+    enabled = config.get("enabled")
+    if not isinstance(enabled, bool):
+        raise RefusedError("enabled must be true or false")
+    run("systemctl", "enable" if enabled else "disable", SERVER_UNIT)
+    return "The server will start when this machine boots." if enabled else "The server will no longer start at boot."
+
+
 def process() -> int:
     """Handle one request from the admin panel (run by tunaria-netconfig.service)."""
     request_id = None
@@ -321,6 +332,8 @@ def process() -> int:
             message = confirm(request_id)
         elif action == "revert":
             message = revert(request_id)
+        elif action == "boot":
+            message = set_boot(request.get("config") or {})
         else:
             raise RefusedError(f"unknown action {action!r}")
         write_status(request_id, True, message)

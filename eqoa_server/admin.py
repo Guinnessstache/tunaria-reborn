@@ -361,6 +361,21 @@ class AdminHandler(BaseHTTPRequestHandler):
             print("ADMIN restart requested from the admin panel")
             self._json({"ok": True, "restarting": True})
             ctx.request_restart()
+        elif len(parts) == 3 and parts[0] == "services" and parts[2] == "autostart":
+            name = parts[1]
+            if name not in ctx.services.services:
+                raise KeyError(name)
+            ctx.config.autostart = {**ctx.config.autostart, name: bool(body.get("enabled"))}
+            save_settings(ctx.config)
+            print(f"ADMIN auto-start for {name} {'on' if ctx.config.autostart[name] else 'off'}")
+            self._json({"ok": True, "services": ctx.services.status()})
+        elif parts == ["boot"]:
+            enabled = bool(body.get("enabled"))
+            status = ctx.network.send("boot", {"enabled": enabled})
+            print(f"ADMIN start at boot: {status.get('message')}")
+            if not status.get("ok"):
+                raise NetworkError(status.get("message") or "could not change start at boot")
+            self._json({"ok": True, "boot": self._boot_status(status)})
         elif len(parts) == 3 and parts[0] == "services":
             name, action = parts[1], parts[2]
             if name == "all" and action in ("start", "stop", "restart"):
@@ -518,7 +533,17 @@ class AdminHandler(BaseHTTPRequestHandler):
             "system": self._system(),
             "accounts": len(self.ctx.store.accounts),
             "characters": len(self.ctx.store.characters),
+            "boot": self._boot_status(),
         }
+
+    def _boot_status(self, status: dict | None = None) -> dict:
+        """Whether the systemd service starts at boot, as last reported by the root helper."""
+        network = self.ctx.network
+        if not network.available():
+            return {"available": False, "enabled": None}
+        state = ((status or network.status() or {}).get("state")) or {}
+        boot = state.get("service_boot")
+        return {"available": boot in ("enabled", "disabled"), "enabled": boot == "enabled", "raw": boot}
 
     def _game_sessions(self) -> list[dict]:
         game = self.ctx.services.game_server

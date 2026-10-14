@@ -120,6 +120,17 @@ class ServiceManager:
         self.stop(name)
         return self.start(name)
 
+    def autostarts(self, name: str) -> bool:
+        return bool(self.config.autostart.get(name, True))
+
+    def start_enabled(self) -> None:
+        """Start the services marked to start automatically (all of them by default)."""
+        for name in self.services:
+            if self.autostarts(name):
+                self.start(name)
+            else:
+                print(f"SERVICE {name} not started (auto-start is off)")
+
     def start_all(self) -> None:
         for name in self.services:
             self.start(name)
@@ -142,6 +153,7 @@ class ServiceManager:
                 "requests": service.requests,
                 "last_request_age": now - service.last_request_at if service.last_request_at else None,
                 "error": service.last_error,
+                "autostart": self.autostarts(service.name),
             }
             for service in self.services.values()
         ]

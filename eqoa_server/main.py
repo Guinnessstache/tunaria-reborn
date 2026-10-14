@@ -67,7 +67,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    services.start_all()
+    services.start_enabled()
     credentials = AdminCredentials.load(config)
     updater = Updater(state_path=config.data_path.parent / "update_state.json")
     context = AdminContext(config, store, services, logs, credentials, stop, updater=updater)

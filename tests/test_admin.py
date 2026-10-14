@@ -143,6 +143,28 @@ class AdminPanelTests(unittest.TestCase):
         self.assertNotIn("deleteme", self.store.accounts)
         self.assertEqual(self.store.list_characters(account.account_id), [])
 
+    def test_autostart_setting_is_saved_and_respected(self):
+        self.login()
+        status, result = self.request("/api/services/game/autostart", {"enabled": False})
+        self.assertEqual(status, 200)
+        game = next(s for s in result["services"] if s["name"] == "game")
+        self.assertFalse(game["autostart"])
+        self.assertEqual(self.request("/api/services/nope/autostart", {"enabled": False})[0], 400)
+
+        reloaded = ServerConfig(data_path=self.config.data_path)
+        load_settings(reloaded)
+        self.assertEqual(reloaded.autostart, {"game": False})
+
+        self.services.stop_all()
+        self.services.start_enabled()
+        running = {s["name"]: s["running"] for s in self.services.status()}
+        self.assertEqual(running, {"auth": True, "motd": True, "game": False, "status": True})
+
+    def test_boot_unavailable_without_helper(self):
+        self.login()
+        _, status = self.request("/api/status")
+        self.assertFalse(status["boot"]["available"])
+
     def test_logs_and_backup(self):
         self.logs.append("first line\nsecond ")
         self.logs.append("line\n")

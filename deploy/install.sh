@@ -113,8 +113,8 @@ systemctl enable --quiet tunaria-reborn
 started_at="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart tunaria-reborn
 
-step "Installing the network helper"
-if command -v netplan >/dev/null 2>&1; then
+step "Installing the admin helper (network settings, start at boot)"
+if command -v systemctl >/dev/null 2>&1; then
     # Root runs this helper, so it is a root-owned copy outside the git checkout,
     # which the unprivileged server (and the admin panel's updater) can write to.
     install -m 755 -o root -g root "$APP_DIR/deploy/tunaria-netconfig" "$HELPER_PATH"
@@ -125,9 +125,13 @@ if command -v netplan >/dev/null 2>&1; then
     systemctl enable --quiet tunaria-netconfig.service tunaria-netconfig.path
     systemctl restart tunaria-netconfig.path
     systemctl start tunaria-netconfig.service
-    echo "installed; change the server's IP from the admin panel (Settings > Network)"
+    if command -v netplan >/dev/null 2>&1; then
+        echo "installed; change the server's IP in the admin panel under Settings > Network"
+    else
+        echo "installed; netplan not found, so changing the server's IP from the panel is not available"
+    fi
 else
-    echo "netplan not found; changing the server's IP from the admin panel is not available"
+    echo "systemd not found; skipping"
 fi
 
 step "Firewall"

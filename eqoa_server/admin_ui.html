@@ -142,7 +142,7 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
           <button class="btn danger" data-service="all" data-action="stop">Stop all</button>
         </span></h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>Service</th><th>Status</th><th>Port</th><th>Uptime</th><th>Requests</th><th>Last request</th><th></th></tr></thead>
+          <thead><tr><th>Service</th><th>Status</th><th>Port</th><th>Uptime</th><th>Requests</th><th>Last request</th><th title="Start this service when the server starts">Auto-start</th><th></th></tr></thead>
           <tbody id="services"></tbody>
         </table></div>
       </section>
@@ -153,7 +153,12 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
       </section>
       <section class="card" style="margin-top:16px">
         <h2>Server <span class="actions"><button class="btn" id="backup">Download data backup</button><button class="btn danger" id="shutdown">Shut down server</button></span></h2>
-        <p class="hint">Shutting down stops every service and the admin panel; start the server again from the console.</p>
+        <div class="check" id="boot-row">
+          <input type="checkbox" id="boot-enabled">
+          <label for="boot-enabled"><strong>Start at boot</strong><br>
+            <span class="hint" id="boot-hint">Start the server automatically when this machine starts.</span></label>
+        </div>
+        <p class="hint">Shutting down stops every service and the admin panel; start the server again from the console (or with <code>sudo systemctl start tunaria-reborn</code> on Linux).</p>
       </section>
     </div>
 
@@ -389,6 +394,7 @@ function renderStatus(s) {
       <td class="num">${duration(svc.uptime)}</td>
       <td class="num">${svc.requests}</td>
       <td>${ago(svc.last_request_age)}</td>
+      <td><input type="checkbox" data-autostart="${svc.name}" ${svc.autostart ? "checked" : ""} title="Start ${esc(svc.label)} when the server starts" aria-label="Auto-start ${esc(svc.label)}"></td>
       <td><div class="row-actions">
         <button class="btn" data-service="${svc.name}" data-action="start" ${svc.running ? "disabled" : ""}>Start</button>
         <button class="btn" data-service="${svc.name}" data-action="restart">Restart</button>
@@ -396,6 +402,7 @@ function renderStatus(s) {
       </div></td>
     </tr>`).join("");
 
+  renderBoot(s.boot);
   const sys = s.system;
   const cells = [["Process ID", sys.pid], ["Threads", sys.threads], ["Python", sys.python], ["Platform", sys.platform]];
   if (sys.psutil) cells.unshift(
@@ -441,6 +448,28 @@ document.addEventListener("click", async (e) => {
   } catch (err) { if (err.message !== "login required") toast(err.message); }
 });
 
+function renderBoot(boot) {
+  const box = $("#boot-enabled");
+  box.disabled = !boot.available;
+  if (document.activeElement !== box) box.checked = !!boot.enabled;
+  $("#boot-hint").textContent = boot.available
+    ? (boot.enabled ? "On: the server starts automatically when this machine starts." : "Off: after a reboot, start it from here or with sudo systemctl start tunaria-reborn.")
+    : "Only for Linux servers installed with the install command (run it again to add this).";
+}
+$("#boot-enabled").addEventListener("change", async (e) => {
+  const enabled = e.target.checked;
+  if (!enabled && !confirm("Stop the server starting automatically when this machine boots?")) { e.target.checked = true; return; }
+  e.target.disabled = true;
+  try { const res = await api("/api/boot", { enabled }); renderBoot(res.boot); toast(enabled ? "Starts at boot" : "Won't start at boot"); }
+  catch (err) { if (err.message !== "login required") { toast(err.message); e.target.checked = !enabled; } }
+  finally { e.target.disabled = false; }
+});
+document.addEventListener("change", async (e) => {
+  const name = e.target.dataset && e.target.dataset.autostart;
+  if (!name) return;
+  try { await api(`/api/services/${name}/autostart`, { enabled: e.target.checked }); toast(`${name}: auto-start ${e.target.checked ? "on" : "off"}`); }
+  catch (err) { if (err.message !== "login required") { toast(err.message); e.target.checked = !e.target.checked; } }
+});
 $("#backup").onclick = () => { window.location = "/api/backup"; };
 $("#shutdown").onclick = async () => {
   if (!confirm("Shut down the whole server? You will need to start it again from the console.")) return;

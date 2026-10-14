@@ -176,6 +176,11 @@ running the install command again.
 | Back up data | Admin panel → **Download data backup**, or copy `/opt/tunaria-reborn/server/data/` |
 | Forgot admin password | `sudo systemctl stop tunaria-reborn`, delete `/opt/tunaria-reborn/server/data/admin.json`, start it again and read the new one from the log |
 
+**Start at boot** (dashboard) turns `systemctl enable / disable tunaria-reborn`
+on and off through the same root helper as the network settings. The
+**Auto-start** column in the services table chooses which services start with the
+server.
+
 **Shut down server** in the admin panel stops the service until you start it
 again with `systemctl start`; it does not restart by itself. Crashes and the
 panel's restart buttons do restart it automatically.

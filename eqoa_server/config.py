@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -22,13 +22,15 @@ class ServerConfig:
     admin_port: int = 8090
     admin_password: str | None = None
     motd: str | None = None
+    # Services not listed here start automatically; False keeps one stopped at startup.
+    autostart: dict[str, bool] = field(default_factory=dict)
 
     @property
     def settings_path(self) -> Path:
         return self.data_path.parent / "settings.json"
 
 
-EDITABLE_SETTINGS = ("shard_name", "motd", "public_host")
+EDITABLE_SETTINGS = ("shard_name", "motd", "public_host", "autostart")
 
 
 def load_settings(config: ServerConfig) -> None:
