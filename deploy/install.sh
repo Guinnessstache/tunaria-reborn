@@ -66,8 +66,14 @@ step "Downloading the server"
 if [ -d "$APP_DIR/.git" ]; then
     as_service_user git -C "$APP_DIR" fetch --quiet origin "$BRANCH"
     as_service_user git -C "$APP_DIR" checkout --quiet "$BRANCH"
-    as_service_user git -C "$APP_DIR" merge --quiet --ff-only "origin/$BRANCH" \
-        || die "$APP_DIR has local changes or history that differs from GitHub; update it by hand."
+    if ! as_service_user git -C "$APP_DIR" merge --quiet --ff-only "origin/$BRANCH" 2>/dev/null; then
+        # GitHub's history no longer continues this copy's (e.g. it was rewritten).
+        # Safe to follow it only when nothing tracked was changed here; data/ is untracked.
+        [ -z "$(as_service_user git -C "$APP_DIR" status --porcelain --untracked-files=no)" ] \
+            || die "$APP_DIR has local changes to tracked files; commit or discard them, then run this again."
+        echo "GitHub's history changed; switching this copy to it (no local changes found)"
+        as_service_user git -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
+    fi
     echo "updated to $(as_service_user git -C "$APP_DIR" log -1 --format='%h %s')"
 else
     as_service_user git clone --quiet --branch "$BRANCH" "$REPO_URL" "$APP_DIR" \
