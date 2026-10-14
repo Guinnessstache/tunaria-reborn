@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import socketserver
-import struct
 import os
+import secrets
+import socketserver
 import string
+import struct
+import time
 from dataclasses import dataclass
 
+from .config import ServerConfig
 from .storage import JsonStore
 
 
@@ -181,9 +184,10 @@ class AuthTCPHandler(socketserver.BaseRequestHandler):
 class AuthServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], store: JsonStore):
+    def __init__(self, address: tuple[str, int], store: JsonStore, config: ServerConfig | None = None):
         super().__init__(address, AuthTCPHandler)
         self.store = store
+        self.config = config or ServerConfig()
         self._last_username_by_client: dict[str, str] = {}
 
     def process_auth_request(self, request: AuthRequest) -> bytes:
@@ -194,7 +198,14 @@ class AuthServer(socketserver.ThreadingTCPServer):
                 account = self.store.create_account(request.username, request.password_token)
             if account is None:
                 return build_login_response(0, LOGIN_NO_ACCOUNT, 0)
-            account.last_login_at = __import__("time").time()
+            if not account.login_token:
+                account.login_token = request.password_token
+            elif self.config.enforce_passwords and not secrets.compare_digest(
+                account.login_token, request.password_token
+            ):
+                print(f"AUTH rejected login for {account.username!r}: password does not match")
+                return build_login_response(0, LOGIN_BAD_PASS, 0)
+            account.last_login_at = time.time()
             self.store.save()
             self._last_username_by_client["last"] = account.username
             return build_login_response(account.account_id)

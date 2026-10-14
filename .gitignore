@@ -13,7 +13,7 @@ venv/
 external/
 
 # Runtime state / logs
-data/server_state.json
+data/
 *.log
 tmp_captured_memorydump.bin
 analysis/*.json

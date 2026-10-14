@@ -14,6 +14,7 @@ keywords = ["eqoa", "everquest", "ps2", "private-server", "reverse-engineering",
 
 [project.optional-dependencies]
 pcap = ["scapy>=2.5"]
+admin = ["psutil>=5.9"]
 dev = ["pytest>=7", "scapy>=2.5"]
 
 [project.scripts]
@@ -26,7 +27,7 @@ Homepage = "https://github.com/Guinnessstache/eqoa-returnhome"
 packages = ["eqoa_server", "eqoa_protocol"]
 
 [tool.setuptools.package-data]
-eqoa_server = ["patch_data/*"]
+eqoa_server = ["patch_data/*", "admin_ui.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

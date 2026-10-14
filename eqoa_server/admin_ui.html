@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EQOA Server Admin</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f4f2ee; --panel: #ffffff; --text: #1d1c1a; --muted: #6b675f; --line: #e2ddd3;
+  --accent: #8a5a12; --accent-ink: #ffffff; --ok: #1f7a3a; --warn: #a15c00; --bad: #b3261e;
+  --chip: #efe9de; --code: #f7f5f1; --shadow: 0 1px 2px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161513; --panel: #201f1c; --text: #ece8e1; --muted: #a29d93; --line: #34312c;
+    --accent: #e0a64a; --accent-ink: #1b1306; --ok: #5cc27a; --warn: #f0a845; --bad: #f2776e;
+    --chip: #2c2a26; --code: #191816; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header .shard { color: var(--muted); }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; color: var(--muted); font: inherit; cursor: pointer; }
+nav button.active { background: var(--chip); color: var(--text); font-weight: 600; }
+header .spacer { flex: 1; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+main > div { min-width: 0; }
+section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+section.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+section.card h2 .actions { margin-left: auto; display: flex; gap: 6px; text-transform: none; letter-spacing: 0; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.stat .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat .label { color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+td.num { font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; background: var(--chip); font-size: 12px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+button.btn { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+button.btn:hover { border-color: var(--muted); }
+button.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.btn.danger { color: var(--bad); }
+button.btn:disabled { opacity: .45; cursor: default; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); font-size: 13px; }
+input[type=text], input[type=password], textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--code); color: var(--text); }
+textarea { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; min-height: 180px; resize: vertical; }
+label.field { display: grid; gap: 6px; margin-bottom: 14px; }
+label.field span { font-weight: 600; font-size: 13px; }
+.hint { color: var(--muted); font-size: 12px; }
+.check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 14px; }
+#log { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; background: var(--code); border: 1px solid var(--line); border-radius: 8px; height: 60vh; overflow: auto; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; }
+#log .t { color: var(--muted); }
+.log-tools { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
+.log-tools input { max-width: 320px; }
+.account { border-top: 1px solid var(--line); padding: 12px 0; }
+.account:first-of-type { border-top: 0; }
+.account-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.account-head strong { font-size: 15px; }
+.chars { margin: 8px 0 0 0; }
+#login { max-width: 360px; margin: 12vh auto; }
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.show { opacity: 1; }
+[hidden] { display: none !important; }
+@media (max-width: 600px) { main { padding: 12px; } header { padding: 10px 12px; } }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <section class="card">
+    <h2>EQOA server admin</h2>
+    <form id="login-form">
+      <label class="field"><span>Admin password</span><input type="password" id="password" autocomplete="current-password" autofocus></label>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p class="error" id="login-error"></p>
+      <p class="hint">The password is printed in the server console the first time it starts, or set it with <code>--admin-password</code>.</p>
+    </form>
+  </section>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>EQOA Admin</h1><span class="shard" id="shard"></span>
+    <nav id="tabs">
+      <button data-tab="dashboard" class="active">Dashboard</button>
+      <button data-tab="players">Players</button>
+      <button data-tab="accounts">Accounts</button>
+      <button data-tab="settings">Settings</button>
+      <button data-tab="logs">Logs</button>
+    </nav>
+    <span class="spacer"></span>
+    <button class="btn" id="logout">Sign out</button>
+  </header>
+
+  <main>
+    <div data-panel="dashboard">
+      <section class="card">
+        <div class="grid">
+          <div class="stat"><div class="value" id="stat-online">–</div><div class="label">Players in world</div></div>
+          <div class="stat"><div class="value" id="stat-services">–</div><div class="label">Services running</div></div>
+          <div class="stat"><div class="value" id="stat-accounts">–</div><div class="label">Accounts / characters</div></div>
+          <div class="stat"><div class="value" id="stat-uptime">–</div><div class="label">Server uptime</div></div>
+        </div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Services <span class="actions">
+          <button class="btn" data-service="all" data-action="start">Start all</button>
+          <button class="btn" data-service="all" data-action="restart">Restart all</button>
+          <button class="btn danger" data-service="all" data-action="stop">Stop all</button>
+        </span></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Service</th><th>Status</th><th>Port</th><th>Uptime</th><th>Requests</th><th>Last request</th><th></th></tr></thead>
+          <tbody id="services"></tbody>
+        </table></div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>System</h2>
+        <div class="grid" id="system"></div>
+        <p class="hint" id="psutil-hint" hidden>Install <code>psutil</code> (<code>pip install psutil</code>) to see CPU and memory usage.</p>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Server <span class="actions"><button class="btn" id="backup">Download data backup</button><button class="btn danger" id="shutdown">Shut down server</button></span></h2>
+        <p class="hint">Shutting down stops every service and the admin panel; start the server again from the console.</p>
+      </section>
+    </div>
+
+    <div data-panel="players" hidden>
+      <section class="card">
+        <h2>Game sessions</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Client</th><th>Character</th><th>Stage</th><th>Idle</th><th>Reliable msgs (acked / sent)</th><th></th></tr></thead>
+          <tbody id="sessions"></tbody>
+        </table></div>
+        <p class="hint">Sessions appear once a client reaches character select; they are dropped after logout or 60 s of silence.</p>
+      </section>
+    </div>
+
+    <div data-panel="accounts" hidden>
+      <section class="card">
+        <h2>Accounts</h2>
+        <p class="hint" id="password-mode"></p>
+        <div id="accounts"></div>
+      </section>
+    </div>
+
+    <div data-panel="settings" hidden>
+      <section class="card">
+        <h2>Settings</h2>
+        <form id="settings-form">
+          <label class="field"><span>Shard name</span><input type="text" id="shard-name" maxlength="32">
+            <span class="hint">Shown in the server list. Takes effect the next time a client fetches the list.</span></label>
+          <label class="field"><span>Message of the day</span><textarea id="motd" spellcheck="true"></textarea>
+            <span class="hint" id="motd-count"></span></label>
+          <div class="check"><input type="checkbox" id="enforce"><label for="enforce"><strong>Enforce passwords</strong><br>
+            <span class="hint">Each account remembers the password used on its first login (or first login after a reset). When enforced, other passwords are refused. Leave off until you have confirmed logging in twice with the same password works.</span></label></div>
+          <button class="btn primary" type="submit">Save settings</button>
+        </form>
+      </section>
+    </div>
+
+    <div data-panel="logs" hidden>
+      <section class="card">
+        <h2>Live log</h2>
+        <div class="log-tools">
+          <input type="text" id="log-filter" placeholder="Filter, e.g. phase3 or AUTH">
+          <label><input type="checkbox" id="log-follow" checked> Follow</label>
+          <button class="btn" id="log-pause">Pause</button>
+          <button class="btn" id="log-clear">Clear view</button>
+          <span class="muted" id="log-count"></span>
+        </div>
+        <div id="log"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// Name order is a best guess; the raw ids are shown alongside.
+const RACES = ["Human","Elf","Dark Elf","Gnome","Dwarf","Troll","Barbarian","Halfling","Erudite","Ogre"];
+const CLASSES = ["Warrior","Ranger","Paladin","Shadowknight","Monk","Bard","Rogue","Druid","Shaman","Cleric","Magician","Necromancer","Enchanter","Wizard","Alchemist"];
+let activeTab = "dashboard", lastLogId = 0, logLines = [], logPaused = false, motdLimit = 400, pollTimer = null;
+
+function duration(seconds) {
+  if (seconds == null) return "–";
+  seconds = Math.max(0, Math.floor(seconds));
+  const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+  if (d) return `${d}d ${h}h`; if (h) return `${h}h ${m}m`; if (m) return `${m}m ${s}s`; return `${s}s`;
+}
+const ago = (s) => s == null ? "never" : `${duration(s)} ago`;
+const bytes = (n) => n == null ? "–" : n > 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : `${(n / (1 << 20)).toFixed(0)} MB`;
+const date = (t) => t ? new Date(t * 1000).toLocaleString() : "never";
+
+function toast(message) {
+  const el = $("#toast"); el.textContent = message; el.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-EQOA-Admin": "1" }, body: JSON.stringify(body) };
+  const res = await fetch(path, { credentials: "same-origin", ...opts });
+  if (res.status === 401 && path !== "/api/login") { showLogin(); throw new Error("login required"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function showLogin() { $("#app").hidden = true; $("#login").hidden = false; clearInterval(pollTimer); $("#password").focus(); }
+function showApp() { $("#login").hidden = true; $("#app").hidden = false; refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 2000); }
+
+$("#login-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("#login-error").textContent = "";
+  try { await api("/api/login", { password: $("#password").value }); $("#password").value = ""; showApp(); }
+  catch (err) { $("#login-error").textContent = err.message; }
+});
+$("#logout").onclick = async () => { await api("/api/logout", {}).catch(() => {}); showLogin(); };
+
+$("#tabs").addEventListener("click", (e) => {
+  const tab = e.target.dataset.tab; if (!tab) return;
+  activeTab = tab;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
+  if (tab === "settings") loadSettings();
+  refresh();
+});
+
+async function refresh() {
+  try {
+    if (activeTab === "dashboard" || activeTab === "players") renderStatus(await api("/api/status"));
+    if (activeTab === "accounts") renderAccounts(await api("/api/accounts"));
+    if (activeTab === "logs") await pollLogs();
+  } catch (err) { if (err.message !== "login required") console.warn(err); }
+}
+
+function renderStatus(s) {
+  $("#shard").textContent = `${s.shard_name} · ${s.public_host}`;
+  const inWorld = s.sessions.filter((x) => x.stage === "In world" && x.online).length;
+  const running = s.services.filter((x) => x.running).length;
+  $("#stat-online").textContent = inWorld;
+  $("#stat-services").textContent = `${running} / ${s.services.length}`;
+  $("#stat-accounts").textContent = `${s.accounts} / ${s.characters}`;
+  $("#stat-uptime").textContent = duration(s.system.uptime);
+
+  $("#services").innerHTML = s.services.map((svc) => `
+    <tr>
+      <td><strong>${esc(svc.label)}</strong> <span class="muted">${esc(svc.protocol)}</span></td>
+      <td><span class="pill"><span class="dot ${svc.running ? "ok" : "bad"}"></span>${svc.running ? "Running" : "Stopped"}</span>
+        ${svc.error ? `<div class="error">${esc(svc.error)}</div>` : ""}</td>
+      <td class="num">${svc.port}</td>
+      <td class="num">${duration(svc.uptime)}</td>
+      <td class="num">${svc.requests}</td>
+      <td>${ago(svc.last_request_age)}</td>
+      <td><div class="row-actions">
+        <button class="btn" data-service="${svc.name}" data-action="start" ${svc.running ? "disabled" : ""}>Start</button>
+        <button class="btn" data-service="${svc.name}" data-action="restart">Restart</button>
+        <button class="btn danger" data-service="${svc.name}" data-action="stop" ${svc.running ? "" : "disabled"}>Stop</button>
+      </div></td>
+    </tr>`).join("");
+
+  const sys = s.system;
+  const cells = [["Process ID", sys.pid], ["Threads", sys.threads], ["Python", sys.python], ["Platform", sys.platform]];
+  if (sys.psutil) cells.unshift(
+    ["Server CPU", `${sys.process_cpu.toFixed(1)}%`], ["Server memory", bytes(sys.process_rss)],
+    ["System CPU", `${sys.system_cpu.toFixed(1)}%`], ["System memory", `${bytes(sys.system_memory_used)} / ${bytes(sys.system_memory_total)}`]);
+  $("#system").innerHTML = cells.map(([k, v]) => `<div class="stat"><div class="value" style="font-size:18px">${esc(v)}</div><div class="label">${esc(k)}</div></div>`).join("");
+  $("#psutil-hint").hidden = sys.psutil;
+
+  $("#sessions").innerHTML = s.sessions.length ? s.sessions.map((x) => `
+    <tr>
+      <td class="num">${esc(x.address)}</td>
+      <td>${x.character ? `<strong>${esc(x.character)}</strong> <span class="muted">lvl ${x.level}</span>` : '<span class="muted">–</span>'}</td>
+      <td><span class="pill"><span class="dot ${x.stage === "In world" ? "ok" : "warn"}"></span>${esc(x.stage)}</span></td>
+      <td class="num">${x.idle == null ? "–" : duration(x.idle)}</td>
+      <td class="num">${x.acked_message} / ${x.server_message}</td>
+      <td><button class="btn danger" data-kick="${esc(x.address)}">Kick</button></td>
+    </tr>`).join("") : `<tr><td colspan="6" class="muted">No game sessions.</td></tr>`;
+}
+
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("button"); if (!t) return;
+  try {
+    if (t.dataset.service) {
+      const { service, action } = t.dataset;
+      if (action === "stop" && service === "all" && !confirm("Stop every game service? Connected players will be dropped.")) return;
+      t.disabled = true;
+      const res = await api(`/api/services/${service}/${action}`, {});
+      toast(res.ok ? `${service === "all" ? "All services" : service}: ${action} done` : `${service}: ${action} failed`);
+      refresh();
+    } else if (t.dataset.kick) {
+      await api("/api/sessions/kick", { address: t.dataset.kick }); toast("Session dropped"); refresh();
+    } else if (t.dataset.account) {
+      const { account, action, name } = t.dataset;
+      const question = action === "delete" ? `Delete account ${name} and all its characters? This cannot be undone.`
+        : `Reset the password for ${name}? The next password they log in with becomes their password.`;
+      if (!confirm(question)) return;
+      await api(`/api/accounts/${account}/${action}`, {}); toast("Done"); refresh();
+    } else if (t.dataset.character) {
+      const { character, action, name } = t.dataset;
+      const question = action === "delete" ? `Delete character ${name}? This cannot be undone.` : `Move ${name} back to their starting position?`;
+      if (!confirm(question)) return;
+      await api(`/api/characters/${character}/${action}`, {}); toast("Done"); refresh();
+    }
+  } catch (err) { if (err.message !== "login required") toast(err.message); }
+});
+
+$("#backup").onclick = () => { window.location = "/api/backup"; };
+$("#shutdown").onclick = async () => {
+  if (!confirm("Shut down the whole server? You will need to start it again from the console.")) return;
+  await api("/api/shutdown", {}).catch(() => {}); toast("Server shutting down"); clearInterval(pollTimer);
+};
+
+function renderAccounts(data) {
+  $("#password-mode").textContent = data.enforce_passwords
+    ? "Passwords are enforced: logins must match the password remembered for the account."
+    : "Passwords are not enforced: any password logs in (and is remembered for when enforcement is turned on).";
+  $("#accounts").innerHTML = data.accounts.length ? data.accounts.map((a) => `
+    <div class="account">
+      <div class="account-head">
+        <strong>${esc(a.username)}</strong>
+        <span class="muted">#${a.id} · last login ${esc(date(a.last_login_at))}</span>
+        <span class="pill"><span class="dot ${a.password_set ? "ok" : "warn"}"></span>${a.password_set ? "Password remembered" : "Next login sets password"}</span>
+        <span class="spacer" style="flex:1"></span>
+        <div class="row-actions">
+          <button class="btn" data-account="${a.id}" data-name="${esc(a.username)}" data-action="reset-password">Reset password</button>
+          <button class="btn danger" data-account="${a.id}" data-name="${esc(a.username)}" data-action="delete">Delete</button>
+        </div>
+      </div>
+      ${a.characters.length ? `<div class="table-wrap chars"><table>
+        <thead><tr><th>Character</th><th>Level</th><th>Race / class</th><th>Zone</th><th>Position</th><th></th></tr></thead>
+        <tbody>${a.characters.map((c) => `<tr>
+          <td><strong>${esc(c.name)}</strong> <span class="muted">#${c.id}</span></td>
+          <td class="num">${c.level}</td>
+          <td>${esc(RACES[c.race] ?? "?")} <span class="muted">(${c.race})</span> / ${esc(CLASSES[c.class] ?? "?")} <span class="muted">(${c.class})</span></td>
+          <td class="num">${c.zone}</td>
+          <td class="num">${c.position.join(", ")}</td>
+          <td><div class="row-actions">
+            <button class="btn" data-character="${c.id}" data-name="${esc(c.name)}" data-action="reset-position">Reset position</button>
+            <button class="btn danger" data-character="${c.id}" data-name="${esc(c.name)}" data-action="delete">Delete</button>
+          </div></td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">No characters.</p>'}
+    </div>`).join("") : '<p class="muted">No accounts yet. Log in from the game to create one.</p>';
+}
+
+async function loadSettings() {
+  const s = await api("/api/settings");
+  motdLimit = s.motd_limit;
+  $("#shard-name").value = s.shard_name;
+  $("#motd").value = s.motd || s.default_motd;
+  $("#enforce").checked = s.enforce_passwords;
+  updateMotdCount();
+}
+function updateMotdCount() {
+  const used = new TextEncoder().encode($("#motd").value.replace(/\r\n/g, "\n")).length;
+  const el = $("#motd-count");
+  el.textContent = used > motdLimit ? `${used} / ${motdLimit} bytes. Text past ${motdLimit} bytes is cut off in game.` : `${used} / ${motdLimit} bytes. The game shows exactly ${motdLimit} bytes; plain ASCII only.`;
+  el.style.color = used > motdLimit ? "var(--bad)" : "";
+}
+$("#motd").addEventListener("input", updateMotdCount);
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/settings", { shard_name: $("#shard-name").value, motd: $("#motd").value, enforce_passwords: $("#enforce").checked });
+    toast("Settings saved");
+  } catch (err) { toast(err.message); }
+});
+
+async function pollLogs() {
+  if (logPaused) return;
+  const { lines } = await api(`/api/logs?after=${lastLogId}`);
+  if (!lines.length) return;
+  lastLogId = lines[lines.length - 1].id;
+  logLines.push(...lines); if (logLines.length > 3000) logLines = logLines.slice(-3000);
+  renderLogs();
+}
+function renderLogs() {
+  const filter = $("#log-filter").value.toLowerCase();
+  const shown = filter ? logLines.filter((l) => l.text.toLowerCase().includes(filter)) : logLines;
+  const el = $("#log");
+  el.innerHTML = shown.slice(-1500).map((l) => `<div><span class="t">${new Date(l.time * 1000).toLocaleTimeString()}</span> ${esc(l.text)}</div>`).join("");
+  $("#log-count").textContent = `${shown.length} lines`;
+  if ($("#log-follow").checked) el.scrollTop = el.scrollHeight;
+}
+$("#log-filter").addEventListener("input", renderLogs);
+$("#log-pause").onclick = (e) => { logPaused = !logPaused; e.target.textContent = logPaused ? "Resume" : "Pause"; };
+$("#log-clear").onclick = () => { logLines = []; renderLogs(); };
+
+api("/api/session").then((s) => s.authenticated ? showApp() : showLogin()).catch(showLogin);
+</script>
+</body>
+</html>

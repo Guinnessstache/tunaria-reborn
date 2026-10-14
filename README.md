@@ -27,7 +27,33 @@ python -m pip install -e ".[dev]"        # installs scapy + pytest too
 python -m eqoa_server --host 0.0.0.0 --public-host 127.0.0.1
 ```
 
-Ports: Auth TCP `9735`, MOTD TCP `7000`, Game UDP `10070`, Patch HTTP `8080`.
+Ports: Auth TCP `9735`, MOTD TCP `7000`, Game UDP `10070`, Patch HTTP `8080`,
+Admin panel `8090`.
+
+## Admin panel
+
+Open <http://localhost:8090/> while the server runs. On first start the console
+prints a generated admin password (stored hashed in `data/admin.json`; delete it
+to get a new one), or pass `--admin-password` / set `EQOA_ADMIN_PASSWORD`.
+
+- **Dashboard** - start / stop / restart each service (auth, patch/MOTD, game UDP,
+  status HTTP) independently, request counts, uptime, CPU and memory
+  (`pip install psutil` or `pip install -e ".[admin]"`), data backup download.
+- **Players** - live game sessions with stage, idle time and reliable-message
+  progress; kick a session.
+- **Accounts** - accounts and characters; reset password, delete, reset a stuck
+  character's position.
+- **Settings** - shard name, message of the day (400-byte limit shown), password
+  enforcement. Saved to `data/settings.json`.
+- **Logs** - live tail of the server log with a filter.
+
+The panel listens on `127.0.0.1` only. Use `--admin-host 0.0.0.0` to reach it from
+other machines on your LAN; never expose it to the internet.
+
+Passwords: the client sends an encoded token, not the password. Each account
+remembers the token from its first login (or first login after a reset); with
+enforcement on, other tokens are refused. Enforcement is off by default until it
+is confirmed the client sends the same token for the same password every time.
 Run `python -m eqoa_server --help` for options. Point PCSX2 (DNAS-patched ISO) at
 the host; see `docs/research-notes.md`.
 

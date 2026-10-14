@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import argparse
 import signal
+import sys
 import threading
 from pathlib import Path
 
-from .auth import AuthServer
-from .config import ServerConfig
-from .game_udp import GameUDPServer
-from .patch_http import PatchHTTPServer
-from .patch_tcp import PatchTCPServer
+from .admin import AdminContext, AdminCredentials, start_admin
+from .config import ServerConfig, load_settings
+from .services import ServiceManager, install_log_buffer
 from .storage import JsonStore
 
 
@@ -25,6 +24,16 @@ def parse_args() -> ServerConfig:
     parser.add_argument("--data-path", type=Path, default=Path("data/server_state.json"))
     parser.add_argument("--patch-source-dir", type=Path)
     parser.add_argument("--quiet-packets", action="store_true")
+    parser.add_argument(
+        "--admin-host",
+        default="127.0.0.1",
+        help="Admin panel bind address (default: this PC only; use 0.0.0.0 to allow your LAN)",
+    )
+    parser.add_argument("--admin-port", type=int, default=8090)
+    parser.add_argument(
+        "--admin-password",
+        help="Admin panel password (or set EQOA_ADMIN_PASSWORD); otherwise one is generated on first run",
+    )
     args = parser.parse_args()
     return ServerConfig(
         host=args.host,
@@ -37,39 +46,29 @@ def parse_args() -> ServerConfig:
         data_path=args.data_path,
         patch_source_dir=args.patch_source_dir,
         log_packets=not args.quiet_packets,
+        admin_host=args.admin_host,
+        admin_port=args.admin_port,
+        admin_password=args.admin_password,
     )
-
-
-def serve_in_thread(name: str, server) -> threading.Thread:
-    thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
-    thread.start()
-    return thread
 
 
 def main() -> None:
     config = parse_args()
+    load_settings(config)
+    logs = install_log_buffer()
     store = JsonStore(config.data_path)
-    auth = AuthServer((config.host, config.auth_port), store)
-    game = GameUDPServer((config.host, config.game_port), config, store, log_packets=config.log_packets)
-    motd = PatchTCPServer((config.host, config.motd_port), config, log_requests=config.log_packets)
-    patch = PatchHTTPServer((config.host, config.patch_port), config)
-
-    servers = [auth, game, motd, patch]
+    services = ServiceManager(config, store)
     stop = threading.Event()
 
-    def shutdown(_signum=None, _frame=None) -> None:
+    def request_stop(_signum=None, _frame=None) -> None:
         stop.set()
-        for server in servers:
-            server.shutdown()
-            server.server_close()
 
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
 
-    serve_in_thread("eqoa-auth", auth)
-    serve_in_thread("eqoa-game-udp", game)
-    serve_in_thread("eqoa-motd-patch", motd)
-    serve_in_thread("eqoa-patch-http", patch)
+    services.start_all()
+    credentials = AdminCredentials.load(config)
+    admin = start_admin(AdminContext(config, store, services, logs, credentials, stop))
 
     print(f"EQOA community server running: {config.shard_name}")
     print(f"  Auth TCP:   {config.host}:{config.auth_port}")
@@ -77,9 +76,28 @@ def main() -> None:
     print(f"  Game UDP:   {config.host}:{config.game_port}")
     print(f"  Patch HTTP: http://{config.public_host}:{config.patch_port}/status.json")
     print(f"  Data:       {config.data_path}")
+    if admin is not None:
+        admin_host = "localhost" if config.admin_host in ("127.0.0.1", "0.0.0.0") else config.admin_host
+        print(f"  Admin:      http://{admin_host}:{config.admin_port}/")
+    if credentials.generated_password:
+        # Straight to the console so the password never lands in the admin log viewer.
+        console = sys.__stdout__
+        console.write(
+            f"\n  Admin password (generated, shown once): {credentials.generated_password}\n"
+            f"  Stored hashed in {config.data_path.parent / 'admin.json'}; "
+            "delete that file to generate a new one.\n\n"
+        )
+        console.flush()
     print("Press Ctrl+C to stop.")
 
-    stop.wait()
+    # Wake periodically so Ctrl+C is handled promptly on Windows.
+    while not stop.wait(0.5):
+        pass
+    print("Shutting down...")
+    services.stop_all()
+    if admin is not None:
+        admin.shutdown()
+        admin.server_close()
 
 
 if __name__ == "__main__":

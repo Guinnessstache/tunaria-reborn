@@ -15,6 +15,9 @@ class Account:
     password_token: str
     created_at: float = field(default_factory=time)
     last_login_at: float | None = None
+    # Token the client sent on its first login after creation/reset; checked when
+    # passwords are enforced. Empty means "accept and remember the next login".
+    login_token: str = ""
 
 
 @dataclass(slots=True)
@@ -106,6 +109,47 @@ class JsonStore:
             if account is None or not secrets.compare_digest(account.password_token, old_token):
                 return False
             account.password_token = new_token
+            self.save()
+            return True
+
+    def get_account(self, account_id: int) -> Account | None:
+        with self._lock:
+            return next((a for a in self.accounts.values() if a.account_id == account_id), None)
+
+    def reset_login(self, account_id: int) -> bool:
+        with self._lock:
+            account = self.get_account(account_id)
+            if account is None:
+                return False
+            account.login_token = ""
+            self.save()
+            return True
+
+    def delete_account(self, account_id: int) -> bool:
+        with self._lock:
+            account = self.get_account(account_id)
+            if account is None:
+                return False
+            del self.accounts[account.username.lower()]
+            for character_id in [c.character_id for c in self.characters.values() if c.account_id == account_id]:
+                del self.characters[character_id]
+            self.save()
+            return True
+
+    def delete_character(self, character_id: int) -> bool:
+        with self._lock:
+            if self.characters.pop(character_id, None) is None:
+                return False
+            self.save()
+            return True
+
+    def reset_character_position(self, character_id: int) -> bool:
+        with self._lock:
+            character = self.characters.get(character_id)
+            if character is None:
+                return False
+            character.zone_id, character.x, character.y, character.z = _starting_position(character.race)
+            character.heading = 0.0
             self.save()
             return True
 

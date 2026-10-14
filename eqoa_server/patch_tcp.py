@@ -22,15 +22,20 @@ MOTD_BODY_SIZE = 400
 MOTD_RESPONSE_SIZE = 707
 
 
-def fixed_motd_body(config: ServerConfig) -> bytes:
-    text = (
+def default_motd_text(config: ServerConfig) -> str:
+    return (
         f"Welcome to {config.shard_name}!\n"
         f"Server: {config.public_host}\n\n"
         "This is a local EQOA community server scaffold.\n"
         "Account creation and login are available. Character/world support is experimental.\n\n"
         "Next milestone: server select, character select, and a minimal empty-world login.\n"
     )
-    body = text.encode("ascii", "ignore")[:MOTD_BODY_SIZE]
+
+
+def fixed_motd_body(config: ServerConfig) -> bytes:
+    """The client expects exactly MOTD_BODY_SIZE bytes; longer text is cut off."""
+    text = config.motd if config.motd else default_motd_text(config)
+    body = text.replace("\r\n", "\n").encode("ascii", "ignore")[:MOTD_BODY_SIZE]
     return body.ljust(MOTD_BODY_SIZE, b" ")
 
 
