@@ -70,7 +70,8 @@ class AdminPanelTests(unittest.TestCase):
                 raw = response.read()
                 return response.status, (json.loads(raw) if "json" in response.headers["Content-Type"] else raw)
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read() or b"{}")
+            with exc:
+                return exc.code, json.loads(exc.read() or b"{}")
 
     def login(self):
         status, _ = self.request("/api/login", {"password": PASSWORD})
