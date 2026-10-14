@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import os
-import secrets
 import socketserver
 import string
 import struct
@@ -24,7 +24,9 @@ CREATE_ACCOUNT_RESPONSE_ALT = 0x39
 DISABLED_FEATURE_REQUESTS = {0x2E, 0x30, 0x32, 0x36, 0x3E, 0x40, 0x42}
 
 LOGIN_GOOD = 0x00
-LOGIN_BAD_PASS = 0x06
+# Not "bad password": the Frontiers client shows 0x06 as "You must enter an
+# EverQuest Online Adventures: Frontiers account key". The real code is unknown.
+LOGIN_NEEDS_ACCOUNT_KEY = 0x06
 LOGIN_NO_ACCOUNT = 0x0E
 ACCOUNT_STATUS_NORMAL = 0x01
 
@@ -41,6 +43,10 @@ def _read_fixed_ascii(data: bytes, offset: int, size: int) -> tuple[str, int]:
 
 def _with_length(body: bytes) -> bytes:
     return struct.pack(">I", len(body) + 4) + body
+
+
+def _fingerprint(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:8] if data else "-"
 
 
 def build_challenge() -> bytes:
@@ -145,7 +151,8 @@ class AuthTCPHandler(socketserver.BaseRequestHandler):
         server: AuthServer = self.server  # type: ignore[assignment]
         self.request.settimeout(120)
         print(f"AUTH {self.client_address[0]}:{self.client_address[1]} connected")
-        self.request.sendall(build_challenge())
+        challenge = build_challenge()
+        self.request.sendall(challenge)
         while True:
             try:
                 header = self._read_exact(4)
@@ -156,7 +163,7 @@ class AuthTCPHandler(socketserver.BaseRequestHandler):
                     return
                 data = header + self._read_exact(length - 4)
                 parsed = parse_auth_request(data)
-                response = server.process_auth_request(parsed)
+                response = server.process_auth_request(parsed, challenge[8:])
                 print(
                     f"AUTH {self.client_address[0]}:{self.client_address[1]} "
                     f"opcode=0x{parsed.message_type:04X} user={parsed.username!r} "
@@ -190,7 +197,7 @@ class AuthServer(socketserver.ThreadingTCPServer):
         self.config = config or ServerConfig()
         self._last_username_by_client: dict[str, str] = {}
 
-    def process_auth_request(self, request: AuthRequest) -> bytes:
+    def process_auth_request(self, request: AuthRequest, challenge: bytes = b"") -> bytes:
         if request.message_type == LOGIN_REQUEST:
             key = request.username.strip().lower()
             account = self.store.accounts.get(key)
@@ -198,13 +205,13 @@ class AuthServer(socketserver.ThreadingTCPServer):
                 account = self.store.create_account(request.username, request.password_token)
             if account is None:
                 return build_login_response(0, LOGIN_NO_ACCOUNT, 0)
-            if not account.login_token:
-                account.login_token = request.password_token
-            elif self.config.enforce_passwords and not secrets.compare_digest(
-                account.login_token, request.password_token
-            ):
-                print(f"AUTH rejected login for {account.username!r}: password does not match")
-                return build_login_response(0, LOGIN_BAD_PASS, 0)
+            # Passwords are not checked yet: the client's token appears to be derived
+            # from the per-connection challenge, so it differs on every login. These
+            # one-way fingerprints let us confirm that without logging the token.
+            print(
+                f"AUTH login {account.username!r} challenge={_fingerprint(challenge)} "
+                f"token={_fingerprint(request.password_token.encode('ascii', 'ignore'))}"
+            )
             account.last_login_at = time.time()
             self.store.save()
             self._last_username_by_client["last"] = account.username

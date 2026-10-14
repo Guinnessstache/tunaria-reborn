@@ -15,9 +15,6 @@ class Account:
     password_token: str
     created_at: float = field(default_factory=time)
     last_login_at: float | None = None
-    # Token the client sent on its first login after creation/reset; checked when
-    # passwords are enforced. Empty means "accept and remember the next login".
-    login_token: str = ""
 
 
 @dataclass(slots=True)
@@ -58,7 +55,7 @@ class JsonStore:
                 return
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             self.accounts = {
-                row["username"].lower(): Account(**row)
+                row["username"].lower(): Account(**{k: v for k, v in row.items() if k in Account.__dataclass_fields__})
                 for row in payload.get("accounts", [])
             }
             self.characters = {
@@ -115,15 +112,6 @@ class JsonStore:
     def get_account(self, account_id: int) -> Account | None:
         with self._lock:
             return next((a for a in self.accounts.values() if a.account_id == account_id), None)
-
-    def reset_login(self, account_id: int) -> bool:
-        with self._lock:
-            account = self.get_account(account_id)
-            if account is None:
-                return False
-            account.login_token = ""
-            self.save()
-            return True
 
     def delete_account(self, account_id: int) -> bool:
         with self._lock:

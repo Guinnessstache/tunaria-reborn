@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from eqoa_server.admin import AdminContext, AdminCredentials, AdminServer
-from eqoa_server.auth import LOGIN_BAD_PASS, LOGIN_REQUEST, AuthRequest
+from eqoa_server.auth import LOGIN_GOOD, LOGIN_REQUEST, AuthRequest
 from eqoa_server.config import ServerConfig, load_settings
 from eqoa_server.patch_tcp import MOTD_BODY_SIZE, fixed_motd_body
 from eqoa_server.services import LogBuffer, ServiceManager
@@ -111,7 +111,7 @@ class AdminPanelTests(unittest.TestCase):
     def test_settings_update_motd_and_persist(self):
         self.login()
         status, settings = self.request(
-            "/api/settings", {"shard_name": "Test Shard", "motd": "Hello\r\nworld", "enforce_passwords": True}
+            "/api/settings", {"shard_name": "Test Shard", "motd": "Hello\r\nworld"}
         )
         self.assertEqual(status, 200)
         self.assertEqual(settings["shard_name"], "Test Shard")
@@ -121,24 +121,16 @@ class AdminPanelTests(unittest.TestCase):
 
         reloaded = ServerConfig(data_path=self.config.data_path)
         load_settings(reloaded)
-        self.assertEqual((reloaded.shard_name, reloaded.motd, reloaded.enforce_passwords), ("Test Shard", "Hello\nworld", True))
+        self.assertEqual((reloaded.shard_name, reloaded.motd), ("Test Shard", "Hello\nworld"))
 
-    def test_password_reset_and_enforcement(self):
+    def test_login_accepts_changing_tokens_and_ignores_old_enforce_setting(self):
+        self.config.settings_path.write_text('{"enforce_passwords": true}', encoding="utf-8")
+        load_settings(self.config)
         auth = self.services.services["auth"].server
-        login = lambda token: auth.process_auth_request(AuthRequest(148, LOGIN_REQUEST, "tester", token))
+        login = lambda token: auth.process_auth_request(AuthRequest(148, LOGIN_REQUEST, "tester", token), b"c" * 32)
         result_code = lambda response: int.from_bytes(response[8:12], "big")
-
-        self.assertEqual(result_code(login("aa")), 0)
-        self.config.enforce_passwords = True
-        self.assertEqual(result_code(login("bb")), LOGIN_BAD_PASS)
-        self.assertEqual(result_code(login("aa")), 0)
-
-        self.login()
-        account_id = self.store.accounts["tester"].account_id
-        self.assertEqual(self.request(f"/api/accounts/{account_id}/reset-password", {})[0], 200)
-        self.assertEqual(result_code(login("bb")), 0)
-        _, accounts = self.request("/api/accounts")
-        self.assertTrue(accounts["accounts"][0]["password_set"])
+        self.assertEqual(result_code(login("aa")), LOGIN_GOOD)
+        self.assertEqual(result_code(login("bb")), LOGIN_GOOD)
 
     def test_delete_account_removes_characters(self):
         account = self.store.create_account("deleteme", "x")

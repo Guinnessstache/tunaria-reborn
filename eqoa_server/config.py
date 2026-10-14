@@ -22,14 +22,13 @@ class ServerConfig:
     admin_port: int = 8090
     admin_password: str | None = None
     motd: str | None = None
-    enforce_passwords: bool = False
 
     @property
     def settings_path(self) -> Path:
         return self.data_path.parent / "settings.json"
 
 
-EDITABLE_SETTINGS = ("shard_name", "motd", "enforce_passwords")
+EDITABLE_SETTINGS = ("shard_name", "motd")
 
 
 def load_settings(config: ServerConfig) -> None:

@@ -159,8 +159,6 @@ label.field span { font-weight: 600; font-size: 13px; }
             <span class="hint">Shown in the server list. Takes effect the next time a client fetches the list.</span></label>
           <label class="field"><span>Message of the day</span><textarea id="motd" spellcheck="true"></textarea>
             <span class="hint" id="motd-count"></span></label>
-          <div class="check"><input type="checkbox" id="enforce"><label for="enforce"><strong>Enforce passwords</strong><br>
-            <span class="hint">Each account remembers the password used on its first login (or first login after a reset). When enforced, other passwords are refused. Leave off until you have confirmed logging in twice with the same password works.</span></label></div>
           <button class="btn primary" type="submit">Save settings</button>
         </form>
       </section>
@@ -300,8 +298,7 @@ document.addEventListener("click", async (e) => {
       await api("/api/sessions/kick", { address: t.dataset.kick }); toast("Session dropped"); refresh();
     } else if (t.dataset.account) {
       const { account, action, name } = t.dataset;
-      const question = action === "delete" ? `Delete account ${name} and all its characters? This cannot be undone.`
-        : `Reset the password for ${name}? The next password they log in with becomes their password.`;
+      const question = `Delete account ${name} and all its characters? This cannot be undone.`;
       if (!confirm(question)) return;
       await api(`/api/accounts/${account}/${action}`, {}); toast("Done"); refresh();
     } else if (t.dataset.character) {
@@ -320,18 +317,14 @@ $("#shutdown").onclick = async () => {
 };
 
 function renderAccounts(data) {
-  $("#password-mode").textContent = data.enforce_passwords
-    ? "Passwords are enforced: logins must match the password remembered for the account."
-    : "Passwords are not enforced: any password logs in (and is remembered for when enforcement is turned on).";
+  $("#password-mode").textContent = "Passwords are not checked yet: any password logs in to an existing account, and a new name creates an account.";
   $("#accounts").innerHTML = data.accounts.length ? data.accounts.map((a) => `
     <div class="account">
       <div class="account-head">
         <strong>${esc(a.username)}</strong>
         <span class="muted">#${a.id} · last login ${esc(date(a.last_login_at))}</span>
-        <span class="pill"><span class="dot ${a.password_set ? "ok" : "warn"}"></span>${a.password_set ? "Password remembered" : "Next login sets password"}</span>
         <span class="spacer" style="flex:1"></span>
         <div class="row-actions">
-          <button class="btn" data-account="${a.id}" data-name="${esc(a.username)}" data-action="reset-password">Reset password</button>
           <button class="btn danger" data-account="${a.id}" data-name="${esc(a.username)}" data-action="delete">Delete</button>
         </div>
       </div>
@@ -355,7 +348,6 @@ async function loadSettings() {
   motdLimit = s.motd_limit;
   $("#shard-name").value = s.shard_name;
   $("#motd").value = s.motd || s.default_motd;
-  $("#enforce").checked = s.enforce_passwords;
   updateMotdCount();
 }
 function updateMotdCount() {
@@ -368,7 +360,7 @@ $("#motd").addEventListener("input", updateMotdCount);
 $("#settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("/api/settings", { shard_name: $("#shard-name").value, motd: $("#motd").value, enforce_passwords: $("#enforce").checked });
+    await api("/api/settings", { shard_name: $("#shard-name").value, motd: $("#motd").value });
     toast("Settings saved");
   } catch (err) { toast(err.message); }
 });

@@ -41,19 +41,18 @@ to get a new one), or pass `--admin-password` / set `EQOA_ADMIN_PASSWORD`.
   (`pip install psutil` or `pip install -e ".[admin]"`), data backup download.
 - **Players** - live game sessions with stage, idle time and reliable-message
   progress; kick a session.
-- **Accounts** - accounts and characters; reset password, delete, reset a stuck
-  character's position.
-- **Settings** - shard name, message of the day (400-byte limit shown), password
-  enforcement. Saved to `data/settings.json`.
+- **Accounts** - accounts and characters; delete, reset a stuck character's
+  position.
+- **Settings** - shard name and message of the day (400-byte limit shown). Saved
+  to `data/settings.json`.
 - **Logs** - live tail of the server log with a filter.
 
 The panel listens on `127.0.0.1` only. Use `--admin-host 0.0.0.0` to reach it from
 other machines on your LAN; never expose it to the internet.
 
-Passwords: the client sends an encoded token, not the password. Each account
-remembers the token from its first login (or first login after a reset); with
-enforcement on, other tokens are refused. Enforcement is off by default until it
-is confirmed the client sends the same token for the same password every time.
+Passwords are not checked yet: the client sends a token that appears to be
+derived from the server's per-connection challenge, so it differs on every login.
+Each login logs one-way fingerprints of the challenge and token to confirm this.
 Run `python -m eqoa_server --help` for options. Point PCSX2 (DNAS-patched ISO) at
 the host; see `docs/research-notes.md`.
 
