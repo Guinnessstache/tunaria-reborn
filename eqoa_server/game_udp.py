@@ -5,6 +5,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .capture_template import SANDSTORM_CAPTURE, memory_dump_core_length, sandstorm_memory_dump_payload
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -489,22 +490,26 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
     ) -> list[bytes]:
         packets = [build_phase3_world_entry(client_endpoint, instance_id, arrival=1)]
         phase3_root = Path(__file__).resolve().parents[2] / "external" / "EQOA_Server_Portable_137" / "base137" / "portable" / "phase3_data"
-        if not phase3_root.is_dir():
-            # The captured phase3 bundle data is not redistributable and lives only
-            # on the operator's machine (see README "external data"). Without it the
-            # server still boots and handles auth / world-list / control packets;
-            # only full world entry needs these bundles.
-            if self.log_packets:
-                print(
-                    "WARNING: phase3_data not found at "
-                    f"{phase3_root} - sending world-entry only "
-                    "(see README 'external data')."
-                )
-            return packets
+        has_phase3_root = phase3_root.is_dir()
         if character is not None:
+            # The captured phase3 bundle data is not redistributable and lives only
+            # on the operator's machine (see README "external data"). Without it,
+            # fall back to the MemoryDump in the repo's Sandstorm capture.
+            if has_phase3_root:
+                captured_payload = _captured_memory_dump_payload(phase3_root / "legacy_bundles")
+                core_length = 73
+            else:
+                captured_payload = sandstorm_memory_dump_payload()
+                core_length = memory_dump_core_length(captured_payload) if captured_payload else 0
+            if captured_payload is None:
+                if self.log_packets:
+                    print(
+                        "WARNING: no MemoryDump template (phase3_data not found at "
+                        f"{phase3_root} and no {SANDSTORM_CAPTURE.name}) - sending world-entry only."
+                    )
+                return packets
             external_id = zlib.crc32(character.name.encode("utf-8")) & 0xFFFFFFFF
-            captured_payload = _captured_memory_dump_payload(phase3_root / "legacy_bundles")
-            memory_payload = build_memory_dump_core(character, server_id=external_id) + captured_payload[73:]
+            memory_payload = build_memory_dump_core(character, server_id=external_id) + captured_payload[core_length:]
             memory_packets, next_arrival, next_message = build_phase3_memory_dump_packets(
                 client_endpoint,
                 instance_id,
@@ -537,6 +542,14 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             )
             return packets
 
+        if not has_phase3_root:
+            if self.log_packets:
+                print(
+                    "WARNING: phase3_data not found at "
+                    f"{phase3_root} - sending world-entry only "
+                    "(see README 'external data')."
+                )
+            return packets
         legacy_dir = phase3_root / "legacy_bundles"
         if legacy_dir.is_dir():
             for bundle_path in sorted(legacy_dir.glob("initial_*.bin")):

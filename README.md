@@ -53,8 +53,9 @@ families, entity records).
 Full world entry replays captured phase3 bundles from
 `external/EQOA_Server_Portable_137/base137/portable/phase3_data/`. That captured
 data is **not redistributable**, so it is git-ignored and must stay on your machine.
-Without it the server still boots and handles auth, world-list, and control packets
-— it just sends world-entry only (you'll see a one-line WARNING).
+Without it the server still boots and handles auth, world-list, and control packets.
+For world entry it falls back to the MemoryDump template reassembled from
+`captures/from_sandstorm.pcapng` (see `eqoa_server/capture_template.py`).
 
 ## Test
 
