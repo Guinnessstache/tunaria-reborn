@@ -704,27 +704,20 @@ def _write_size(size: int) -> bytes:
 
 
 def _rle_zero_encode(data: bytes) -> bytes:
+    """Runs of (0x80 | literal count <= 0x7F, zero count <= 0xFF, literals), zeros first; 0x00 ends."""
     out = bytearray()
-    real_start = 0
-    real_count = 0
-    zero_count = 0
-    for index, value in enumerate(data):
-        if value == 0:
-            if real_count:
-                out.append(real_count | 0x80)
-                out.append(zero_count & 0xFF)
-                out += data[real_start : real_start + real_count]
-                real_count = 0
-                zero_count = 0
-            zero_count += 1
-        else:
-            if real_count == 0:
-                real_start = index
-            real_count += 1
-    out.append(real_count | 0x80)
-    out.append(zero_count & 0xFF)
-    if real_count:
-        out += data[real_start : real_start + real_count]
+    index = 0
+    while index < len(data):
+        zeros = 0
+        while index < len(data) and data[index] == 0 and zeros < 0xFF:
+            zeros += 1
+            index += 1
+        start = index
+        while index < len(data) and data[index] != 0 and index - start < 0x7F:
+            index += 1
+        out.append(0x80 | (index - start))
+        out.append(zeros)
+        out += data[start:index]
     out.append(0)
     return bytes(out)
 

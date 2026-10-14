@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 from eqoa_server.config import ServerConfig
-from eqoa_server.game_udp import GameSession, GameUDPServer, _track_phase3_initial_packets
+from eqoa_server.game_udp import PHASE3_SESSION_ID, GameSession, GameUDPServer, _track_phase3_initial_packets
+from eqoa_server.memory_dump import build_object_update
 from eqoa_server.protocol import PHASE3_MAGIC, parse_udp_packet, rdp_crc, write_varuint
 from eqoa_server.storage import Character, JsonStore
 
@@ -38,10 +39,10 @@ class Phase3SessionTests(unittest.TestCase):
         self.client.settimeout(0.3)
         session = GameSession(ENDPOINT, INSTANCE)
         session.phase3_started = True
-        packets = self.server.build_phase3_initial_packets(
-            ENDPOINT, INSTANCE, Character(character_id=1, account_id=1, name="Magey")
-        )
+        character = Character(character_id=1, account_id=1, name="Magey")
+        packets = self.server.build_phase3_initial_packets(ENDPOINT, INSTANCE, character)
         _track_phase3_initial_packets(session, packets)
+        session.phase3_self_update = build_object_update(character, PHASE3_SESSION_ID)
         self.server.sessions[self.client.getsockname()] = session
 
     def tearDown(self):
@@ -74,6 +75,19 @@ class Phase3SessionTests(unittest.TestCase):
         self.assertEqual(len(replies), 1)
         self.assertEqual(int(replies[0].bundle_flags), 0x23)
         self.assertEqual((replies[0].client_bundle_ack, replies[0].client_message_ack), (3, 1))
+
+    def test_self_object_update_sent_once_in_world_until_channel_acked(self):
+        self.exchange(client_packet(0x03, 1, (30, 20)))
+        update = b"\x40\x04\x01\x00\x00\x00"
+        replies = self.exchange(client_packet(0x00, 2, None, update))
+        channel_zero = [r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20]
+        self.assertEqual(len(channel_zero), 1)
+
+        acked = client_packet(0x10, 3, None, b"\x00\x01\x00\xF8" + update)
+        self.server.sessions[self.client.getsockname()].phase3_last_self_update = 0.0
+        replies = self.exchange(acked)
+        self.assertTrue(self.server.sessions[self.client.getsockname()].phase3_self_update_acked)
+        self.assertFalse([r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20])
 
 
 if __name__ == "__main__":

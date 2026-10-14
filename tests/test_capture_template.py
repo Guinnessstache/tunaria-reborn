@@ -43,7 +43,7 @@ class CaptureTemplateTests(unittest.TestCase):
         finally:
             server.server_close()
         segments = [
-            segment for packet in packets[1:-1] for segment in _memory_dump_segments(_phase3_inner(packet))
+            segment for packet in packets[1:] for segment in _memory_dump_segments(_phase3_inner(packet))
         ]
         self.assertEqual([message for _type, message, _data in segments], list(range(5, 21)))
         self.assertEqual(segments[0][2][:2], struct.pack("<H", 0x000D))

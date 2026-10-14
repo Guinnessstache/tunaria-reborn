@@ -68,6 +68,10 @@ class GameSession:
     phase3_client_message: int = 0
     phase3_last_resend: float = 0.0
     phase3_last_ping: float = 0.0
+    # Own-character object update (channel 0), resent until the client acks the channel.
+    phase3_self_update: bytes | None = None
+    phase3_self_update_acked: bool = False
+    phase3_last_self_update: float = 0.0
 
 
 class GameUDPHandler(socketserver.BaseRequestHandler):
@@ -218,6 +222,10 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     )
                     session.phase3_started = True
                     _track_phase3_initial_packets(session, session.phase3_packets)
+                    if session.selected_character is not None:
+                        session.phase3_self_update = build_object_update(
+                            session.selected_character, PHASE3_SESSION_ID
+                        )
                     sent_phase3 = True
                     for response in session.phase3_packets:
                         sock.sendto(response, self.client_address)
@@ -299,6 +307,28 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
             sent.append(f"update-ack={update.message_number}")
 
         now = time.monotonic()
+        if packet.channel_acks.get(SELF_CHANNEL, 0) >= SELF_UPDATE_SEQUENCE:
+            session.phase3_self_update_acked = True
+        if (
+            session.phase3_self_update is not None
+            and not session.phase3_self_update_acked
+            and update is not None
+            and now - session.phase3_last_self_update >= PHASE3_RESEND_INTERVAL
+        ):
+            session.phase3_last_self_update = now
+            sock.sendto(
+                build_phase3_object_update_packet(
+                    endpoint,
+                    session.instance_id,
+                    _next_phase3_arrival(session),
+                    SELF_CHANNEL,
+                    SELF_UPDATE_SEQUENCE,
+                    session.phase3_self_update,
+                ),
+                self.client_address,
+            )
+            sent.append("self-object-update")
+
         unacked = [body for number, body in session.phase3_reliable if number > session.phase3_acked_message]
         if unacked and now - session.phase3_last_resend >= PHASE3_RESEND_INTERVAL:
             session.phase3_last_resend = now
@@ -344,7 +374,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
             print(
                 f"UDP phase3 {self.client_address[0]}:{self.client_address[1]} "
                 f"bundle={packet.client_bundle_number} flags={int(packet.bundle_flags):#04x} "
-                f"acks_server_msg={packet.client_message_ack} "
+                f"acks_server_msg={packet.client_message_ack} channel_acks={packet.channel_acks or '-'} "
                 f"(server sent up to {session.phase3_next_message - 1}) "
                 f"-> {', '.join(sent) or 'nothing'}"
             )
@@ -553,16 +583,6 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         new_instance=True,
                     )
                 )
-            packets.append(
-                build_phase3_object_update_packet(
-                    client_endpoint,
-                    instance_id,
-                    next_arrival + 1,
-                    0,
-                    0,
-                    build_object_update(character, external_id),
-                )
-            )
             return packets
 
         if not has_phase3_root:
@@ -676,6 +696,10 @@ def _renumber_phase3_reliable_bundle(inner_body: bytes, arrival: int, start_mess
 
 
 PHASE3_RESEND_INTERVAL = 0.5
+# Sandstorm uses the phase3 session id as the player's own object id on channel 0.
+PHASE3_SESSION_ID = read_varuint(b"\xB8" + PHASE3_MAGIC, 0)[0]
+SELF_CHANNEL = 0
+SELF_UPDATE_SEQUENCE = 1
 PHASE3_PING_INTERVAL = 2.0
 
 

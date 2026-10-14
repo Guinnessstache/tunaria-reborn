@@ -129,40 +129,43 @@ def build_memory_dump(character: Character, speed: float = 1.0, server_id: int |
     return writer.bytes()
 
 
-def build_object_update(character: Character, object_id: int) -> bytes:
-    update = bytearray(0xC9)
-    body = update[1:]
-    x, y, z, heading = _spawn_position(character)
+# Own-character object update (channel 0) as the Sandstorm server sent it
+# (captures/from_sandstorm.pcapng). Frontiers expects this 162-byte layout.
+# Model hash, appearance and equipment bytes are kept from the captured character.
+SELF_OBJECT_UPDATE_TEMPLATE = bytes.fromhex(
+    "01d00ac7188220e14a0061e91de76b970000000000000000000001ffc698d870"
+    "000000000000803f0000000000000000000000000000b4306d40000000000000"
+    "000000d669472100000000686552d30000000000000000000000000100040404"
+    "0604040808080d080802020002ff0006000000004b6572627a00000000000000"
+    "0000000000000000000000001b00020100030000ffffffff0018000001007473"
+    "7271"
+)
+OBJECT_ID_OFFSET = 1
+POSITION_OFFSET = 5
+HEADING_BYTE_OFFSET = 15
+HEADING_FLOAT_OFFSET = 54
+NAME_OFFSET = 116
+NAME_LENGTH = 24
+LEVEL_OFFSET = 140
+RACE_OFFSET = 144
+CLASS_OFFSET = 145
 
-    _write_u32(body, 0, object_id)
-    _write_be_i32(body, 4, int(x * 128.0))
-    _write_be_i32(body, 7, int(y * 128.0))
-    _write_be_i32(body, 10, int(z * 128.0))
-    body[4] = 0x82
-    body[14] = _heading_byte(heading)
-    body[16] = character.zone_id & 0xFF
-    _write_u32(body, 27, _model_id(character))
-    _write_f32(body, 35, 1.0)
-    _write_f32(body, 49, y)
-    _write_f32(body, 53, heading)
-    body[57] = 0
-    _write_u32(body, 58, 0xFFFFFFFF)
-    _write_u16(body, 62, 0x0105)
-    for offset in range(98, 110, 2):
-        _write_u16(body, offset, 0xFFFF)
-    for offset in (110, 115, 120, 125, 130, 135, 140):
-        _write_be_u32(body, offset, 0xFFFFFFFF)
-    body[148] = 0xFF
-    name = character.name.encode("ascii", "replace")[:23]
-    body[154 : 154 + len(name)] = name
-    body[178] = max(1, min(character.level, 61))
-    body[179] = 1
-    body[180] = 2
-    body[182] = character.race & 0xFF
-    body[183] = character.klass & 0xFF
-    _write_u32(body, 186, 0xFFFFFFFF)
-    body[196:200] = b"trsq"
-    update[0] = 1
+
+def build_object_update(character: Character, object_id: int) -> bytes:
+    update = bytearray(SELF_OBJECT_UPDATE_TEMPLATE)
+    x, y, z, heading = _spawn_position(character)
+    _write_u32(update, OBJECT_ID_OFFSET, object_id)
+    update[POSITION_OFFSET] = 0x82
+    for index, value in enumerate((x, y, z)):
+        offset = POSITION_OFFSET + 1 + index * 3
+        update[offset : offset + 3] = struct.pack(">i", round(value * 128.0))[1:]
+    update[HEADING_BYTE_OFFSET] = _heading_byte(heading)
+    _write_f32(update, HEADING_FLOAT_OFFSET, heading)
+    name = character.name.encode("ascii", "replace")[: NAME_LENGTH - 1]
+    update[NAME_OFFSET : NAME_OFFSET + NAME_LENGTH] = name.ljust(NAME_LENGTH, b"\x00")
+    update[LEVEL_OFFSET] = max(1, min(character.level, 60))
+    update[RACE_OFFSET] = character.race & 0xFF
+    update[CLASS_OFFSET] = character.klass & 0xFF
     return bytes(update)
 
 
