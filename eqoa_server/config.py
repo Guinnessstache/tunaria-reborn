@@ -28,7 +28,7 @@ class ServerConfig:
         return self.data_path.parent / "settings.json"
 
 
-EDITABLE_SETTINGS = ("shard_name", "motd")
+EDITABLE_SETTINGS = ("shard_name", "motd", "public_host")
 
 
 def load_settings(config: ServerConfig) -> None:

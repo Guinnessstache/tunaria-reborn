@@ -145,6 +145,25 @@ Hosting at home? Forward the same ports on your router to the server.
   ssh -L 8090:localhost:8090 you@<server-ip>
   ```
 
+## Changing the server's IP
+
+Admin panel → **Settings → Network**:
+
+- **Game address** is the IP the game client is told to connect to. Use the
+  buttons to fill in this server's IP.
+- **Server network** switches this server between DHCP and a static IP. After
+  applying you have 2 minutes to confirm (open the panel at the new address and
+  click **Keep these settings**); otherwise the old settings come back by
+  themselves. If the game address was the old IP, it follows the new one.
+
+This is done by a small root helper (`/usr/local/sbin/tunaria-netconfig`, run by
+`tunaria-netconfig.path`) that the install command sets up; the game server
+itself never runs as root. It only handles servers whose netplan config has a
+single wired interface and refuses anything more complex. The previous netplan
+files are kept in `/var/lib/tunaria-netconfig/backup/`. Helper log:
+`journalctl -u tunaria-netconfig`. Updates to the helper itself are installed by
+running the install command again.
+
 ## Day to day
 
 | Task | How |

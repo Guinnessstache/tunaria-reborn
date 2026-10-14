@@ -5,7 +5,8 @@
 #
 # Installs Python and git, creates the "tunaria" service user, downloads the
 # server to /opt/tunaria-reborn/server, writes /etc/tunaria-reborn.env, installs
-# and starts the systemd service, and opens the firewall if ufw is active.
+# and starts the systemd service, installs the network helper the admin panel
+# uses to change this server's IP, and opens the firewall if ufw is active.
 # Running it again updates the code and restarts the service; your settings and
 # data are kept.
 #
@@ -24,7 +25,9 @@ SERVICE_USER="tunaria"
 BASE_DIR="${BASE_DIR:-/opt/tunaria-reborn}"
 APP_DIR="$BASE_DIR/server"
 ENV_FILE="${ENV_FILE:-/etc/tunaria-reborn.env}"
-UNIT_FILE="${UNIT_FILE:-/etc/systemd/system/tunaria-reborn.service}"
+UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
+UNIT_FILE="${UNIT_FILE:-$UNIT_DIR/tunaria-reborn.service}"
+HELPER_PATH="${HELPER_PATH:-/usr/local/sbin/tunaria-netconfig}"
 GAME_PORTS=("9735/tcp" "7000/tcp" "10070/udp" "8080/tcp")
 ADMIN_PORT="8090/tcp"
 
@@ -103,6 +106,23 @@ systemctl daemon-reload
 systemctl enable --quiet tunaria-reborn
 started_at="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart tunaria-reborn
+
+step "Installing the network helper"
+if command -v netplan >/dev/null 2>&1; then
+    # Root runs this helper, so it is a root-owned copy outside the git checkout,
+    # which the unprivileged server (and the admin panel's updater) can write to.
+    install -m 755 -o root -g root "$APP_DIR/deploy/tunaria-netconfig" "$HELPER_PATH"
+    install -m 644 "$APP_DIR/deploy/tunaria-netconfig.path" "$UNIT_DIR/tunaria-netconfig.path"
+    install -m 644 "$APP_DIR/deploy/tunaria-netconfig.service" "$UNIT_DIR/tunaria-netconfig.service"
+    install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BASE_DIR/netconfig"
+    systemctl daemon-reload
+    systemctl enable --quiet tunaria-netconfig.service tunaria-netconfig.path
+    systemctl restart tunaria-netconfig.path
+    systemctl start tunaria-netconfig.service
+    echo "installed; change the server's IP from the admin panel (Settings > Network)"
+else
+    echo "netplan not found; changing the server's IP from the admin panel is not available"
+fi
 
 step "Firewall"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then

@@ -57,6 +57,16 @@ label.field { display: grid; gap: 6px; margin-bottom: 14px; }
 label.field span { font-weight: 600; font-size: 13px; }
 .hint { color: var(--muted); font-size: 12px; }
 .check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 14px; }
+h3.sub { font-size: 14px; margin: 18px 0 6px; }
+h3.sub:first-of-type { margin-top: 0; }
+.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.inline input { flex: 1 1 180px; width: auto; }
+.form-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
+.form-grid label.field { margin: 0; }
+select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--code); color: var(--text); }
+.banner { border: 1px solid var(--warn); border-radius: 8px; padding: 12px 14px; margin: 12px 0; background: var(--chip); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 6px 0 14px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 #log { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; background: var(--code); border: 1px solid var(--line); border-radius: 8px; height: 60vh; overflow: auto; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; }
 #log .t { color: var(--muted); }
 .log-tools { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
@@ -176,6 +186,43 @@ label.field span { font-weight: 600; font-size: 13px; }
             <span class="hint" id="motd-count"></span></label>
           <button class="btn primary" type="submit">Save settings</button>
         </form>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Network</h2>
+        <h3 class="sub">Game address</h3>
+        <p class="hint">The IP address the game client is told to connect to for patching, login and play. Clients on your home network use this server's LAN IP.</p>
+        <div class="inline">
+          <input type="text" id="public-host" inputmode="decimal" placeholder="192.168.1.65">
+          <span id="detected-ips"></span>
+          <button class="btn primary" id="save-public-host">Save</button>
+        </div>
+        <p class="error" id="public-host-error"></p>
+
+        <h3 class="sub">Server network</h3>
+        <p class="hint" id="net-unavailable" hidden></p>
+        <div id="net-panel" hidden>
+          <dl class="kv" id="net-current"></dl>
+          <div class="banner" id="net-pending" hidden>
+            <strong>New network settings applied.</strong>
+            <p id="net-pending-text"></p>
+            <div class="row-actions"><button class="btn primary" id="net-keep">Keep these settings</button><button class="btn" id="net-undo">Undo now</button></div>
+          </div>
+          <form id="net-form">
+            <div class="form-grid">
+              <label class="field"><span>Interface</span><select id="net-interface"></select></label>
+              <label class="field"><span>Address</span><select id="net-method"><option value="dhcp">Automatic (DHCP)</option><option value="static">Static</option></select></label>
+            </div>
+            <div class="form-grid" id="net-static">
+              <label class="field"><span>IP address</span><input type="text" id="net-address" inputmode="decimal" placeholder="192.168.1.65"></label>
+              <label class="field"><span>Prefix length</span><input type="text" id="net-prefix" inputmode="numeric" placeholder="24"><span class="hint">24 = 255.255.255.0</span></label>
+              <label class="field"><span>Gateway (router)</span><input type="text" id="net-gateway" inputmode="decimal" placeholder="192.168.1.1"></label>
+              <label class="field"><span>DNS servers</span><input type="text" id="net-dns" placeholder="1.1.1.1, 8.8.8.8"><span class="hint">Comma separated, up to 3.</span></label>
+            </div>
+            <button class="btn primary" type="submit">Apply network settings</button>
+            <p class="hint">After applying you have <span id="net-window">2 minutes</span> to confirm. If the server is not reachable at its new address, the old settings come back by themselves. Pick an address outside your router's DHCP range so nothing else gets it.</p>
+            <p class="error" id="net-error"></p>
+          </form>
+        </div>
       </section>
       <section class="card" style="margin-top:16px">
         <h2>Admin password</h2>
@@ -311,7 +358,7 @@ $("#tabs").addEventListener("click", (e) => {
   activeTab = tab;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
-  if (tab === "settings") loadSettings();
+  if (tab === "settings") { loadSettings(); loadNetwork(); }
   if (tab === "updates") loadUpdates();
   refresh();
 });
@@ -426,6 +473,89 @@ function renderAccounts(data) {
           </div></td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">No characters.</p>'}
     </div>`).join("") : '<p class="muted">No accounts yet. Log in from the game to create one.</p>';
 }
+
+let netPollTimer = null, netStatus = null;
+async function loadNetwork(refresh = true) {
+  try { renderNetwork(await api(`/api/network?refresh=${refresh ? 1 : 0}`)); }
+  catch (err) { if (err.message !== "login required") $("#net-error").textContent = err.message; }
+}
+function renderNetwork(n) {
+  if (document.activeElement !== $("#public-host")) $("#public-host").value = n.public_host;
+  $("#detected-ips").innerHTML = n.detected.filter((ip) => ip !== n.public_host)
+    .map((ip) => `<button class="btn" type="button" data-use-ip="${esc(ip)}">Use ${esc(ip)}</button>`).join(" ");
+  const status = n.status, state = status && status.state;
+  const unavailable = !n.helper
+    ? (n.platform.startsWith("linux") ? "Changing this server's IP needs the network helper. Run the install command on the server again to add it."
+                                      : "Changing the server's own IP from here is only available on Linux servers installed with the install command.")
+    : !state ? "Waiting for the network helper…"
+    : !state.supported ? `This server's network can't be changed from here: ${state.reason}.` : "";
+  $("#net-unavailable").textContent = unavailable;
+  $("#net-unavailable").hidden = !unavailable;
+  $("#net-panel").hidden = !state || !state.supported;
+  if (!state) return;
+  netStatus = status;
+  const iface = state.interfaces.find((i) => i.name === state.configured[0]) || {};
+  $("#net-current").innerHTML = `<dt>Interface</dt><dd>${esc(iface.name || "?")} ${iface.up ? "" : "(down)"}</dd>
+    <dt>Address</dt><dd>${esc((iface.addresses || []).join(", ") || "none")} <span class="muted">(${state.method === "dhcp" ? "DHCP" : "static"})</span></dd>
+    <dt>Gateway</dt><dd>${esc(state.gateway || "none")}</dd><dt>DNS</dt><dd>${esc(state.dns.join(", ") || "none")}</dd>`;
+  const select = $("#net-interface");
+  if (!select.options.length) {
+    select.innerHTML = state.configured.map((name) => `<option>${esc(name)}</option>`).join("");
+    const [address, prefix] = (iface.addresses && iface.addresses[0] || "/").split("/");
+    $("#net-method").value = state.method || "dhcp";
+    $("#net-address").value = address; $("#net-prefix").value = prefix || "24";
+    $("#net-gateway").value = state.gateway || ""; $("#net-dns").value = (state.dns.filter((d) => d !== "127.0.0.53").join(", ")) || "1.1.1.1, 8.8.8.8";
+    $("#net-static").hidden = $("#net-method").value !== "static";
+  }
+  $("#net-window").textContent = `${Math.round(status.revert_after / 60 * 10) / 10} minutes`;
+  if (status.message && !status.ok) $("#net-error").textContent = status.message;
+  const pending = status.pending;
+  $("#net-pending").hidden = !pending;
+  $("#net-form").hidden = !!pending;
+  clearInterval(netPollTimer);
+  if (pending) {
+    const remainingAtReceipt = pending.deadline - status.updated, received = Date.now();
+    const newUrl = pending.new.method === "static" ? `http://${pending.new.address}:${location.port || 80}/` : null;
+    const tick = () => {
+      const left = Math.max(0, Math.round(remainingAtReceipt - (Date.now() - received) / 1000));
+      $("#net-pending-text").innerHTML = `Keep them within <strong>${left} s</strong> or the previous settings come back. ` +
+        (newUrl && location.host.split(":")[0] !== pending.new.address
+          ? `The server's address changed: open <a href="${esc(newUrl)}">${esc(newUrl)}</a>, sign in, and click <em>Keep these settings</em> there.` : "");
+      if (left === 0) { clearInterval(netPollTimer); setTimeout(() => loadNetwork(false), 3000); }
+    };
+    tick(); netPollTimer = setInterval(tick, 1000);
+  }
+}
+document.addEventListener("click", (e) => {
+  const ip = e.target.dataset && e.target.dataset.useIp;
+  if (ip) $("#public-host").value = ip;
+});
+$("#save-public-host").onclick = async () => {
+  $("#public-host-error").textContent = "";
+  try { renderNetwork(await api("/api/network/public-host", { public_host: $("#public-host").value })); toast("Game address saved"); }
+  catch (err) { if (err.message !== "login required") $("#public-host-error").textContent = err.message; }
+};
+$("#net-method").addEventListener("change", () => { $("#net-static").hidden = $("#net-method").value !== "static"; });
+$("#net-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("#net-error").textContent = "";
+  const config = { interface: $("#net-interface").value, method: $("#net-method").value, address: $("#net-address").value,
+    prefix: $("#net-prefix").value, gateway: $("#net-gateway").value, dns: $("#net-dns").value.split(",") };
+  const summary = config.method === "dhcp" ? "switch to DHCP" : `use ${config.address}/${config.prefix} via ${config.gateway}`;
+  if (!confirm(`Change this server's network to ${summary}? Players may be disconnected. If you don't confirm within the time limit, it changes back by itself.`)) return;
+  try { renderNetwork(await api("/api/network/apply", { config })); }
+  catch (err) {
+    if (err.message === "login required") return;
+    // The address may have changed under us before the reply arrived.
+    $("#net-error").textContent = err.name === "TypeError" && config.method === "static"
+      ? `The server stopped answering here, probably because its address changed. Open http://${config.address}:${location.port || 80}/ and confirm there.` : err.message;
+  }
+});
+$("#net-keep").onclick = async () => {
+  try { renderNetwork(await api("/api/network/confirm", {})); toast("Network settings kept"); } catch (err) { if (err.message !== "login required") toast(err.message); }
+};
+$("#net-undo").onclick = async () => {
+  try { renderNetwork(await api("/api/network/revert", {})); toast("Previous network settings restored"); } catch (err) { if (err.message !== "login required") toast(err.message); }
+};
 
 async function loadSettings() {
   const s = await api("/api/settings");

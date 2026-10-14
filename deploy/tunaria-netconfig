@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""Root helper that lets the Tunaria Reborn admin panel change this server's IP.
+
+The game server runs unprivileged. To change the network it writes a request to
+/opt/tunaria-reborn/netconfig/request.json; a systemd path unit then runs this
+helper as root, which validates the request, rewrites the netplan config and
+reports back in /run/tunaria-netconfig/status.json.
+
+Every change is undone automatically after REVERT_AFTER seconds unless it is
+confirmed (the admin panel's "Keep these settings" button), so a wrong address
+cannot lock the server out.
+
+Only simple servers are supported: netplan with exactly one wired interface and
+nothing else (no Wi-Fi, bonds, bridges or VLANs). Anything else is refused.
+
+This file is installed root-owned to /usr/local/sbin by deploy/install.sh; it is
+deliberately not run from the git checkout, which the unprivileged server can
+write to.
+"""
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+ROOT = os.environ.get("TUNARIA_NETCONFIG_ROOT", "")  # tests only: prefix for every path
+REQUEST_PATH = ROOT + "/opt/tunaria-reborn/netconfig/request.json"
+STATUS_PATH = ROOT + "/run/tunaria-netconfig/status.json"
+STATE_DIR = ROOT + "/var/lib/tunaria-netconfig"
+PENDING_PATH = STATE_DIR + "/pending.json"
+NETPLAN_DIR = ROOT + "/etc/netplan"
+OUR_NETPLAN = NETPLAN_DIR + "/90-tunaria.yaml"
+CLOUD_CFG_DIR = ROOT + "/etc/cloud/cloud.cfg.d"
+OUR_CLOUD_CFG = CLOUD_CFG_DIR + "/99-tunaria-disable-network-config.cfg"
+REVERT_UNIT = "tunaria-netconfig-revert"
+REVERT_AFTER = int(os.environ.get("TUNARIA_NETCONFIG_REVERT_AFTER", "120"))
+MAX_REQUEST = 8192
+OTHER_NETWORK_TYPES = ("wifis", "bonds", "bridges", "vlans", "tunnels", "modems", "vrfs")
+INTERFACE_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+
+
+class RefusedError(Exception):
+    pass
+
+
+# -- commands (swappable in tests) --------------------------------------------
+def _command(name: str) -> list[str]:
+    override = os.environ.get(f"TUNARIA_CMD_{name.upper().replace('-', '_')}")
+    return [override] if override else [name]
+
+
+def run(name: str, *args: str, check: bool = True) -> str:
+    result = subprocess.run(_command(name) + list(args), capture_output=True, text=True, timeout=60)
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise RefusedError(f"{name} {' '.join(args)} failed: {detail[-1] if detail else result.returncode}")
+    return result.stdout
+
+
+# -- reading the current state -------------------------------------------------
+def netplan_get(key: str) -> str:
+    return run("netplan", "get", key, check=False).strip()
+
+
+def configured_ethernets() -> list[str]:
+    output = netplan_get("ethernets")
+    if output in ("", "null", "{}"):
+        return []
+    return [line[:-1].strip('"') for line in output.splitlines() if line and not line[0].isspace() and line.endswith(":")]
+
+
+def current_state() -> dict:
+    interfaces = []
+    for entry in json.loads(run("ip", "-j", "-4", "addr", "show") or "[]"):
+        name = entry.get("ifname", "")
+        if name == "lo":
+            continue
+        addresses = [f"{a['local']}/{a['prefixlen']}" for a in entry.get("addr_info", []) if "local" in a]
+        interfaces.append({"name": name, "addresses": addresses, "up": "UP" in entry.get("flags", [])})
+    gateway = None
+    for route in json.loads(run("ip", "-j", "-4", "route", "show", "default") or "[]"):
+        gateway = route.get("gateway")
+        if gateway:
+            break
+    dns = []
+    for path in ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"):
+        try:
+            with open(ROOT + path, encoding="utf-8") as handle:
+                dns = [line.split()[1] for line in handle if line.startswith("nameserver") and len(line.split()) > 1]
+        except OSError:
+            continue
+        if dns and dns != ["127.0.0.53"]:
+            break
+    state: dict = {"interfaces": interfaces, "gateway": gateway, "dns": dns, "configured": [],
+                   "supported": True, "reason": None, "method": None}
+    try:
+        ethernets = configured_ethernets()
+        others = [kind for kind in OTHER_NETWORK_TYPES if netplan_get(kind) not in ("", "null", "{}")]
+    except FileNotFoundError:
+        return {**state, "supported": False, "reason": "netplan is not installed on this server"}
+    state["configured"] = ethernets
+    if others:
+        state.update(supported=False, reason=f"netplan also configures {', '.join(others)}; change the network by hand")
+    elif len(ethernets) != 1:
+        state.update(supported=False, reason=(
+            "netplan configures no wired interface" if not ethernets
+            else f"netplan configures {len(ethernets)} wired interfaces ({', '.join(ethernets)}); change the network by hand"))
+    else:
+        dhcp = netplan_get(f"ethernets.{ethernets[0]}.dhcp4")
+        state["method"] = "dhcp" if dhcp in ("true", "yes") else "static"
+    return state
+
+
+# -- validation ----------------------------------------------------------------
+def validate(config: dict, state: dict) -> dict:
+    interface = str(config.get("interface", ""))
+    if not INTERFACE_NAME.match(interface) or interface not in state["configured"]:
+        raise RefusedError(f"unknown interface {interface!r}")
+    method = config.get("method")
+    if method == "dhcp":
+        return {"interface": interface, "method": "dhcp"}
+    if method != "static":
+        raise RefusedError("method must be dhcp or static")
+    try:
+        network = ipaddress.IPv4Interface(f"{config.get('address')}/{int(config.get('prefix', 0))}")
+        gateway = ipaddress.IPv4Address(str(config.get("gateway")))
+        dns = [ipaddress.IPv4Address(str(server)) for server in config.get("dns") or []]
+    except (ValueError, TypeError) as exc:
+        raise RefusedError(f"invalid address: {exc}") from None
+    if not 8 <= network.network.prefixlen <= 30:
+        raise RefusedError("prefix must be between 8 and 30")
+    address = network.ip
+    if address in (network.network.network_address, network.network.broadcast_address):
+        raise RefusedError(f"{address} is the network or broadcast address of {network.network}")
+    if address.is_loopback or address.is_multicast or address.is_unspecified:
+        raise RefusedError(f"{address} cannot be used as a server address")
+    if gateway not in network.network or gateway == address:
+        raise RefusedError(f"gateway {gateway} must be another address in {network.network}")
+    if not 1 <= len(dns) <= 3:
+        raise RefusedError("give between 1 and 3 DNS servers")
+    return {"interface": interface, "method": "static", "address": str(address),
+            "prefix": network.network.prefixlen, "gateway": str(gateway), "dns": [str(d) for d in dns]}
+
+
+def netplan_yaml(config: dict, backup: str) -> str:
+    lines = [
+        "# Written by the Tunaria Reborn admin panel (tunaria-netconfig).",
+        f"# The previous netplan files are saved in {backup}",
+        "network:",
+        "  version: 2",
+        "  ethernets:",
+        f"    {config['interface']}:",
+    ]
+    if config["method"] == "dhcp":
+        lines.append("      dhcp4: true")
+    else:
+        lines += [
+            "      dhcp4: false",
+            f"      addresses: [{config['address']}/{config['prefix']}]",
+            "      routes:",
+            "        - to: 0.0.0.0/0",
+            f"          via: {config['gateway']}",
+            "      nameservers:",
+            f"        addresses: [{', '.join(config['dns'])}]",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+# -- state files ---------------------------------------------------------------
+def _write_json(path: str, payload: dict, mode: int = 0o644) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    os.replace(tmp, path)
+
+
+def _read_json(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def read_request() -> dict | None:
+    """Read and remove the request without following links; the directory is writable by the server user."""
+    try:
+        fd = os.open(REQUEST_PATH, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_REQUEST:
+            raise RefusedError("request is not a small regular file")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(MAX_REQUEST + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(REQUEST_PATH)
+        except FileNotFoundError:
+            pass
+    request = json.loads(data.decode("utf-8"))
+    if not isinstance(request, dict):
+        raise RefusedError("request must be a JSON object")
+    return request
+
+
+def write_status(request_id: str | None, ok: bool, message: str) -> None:
+    try:
+        state = current_state()
+    except (RefusedError, ValueError, OSError) as exc:
+        state = {"supported": False, "reason": f"could not read the network state: {exc}"}
+    pending = _read_json(PENDING_PATH)
+    _write_json(STATUS_PATH, {
+        "updated": time.time(), "request_id": request_id, "ok": ok, "message": message,
+        "state": state, "pending": pending, "revert_after": REVERT_AFTER,
+    })
+
+
+# -- actions -------------------------------------------------------------------
+def apply(config: dict, request_id: str) -> str:
+    if _read_json(PENDING_PATH):
+        raise RefusedError("a network change is already waiting to be kept or undone")
+    state = current_state()
+    if not state["supported"]:
+        raise RefusedError(state["reason"])
+    new = validate(config, state)
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = os.path.join(STATE_DIR, "backup", stamp)
+    os.makedirs(backup, exist_ok=True)
+    moved = []
+    for name in sorted(os.listdir(NETPLAN_DIR)):
+        if name.endswith(".yaml"):
+            shutil.move(os.path.join(NETPLAN_DIR, name), os.path.join(backup, name))
+            moved.append(name)
+    fd = os.open(OUR_NETPLAN, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(netplan_yaml(new, backup))
+    try:
+        run("netplan", "generate")
+    except RefusedError:
+        os.unlink(OUR_NETPLAN)
+        for name in moved:
+            shutil.move(os.path.join(backup, name), os.path.join(NETPLAN_DIR, name))
+        raise
+    created_cloud_cfg = False
+    if os.path.isdir(CLOUD_CFG_DIR) and not os.path.exists(OUR_CLOUD_CFG):
+        with open(OUR_CLOUD_CFG, "w", encoding="utf-8") as handle:
+            handle.write("# Written by tunaria-netconfig so cloud-init keeps the admin panel's network settings.\n"
+                         "network: {config: disabled}\n")
+        created_cloud_cfg = True
+
+    deadline = time.time() + REVERT_AFTER
+    _write_json(PENDING_PATH, {
+        "id": request_id, "deadline": deadline, "backup": backup, "moved": moved,
+        "created_cloud_cfg": created_cloud_cfg, "new": new,
+        "old": {"method": state["method"], "interfaces": state["interfaces"], "gateway": state["gateway"]},
+    }, mode=0o600)
+    run("systemctl", "stop", f"{REVERT_UNIT}.timer", check=False)
+    run("systemd-run", f"--unit={REVERT_UNIT}", f"--on-active={REVERT_AFTER}",
+        sys.executable, os.path.abspath(__file__), "revert-pending")
+    write_status(request_id, True, "Applying the new network settings")
+    run("netplan", "apply")
+    return f"Applied. Keep the new settings within {REVERT_AFTER} seconds or they are undone."
+
+
+def confirm(request_id: str) -> str:
+    pending = _read_json(PENDING_PATH)
+    if not pending:
+        raise RefusedError("there is no network change waiting to be kept")
+    run("systemctl", "stop", f"{REVERT_UNIT}.timer", check=False)
+    os.unlink(PENDING_PATH)
+    return "Kept the new network settings."
+
+
+def revert(request_id: str | None) -> str:
+    pending = _read_json(PENDING_PATH)
+    if not pending:
+        raise RefusedError("there is no network change to undo")
+    run("systemctl", "stop", f"{REVERT_UNIT}.timer", check=False)
+    if os.path.exists(OUR_NETPLAN):
+        os.unlink(OUR_NETPLAN)
+    for name in pending["moved"]:
+        source = os.path.join(pending["backup"], name)
+        if os.path.exists(source):
+            shutil.move(source, os.path.join(NETPLAN_DIR, name))
+    if pending.get("created_cloud_cfg") and os.path.exists(OUR_CLOUD_CFG):
+        os.unlink(OUR_CLOUD_CFG)
+    os.unlink(PENDING_PATH)
+    run("netplan", "apply")
+    return "Undid the network change; the previous settings are back."
+
+
+def process() -> int:
+    """Handle one request from the admin panel (run by tunaria-netconfig.service)."""
+    request_id = None
+    try:
+        request = read_request()
+        if request is None:
+            write_status(None, True, "")
+            return 0
+        request_id = str(request.get("id", ""))[:64]
+        action = request.get("action")
+        if action == "status":
+            message = ""
+        elif action == "apply":
+            message = apply(request.get("config") or {}, request_id)
+        elif action == "confirm":
+            message = confirm(request_id)
+        elif action == "revert":
+            message = revert(request_id)
+        else:
+            raise RefusedError(f"unknown action {action!r}")
+        write_status(request_id, True, message)
+        return 0
+    except (RefusedError, ValueError, OSError) as exc:
+        write_status(request_id, False, str(exc))
+        return 0
+
+
+def revert_pending() -> int:
+    """Run by the revert timer when a change was not kept in time."""
+    try:
+        message = revert(None)
+        write_status(None, True, f"No confirmation within {REVERT_AFTER} seconds. {message}")
+    except RefusedError:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    command = sys.argv[1] if len(sys.argv) > 1 else "process"
+    if command == "process":
+        sys.exit(process())
+    if command == "revert-pending":
+        sys.exit(revert_pending())
+    print("usage: tunaria-netconfig [process|revert-pending]", file=sys.stderr)
+    sys.exit(2)

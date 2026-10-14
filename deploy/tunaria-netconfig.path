@@ -1,0 +1,11 @@
+# Runs tunaria-netconfig.service whenever the admin panel leaves a network request.
+# Installed by deploy/install.sh.
+[Unit]
+Description=Tunaria Reborn network settings requests
+
+[Path]
+PathExists=/opt/tunaria-reborn/netconfig/request.json
+Unit=tunaria-netconfig.service
+
+[Install]
+WantedBy=multi-user.target

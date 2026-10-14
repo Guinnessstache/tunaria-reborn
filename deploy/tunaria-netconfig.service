@@ -1,0 +1,18 @@
+# Applies network settings requested from the Tunaria Reborn admin panel.
+# Runs as root; the helper is a root-owned copy in /usr/local/sbin, not the git
+# checkout. Installed by deploy/install.sh.
+[Unit]
+Description=Tunaria Reborn network settings helper
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/tunaria-netconfig process
+RuntimeDirectory=tunaria-netconfig
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0755
+StateDirectory=tunaria-netconfig
+StateDirectoryMode=0700
+
+[Install]
+# Also run once at boot so /run/tunaria-netconfig/status.json exists after a restart.
+WantedBy=multi-user.target

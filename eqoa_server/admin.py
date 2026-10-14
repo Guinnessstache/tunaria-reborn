@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .config import ServerConfig, save_settings
+from .netconfig import NetworkError, NetworkHelper, local_ipv4_addresses, validate_network_config, validate_public_host
 from .patch_tcp import MOTD_BODY_SIZE, default_motd_text
 from .services import LogBuffer, ServiceManager
 from .storage import JsonStore
@@ -176,6 +177,7 @@ class AdminContext:
     credentials: AdminCredentials
     shutdown_event: threading.Event
     updater: Updater | None = None
+    network: NetworkHelper = field(default_factory=NetworkHelper)
     started_at: float = field(default_factory=time.time)
     exit_code: int = 0
 
@@ -270,7 +272,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/settings": self._settings,
             "/api/update": self._update_status,
         }
-        if url.path in routes:
+        if url.path == "/api/network":
+            self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
+        elif url.path in routes:
             self._json(routes[url.path]())
         elif url.path == "/api/logs":
             after = int((query.get("after") or ["0"])[0])
@@ -310,7 +314,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._dispatch(parts, body)
         except (KeyError, ValueError) as exc:
             self._error(400, f"bad request: {exc}")
-        except (CredentialError, UpdateError) as exc:
+        except (CredentialError, UpdateError, NetworkError) as exc:
             self._error(409, str(exc))
 
     def _dispatch(self, parts: list[str], body: dict) -> None:
@@ -323,6 +327,28 @@ class AdminHandler(BaseHTTPRequestHandler):
             print("ADMIN password changed")
             # Changing the password invalidates every session, so hand this one a fresh cookie.
             self._json({"ok": True}, headers=self._session_cookie(ctx.credentials.issue_session()))
+        elif parts == ["network", "public-host"]:
+            ctx.config.public_host = validate_public_host(str(body.get("public_host", "")))
+            save_settings(ctx.config)
+            print(f"ADMIN game address set to {ctx.config.public_host}")
+            self._json(self._network_status(refresh=False))
+        elif parts == ["network", "apply"]:
+            config = validate_network_config(body.get("config") or {})
+            print(f"ADMIN network change requested: {config}")
+            status = ctx.network.send("apply", config)
+            print(f"ADMIN network change: {status.get('message')}")
+            self._json(self._network_status(refresh=False, status=status))
+        elif parts == ["network", "confirm"]:
+            pending = (ctx.network.status() or {}).get("pending") or {}
+            status = ctx.network.send("confirm")
+            if status.get("ok"):
+                self._follow_new_address(pending)
+            print(f"ADMIN network change: {status.get('message')}")
+            self._json(self._network_status(refresh=False, status=status))
+        elif parts == ["network", "revert"]:
+            status = ctx.network.send("revert")
+            print(f"ADMIN network change: {status.get('message')}")
+            self._json(self._network_status(refresh=False, status=status))
         elif parts == ["update", "check"]:
             self._json(self._update_status(fetch=True))
         elif parts == ["update", "apply"]:
@@ -394,6 +420,39 @@ class AdminHandler(BaseHTTPRequestHandler):
             {"ok": True, "must_change_password": credentials.must_change},
             headers=self._session_cookie(credentials.issue_session()),
         )
+
+    def _network_status(self, refresh: bool = True, status: dict | None = None) -> dict:
+        network = self.ctx.network
+        available = network.available()
+        if available and refresh and status is None:
+            try:
+                status = network.send("status", timeout=4.0)
+            except NetworkError:
+                status = None
+        if available and status is None:
+            status = network.status()
+        return {
+            "public_host": self.ctx.config.public_host,
+            "detected": local_ipv4_addresses(),
+            "helper": available,
+            "platform": sys.platform,
+            "status": status,
+        }
+
+    def _follow_new_address(self, pending: dict) -> None:
+        """If the game address was this server's old IP, move it to the new static IP."""
+        new = pending.get("new") or {}
+        if new.get("method") != "static":
+            return
+        old_addresses = {
+            address.split("/")[0]
+            for interface in (pending.get("old") or {}).get("interfaces", [])
+            for address in interface.get("addresses", [])
+        }
+        if self.ctx.config.public_host in old_addresses and new.get("address") != self.ctx.config.public_host:
+            self.ctx.config.public_host = new["address"]
+            save_settings(self.ctx.config)
+            print(f"ADMIN game address moved to the new server IP {new['address']}")
 
     def _update_status(self, fetch: bool = False) -> dict:
         updater = self.ctx.updater
