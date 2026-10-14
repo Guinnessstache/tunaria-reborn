@@ -86,6 +86,20 @@ label.field span { font-weight: 600; font-size: 13px; }
   </section>
 </div>
 
+<div id="force-change" hidden>
+  <section class="card" style="max-width:420px;margin:12vh auto">
+    <h2>Choose a new admin password</h2>
+    <p class="hint">You signed in with the password generated at first start. Pick your own before continuing.</p>
+    <form id="force-form">
+      <label class="field"><span>Current (generated) password</span><input type="password" id="force-current" autocomplete="current-password"></label>
+      <label class="field"><span>New password</span><input type="password" id="force-new" autocomplete="new-password" minlength="8"></label>
+      <label class="field"><span>Confirm new password</span><input type="password" id="force-confirm" autocomplete="new-password"></label>
+      <button class="btn primary" type="submit">Save and continue</button>
+      <p class="error" id="force-error"></p>
+    </form>
+  </section>
+</div>
+
 <div id="app" hidden>
   <header>
     <h1>EQOA Admin</h1><span class="shard" id="shard"></span>
@@ -95,6 +109,7 @@ label.field span { font-weight: 600; font-size: 13px; }
       <button data-tab="accounts">Accounts</button>
       <button data-tab="settings">Settings</button>
       <button data-tab="logs">Logs</button>
+      <button data-tab="updates">Updates</button>
     </nav>
     <span class="spacer"></span>
     <button class="btn" id="logout">Sign out</button>
@@ -162,6 +177,18 @@ label.field span { font-weight: 600; font-size: 13px; }
           <button class="btn primary" type="submit">Save settings</button>
         </form>
       </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Admin password</h2>
+        <p class="hint" id="password-locked" hidden>The admin password is set with <code>--admin-password</code> or <code>EQOA_ADMIN_PASSWORD</code>. Change it there and restart the server.</p>
+        <form id="password-form">
+          <label class="field"><span>Current password</span><input type="password" id="pw-current" autocomplete="current-password"></label>
+          <label class="field"><span>New password</span><input type="password" id="pw-new" autocomplete="new-password" minlength="8">
+            <span class="hint">At least 8 characters.</span></label>
+          <label class="field"><span>Confirm new password</span><input type="password" id="pw-confirm" autocomplete="new-password"></label>
+          <button class="btn primary" type="submit">Change password</button>
+          <p class="error" id="pw-error"></p>
+        </form>
+      </section>
     </div>
 
     <div data-panel="logs" hidden>
@@ -175,6 +202,28 @@ label.field span { font-weight: 600; font-size: 13px; }
           <span class="muted" id="log-count"></span>
         </div>
         <div id="log"></div>
+      </section>
+    </div>
+    <div data-panel="updates" hidden>
+      <section class="card">
+        <h2>Version <span class="actions"><button class="btn" id="update-check">Check for updates</button></span></h2>
+        <div id="update-version" class="muted">Loading…</div>
+        <p class="error" id="update-error"></p>
+        <div id="update-launcher" class="hint" hidden></div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Available update <span class="actions">
+          <button class="btn primary" id="update-apply" disabled>Update &amp; restart</button>
+        </span></h2>
+        <div id="update-incoming" class="muted">Check for updates to see new commits.</div>
+        <p class="hint">Updating fast-forwards to the latest commit on this branch, runs the test suite on it, and rolls back automatically if the tests fail. Players are disconnected while the server restarts.</p>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Last result <span class="actions">
+          <button class="btn" id="update-rollback" disabled>Roll back to previous version</button>
+          <button class="btn" id="restart">Restart server</button>
+        </span></h2>
+        <div id="update-result" class="muted">No update has run yet.</div>
       </section>
     </div>
   </main>
@@ -209,17 +258,51 @@ async function api(path, body) {
   const res = await fetch(path, { credentials: "same-origin", ...opts });
   if (res.status === 401 && path !== "/api/login") { showLogin(); throw new Error("login required"); }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 403 && data.error === "password change required") { showForceChange(); throw new Error("login required"); }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
 
-function showLogin() { $("#app").hidden = true; $("#login").hidden = false; clearInterval(pollTimer); $("#password").focus(); }
-function showApp() { $("#login").hidden = true; $("#app").hidden = false; refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 2000); }
+function showOnly(id) { for (const el of ["#login", "#force-change", "#app"]) $(el).hidden = el !== id; }
+function showLogin() { showOnly("#login"); clearInterval(pollTimer); $("#password").focus(); }
+function showForceChange(current = "") { showOnly("#force-change"); clearInterval(pollTimer); $("#force-current").value = current; $(current ? "#force-new" : "#force-current").focus(); }
+function showApp() { showOnly("#app"); refresh(); clearInterval(pollTimer); pollTimer = setInterval(refresh, 2000); }
+
+function applySession(s) {
+  $("#password-form").hidden = !s.can_change_password;
+  $("#password-locked").hidden = s.can_change_password;
+}
 
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault(); $("#login-error").textContent = "";
-  try { await api("/api/login", { password: $("#password").value }); $("#password").value = ""; showApp(); }
-  catch (err) { $("#login-error").textContent = err.message; }
+  const password = $("#password").value;
+  try {
+    const res = await api("/api/login", { password });
+    $("#password").value = "";
+    applySession(await api("/api/session"));
+    res.must_change_password ? showForceChange(password) : showApp();
+  } catch (err) { $("#login-error").textContent = err.message; }
+});
+
+async function changePassword(current, next, confirmValue) {
+  if (next !== confirmValue) throw new Error("The new passwords do not match.");
+  await api("/api/admin-password", { current, new: next });
+}
+$("#force-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("#force-error").textContent = "";
+  try {
+    await changePassword($("#force-current").value, $("#force-new").value, $("#force-confirm").value);
+    for (const id of ["#force-current", "#force-new", "#force-confirm"]) $(id).value = "";
+    toast("Password changed"); showApp();
+  } catch (err) { $("#force-error").textContent = err.message; }
+});
+$("#password-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); $("#pw-error").textContent = "";
+  try {
+    await changePassword($("#pw-current").value, $("#pw-new").value, $("#pw-confirm").value);
+    for (const id of ["#pw-current", "#pw-new", "#pw-confirm"]) $(id).value = "";
+    toast("Password changed");
+  } catch (err) { $("#pw-error").textContent = err.message; }
 });
 $("#logout").onclick = async () => { await api("/api/logout", {}).catch(() => {}); showLogin(); };
 
@@ -229,6 +312,7 @@ $("#tabs").addEventListener("click", (e) => {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
   if (tab === "settings") loadSettings();
+  if (tab === "updates") loadUpdates();
   refresh();
 });
 
@@ -385,7 +469,64 @@ $("#log-filter").addEventListener("input", renderLogs);
 $("#log-pause").onclick = (e) => { logPaused = !logPaused; e.target.textContent = logPaused ? "Resume" : "Pause"; };
 $("#log-clear").onclick = () => { logLines = []; renderLogs(); };
 
-api("/api/session").then((s) => s.authenticated ? showApp() : showLogin()).catch(showLogin);
+function renderUpdates(u) {
+  $("#update-error").textContent = u.error || (u.available ? "" : u.reason || "");
+  if (!u.available) { $("#update-version").textContent = "Updates are not available for this install."; $("#update-apply").disabled = true; return; }
+  const head = u.head;
+  $("#update-version").innerHTML = `<strong>${esc(u.branch)}</strong> at <code>${esc(head.commit)}</code> ${esc(head.subject)}
+    <div class="hint">${esc(date(head.time))}${u.upstream ? ` · tracking ${esc(u.upstream)}` : " · no upstream branch"}${u.last_check ? ` · last checked ${esc(date(u.last_check))}` : ""}</div>
+    ${u.dirty.length ? `<p class="error">Local changes to ${u.dirty.length} tracked file(s) block updating: ${esc(u.dirty.slice(0, 5).join(", "))}</p>` : ""}
+    ${u.ahead ? `<p class="error">This copy has ${u.ahead} commit(s) that are not on ${esc(u.upstream)}; updating is blocked.</p>` : ""}`;
+  const launcher = $("#update-launcher");
+  launcher.hidden = u.launcher;
+  launcher.innerHTML = "This server was started directly, so it cannot restart itself. Updating still downloads and tests the code, but you will need to restart it from the console. Start it with <code>start_server.bat</code> (Windows) or <code>./start_server.sh</code> to restart automatically.";
+  $("#update-incoming").innerHTML = u.behind
+    ? `<p><strong>${u.behind} new commit(s)</strong></p><ul>${u.incoming.map((c) => `<li><code>${esc(c.commit)}</code> ${esc(c.subject)} <span class="muted">· ${esc(c.author)}, ${esc(date(c.time))}</span></li>`).join("")}</ul>`
+    : "You are up to date with the last check.";
+  $("#update-apply").disabled = !u.behind || u.dirty.length > 0 || u.ahead > 0;
+  $("#update-apply").textContent = u.launcher ? "Update & restart" : "Update (restart manually)";
+  $("#update-rollback").disabled = !u.previous;
+  $("#restart").disabled = !u.launcher;
+  const r = u.last_result;
+  $("#update-result").innerHTML = r ? `<p class="${r.ok ? "" : "error"}">${esc(r.message)} <span class="muted">(${esc(date(r.time))})</span></p>
+    ${r.output ? `<details><summary>Test output</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(r.output)}</pre></details>` : ""}` : "No update has run yet.";
+}
+async function loadUpdates(fetchRemote = false) {
+  try { renderUpdates(fetchRemote ? await api("/api/update/check", {}) : await api("/api/update")); }
+  catch (err) { if (err.message !== "login required") $("#update-error").textContent = err.message; }
+}
+async function waitForRestart() {
+  toast("Restarting the server…"); clearInterval(pollTimer);
+  await new Promise((r) => setTimeout(r, 2500));
+  for (let i = 0; i < 60; i++) {
+    try { const s = await (await fetch("/api/session", { credentials: "same-origin" })).json(); if (s) { toast("Server is back"); s.authenticated ? showApp() : showLogin(); loadUpdates(); return; } }
+    catch { /* still restarting */ }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  toast("The server did not come back; check the console.");
+}
+$("#update-check").onclick = async (e) => { e.target.disabled = true; e.target.textContent = "Checking…"; await loadUpdates(true); e.target.disabled = false; e.target.textContent = "Check for updates"; };
+async function runUpdate(path, label, button) {
+  button.disabled = true; const original = button.textContent; button.textContent = `${label}…`;
+  $("#update-result").textContent = path.endsWith("apply") ? "Downloading and running the tests. This can take a minute…" : "Working…";
+  try {
+    const res = await api(path, {});
+    toast(res.message);
+    if (res.restarting) await waitForRestart(); else loadUpdates();
+  } catch (err) { if (err.message !== "login required") { toast(err.message); $("#update-result").textContent = err.message; } }
+  finally { button.textContent = original; }
+}
+$("#update-apply").onclick = (e) => { if (confirm("Update to the latest version? Players will be disconnected while the server restarts.")) runUpdate("/api/update/apply", "Updating", e.target); };
+$("#update-rollback").onclick = (e) => { if (confirm("Roll back to the version that was running before the last update?")) runUpdate("/api/update/rollback", "Rolling back", e.target); };
+$("#restart").onclick = async () => {
+  if (!confirm("Restart the server? Players will be disconnected.")) return;
+  try { await api("/api/restart", {}); await waitForRestart(); } catch (err) { if (err.message !== "login required") toast(err.message); }
+};
+
+api("/api/session").then((s) => {
+  applySession(s);
+  if (!s.authenticated) showLogin(); else if (s.must_change_password) showForceChange(); else showApp();
+}).catch(showLogin);
 </script>
 </body>
 </html>

@@ -6,6 +6,7 @@ services, so it stays up while the game services are stopped or restarted.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -14,7 +15,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +24,7 @@ from .config import ServerConfig, save_settings
 from .patch_tcp import MOTD_BODY_SIZE, default_motd_text
 from .services import LogBuffer, ServiceManager
 from .storage import JsonStore
+from .updater import RESTART_EXIT_CODE, Updater, UpdateError, running_under_launcher
 
 try:
     import psutil  # optional: CPU / memory figures
@@ -36,39 +37,120 @@ CSRF_HEADER = "X-EQOA-Admin"
 SESSION_LIFETIME = 12 * 3600
 PBKDF2_ROUNDS = 200_000
 ONLINE_WINDOW = 60.0
+MIN_PASSWORD_LENGTH = 8
 
 
 def _hash_password(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS).hex()
 
 
+class CredentialError(Exception):
+    pass
+
+
 @dataclass(slots=True)
 class AdminCredentials:
-    """Admin password: from --admin-password / EQOA_ADMIN_PASSWORD, else generated once into data/admin.json."""
+    """Admin password and signed sessions.
+
+    The password comes from --admin-password / EQOA_ADMIN_PASSWORD, or is generated
+    on first run and stored hashed in data/admin.json. A generated password must be
+    changed at first sign-in. Sessions are HMAC-signed cookies, so they survive a
+    server restart (e.g. after an update) and are invalidated by a password change.
+    """
 
     salt: bytes
     digest: str
+    session_key: bytes
+    path: Path | None = None
+    explicit: bool = False
+    must_change: bool = False
+    generation: int = 0
     generated_password: str | None = None
+    revoked: set[str] = field(default_factory=set)
 
     @classmethod
     def load(cls, config: ServerConfig) -> "AdminCredentials":
+        data_dir = config.data_path.parent
+        data_dir.mkdir(parents=True, exist_ok=True)
+        key_path = data_dir / "admin_session.key"
+        if not key_path.is_file():
+            key_path.write_bytes(os.urandom(32))
+        session_key = key_path.read_bytes()
+
         explicit = config.admin_password or os.environ.get("EQOA_ADMIN_PASSWORD")
         if explicit:
             salt = os.urandom(16)
-            return cls(salt, _hash_password(explicit, salt))
-        path = config.data_path.parent / "admin.json"
+            return cls(salt, _hash_password(explicit, salt), session_key, explicit=True)
+        path = data_dir / "admin.json"
         if path.is_file():
             saved = json.loads(path.read_text(encoding="utf-8"))
-            return cls(bytes.fromhex(saved["salt"]), saved["digest"])
+            return cls(
+                bytes.fromhex(saved["salt"]), saved["digest"], session_key, path=path,
+                must_change=saved.get("must_change", False), generation=saved.get("generation", 0),
+            )
         password = secrets.token_urlsafe(9)
         salt = os.urandom(16)
-        credentials = cls(salt, _hash_password(password, salt), generated_password=password)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"salt": salt.hex(), "digest": credentials.digest}), encoding="utf-8")
+        credentials = cls(
+            salt, _hash_password(password, salt), session_key, path=path,
+            must_change=True, generated_password=password,
+        )
+        credentials._save()
         return credentials
+
+    def _save(self) -> None:
+        if self.path is None:
+            return
+        payload = {
+            "salt": self.salt.hex(),
+            "digest": self.digest,
+            "must_change": self.must_change,
+            "generation": self.generation,
+        }
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(self.path)
 
     def check(self, password: str) -> bool:
         return secrets.compare_digest(_hash_password(password, self.salt), self.digest)
+
+    def change_password(self, current: str, new: str) -> None:
+        if self.explicit:
+            raise CredentialError(
+                "The admin password is set with --admin-password or EQOA_ADMIN_PASSWORD; change it there."
+            )
+        if not self.check(current):
+            raise CredentialError("Current password is wrong.")
+        if len(new) < MIN_PASSWORD_LENGTH:
+            raise CredentialError(f"New password must be at least {MIN_PASSWORD_LENGTH} characters.")
+        if new == current:
+            raise CredentialError("New password must be different from the current one.")
+        self.salt = os.urandom(16)
+        self.digest = _hash_password(new, self.salt)
+        self.must_change = False
+        self.generation += 1
+        self.generated_password = None
+        self._save()
+
+    def _sign(self, payload: str) -> str:
+        return hmac.new(self.session_key, payload.encode("ascii"), hashlib.sha256).hexdigest()[:40]
+
+    def issue_session(self) -> str:
+        payload = f"{self.generation}.{int(time.time()) + SESSION_LIFETIME}.{secrets.token_hex(12)}"
+        return f"{payload}.{self._sign(payload)}"
+
+    def valid_session(self, token: str | None) -> bool:
+        if not token or token in self.revoked:
+            return False
+        try:
+            generation, expires, nonce, signature = token.split(".")
+            payload = f"{generation}.{expires}.{nonce}"
+            return (
+                secrets.compare_digest(signature, self._sign(payload))
+                and int(generation) == self.generation
+                and int(expires) > time.time()
+            )
+        except ValueError:
+            return False
 
 
 @dataclass(slots=True)
@@ -79,8 +161,14 @@ class AdminContext:
     logs: LogBuffer
     credentials: AdminCredentials
     shutdown_event: threading.Event
+    updater: Updater | None = None
     started_at: float = field(default_factory=time.time)
-    sessions: dict[str, float] = field(default_factory=dict)
+    exit_code: int = 0
+
+    def request_restart(self) -> None:
+        """Exit with RESTART_EXIT_CODE shortly, after the HTTP response has gone out."""
+        self.exit_code = RESTART_EXIT_CODE
+        threading.Timer(0.5, self.shutdown_event.set).start()
 
 
 class AdminServer(ThreadingHTTPServer):
@@ -133,11 +221,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         return morsel.value if morsel else None
 
     def _authenticated(self) -> bool:
-        token = self._session_token()
-        expires = self.ctx.sessions.get(token or "")
-        if expires is None or expires < time.time():
-            return False
-        return True
+        return self.ctx.credentials.valid_session(self._session_token())
+
+    def _session_cookie(self, token: str) -> dict[str, str]:
+        return {"Set-Cookie": f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_LIFETIME}"}
 
     # -- routing ----------------------------------------------------------
     def do_GET(self) -> None:
@@ -149,16 +236,25 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._error(404, "not found")
             return
         if url.path == "/api/session":
-            self._json({"authenticated": self._authenticated()})
+            credentials = self.ctx.credentials
+            self._json({
+                "authenticated": self._authenticated(),
+                "must_change_password": credentials.must_change,
+                "can_change_password": not credentials.explicit,
+            })
             return
         if not self._authenticated():
             self._error(401, "login required")
+            return
+        if self.ctx.credentials.must_change:
+            self._error(403, "password change required")
             return
         query = parse_qs(url.query)
         routes = {
             "/api/status": self._status,
             "/api/accounts": self._accounts,
             "/api/settings": self._settings,
+            "/api/update": self._update_status,
         }
         if url.path in routes:
             self._json(routes[url.path]())
@@ -193,16 +289,38 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._error(400, "invalid JSON")
             return
         parts = [part for part in url.path.split("/") if part][1:]
+        if self.ctx.credentials.must_change and parts not in (["logout"], ["admin-password"]):
+            self._error(403, "password change required")
+            return
         try:
             self._dispatch(parts, body)
         except (KeyError, ValueError) as exc:
             self._error(400, f"bad request: {exc}")
+        except (CredentialError, UpdateError) as exc:
+            self._error(409, str(exc))
 
     def _dispatch(self, parts: list[str], body: dict) -> None:
         ctx = self.ctx
         if parts == ["logout"]:
-            ctx.sessions.pop(self._session_token() or "", None)
+            ctx.credentials.revoked.add(self._session_token() or "")
             self._json({"ok": True}, headers={"Set-Cookie": f"{COOKIE_NAME}=; Path=/; Max-Age=0"})
+        elif parts == ["admin-password"]:
+            ctx.credentials.change_password(str(body.get("current", "")), str(body.get("new", "")))
+            print("ADMIN password changed")
+            # Changing the password invalidates every session, so hand this one a fresh cookie.
+            self._json({"ok": True}, headers=self._session_cookie(ctx.credentials.issue_session()))
+        elif parts == ["update", "check"]:
+            self._json(self._update_status(fetch=True))
+        elif parts == ["update", "apply"]:
+            self._json(self._apply_update(ctx.updater.update, "update"))
+        elif parts == ["update", "rollback"]:
+            self._json(self._apply_update(ctx.updater.rollback, "rollback"))
+        elif parts == ["restart"]:
+            if not running_under_launcher():
+                raise UpdateError("Restart needs the start_server launcher; this server was started directly.")
+            print("ADMIN restart requested from the admin panel")
+            self._json({"ok": True, "restarting": True})
+            ctx.request_restart()
         elif len(parts) == 3 and parts[0] == "services":
             name, action = parts[1], parts[2]
             if name == "all" and action in ("start", "stop", "restart"):
@@ -253,16 +371,32 @@ class AdminHandler(BaseHTTPRequestHandler):
             password = str(self._body().get("password", ""))
         except (ValueError, UnicodeDecodeError):
             password = ""
-        if not self.ctx.credentials.check(password):
+        credentials = self.ctx.credentials
+        if not credentials.check(password):
             time.sleep(0.5)
             self._error(401, "wrong password")
             return
-        token = secrets.token_urlsafe(32)
-        now = time.time()
-        self.ctx.sessions = {t: exp for t, exp in self.ctx.sessions.items() if exp > now}
-        self.ctx.sessions[token] = now + SESSION_LIFETIME
-        cookie = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_LIFETIME}"
-        self._json({"ok": True}, headers={"Set-Cookie": cookie})
+        self._json(
+            {"ok": True, "must_change_password": credentials.must_change},
+            headers=self._session_cookie(credentials.issue_session()),
+        )
+
+    def _update_status(self, fetch: bool = False) -> dict:
+        updater = self.ctx.updater
+        status = updater.status(fetch=fetch) if updater else {"available": False, "reason": "updates disabled"}
+        status["launcher"] = running_under_launcher()
+        return status
+
+    def _apply_update(self, action, label: str) -> dict:
+        if self.ctx.updater is None:
+            raise UpdateError("updates are disabled")
+        print(f"ADMIN {label} requested from the admin panel")
+        result = action()
+        print(f"ADMIN {label}: {result['message']}")
+        result["restarting"] = bool(result["ok"]) and running_under_launcher()
+        if result["restarting"]:
+            self.ctx.request_restart()
+        return result
 
     def _kick(self, address: str) -> bool:
         game = self.ctx.services.game_server

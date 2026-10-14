@@ -153,6 +153,76 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(raw["accounts"][0]["username"], "backup")
 
+    def test_update_status_without_updater(self):
+        self.login()
+        status, update = self.request("/api/update")
+        self.assertEqual(status, 200)
+        self.assertFalse(update["available"])
+        self.assertFalse(update["launcher"])
+        status, result = self.request("/api/restart", {})
+        self.assertEqual(status, 409)
+
+    def test_explicit_password_cannot_be_changed_from_panel(self):
+        self.login()
+        status, result = self.request("/api/admin-password", {"current": PASSWORD, "new": "another-password"})
+        self.assertEqual(status, 409)
+        self.assertIn("--admin-password", result["error"])
+
+
+class GeneratedPasswordTests(unittest.TestCase):
+    """A generated admin password must be changed at first sign-in."""
+
+    def setUp(self):
+        self.config = ServerConfig(data_path=Path(tempfile.mkdtemp()) / "server_state.json", log_packets=False)
+        self.credentials = AdminCredentials.load(self.config)
+        self.generated = self.credentials.generated_password
+        self.start_admin(self.credentials)
+
+    def start_admin(self, credentials):
+        store = JsonStore(self.config.data_path)
+        services = ServiceManager(self.config, store)
+        context = AdminContext(self.config, store, services, LogBuffer(), credentials, threading.Event())
+        self.admin = AdminServer(("127.0.0.1", 0), context)
+        threading.Thread(target=self.admin.serve_forever, daemon=True).start()
+        self.addCleanup(self.admin.server_close)
+        self.addCleanup(self.admin.shutdown)
+        self.base = f"http://127.0.0.1:{self.admin.server_address[1]}"
+
+    request = AdminPanelTests.request
+
+    def test_forced_change_then_full_access_and_restart_keeps_session(self):
+        self.cookie = None
+        status, login = self.request("/api/login", {"password": self.generated})
+        self.assertEqual(status, 200)
+        self.assertTrue(login["must_change_password"])
+        self.assertEqual(self.request("/api/status")[0], 403)
+        self.assertEqual(self.request("/api/services/auth/stop", {})[0], 403)
+
+        status, result = self.request("/api/admin-password", {"current": self.generated, "new": "short"})
+        self.assertEqual(status, 409)
+        status, _ = self.request("/api/admin-password", {"current": self.generated, "new": "my-new-password"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("/api/status")[0], 200)
+
+        # A restart reloads credentials from disk; the signed session stays valid.
+        self.admin.shutdown()
+        self.admin.server_close()
+        reloaded = AdminCredentials.load(self.config)
+        self.assertFalse(reloaded.must_change)
+        self.assertIsNone(reloaded.generated_password)
+        self.start_admin(reloaded)
+        self.assertEqual(self.request("/api/status")[0], 200)
+        self.assertTrue(reloaded.check("my-new-password"))
+        self.assertFalse(reloaded.check(self.generated))
+
+    def test_password_change_invalidates_other_sessions(self):
+        self.cookie = None
+        self.request("/api/login", {"password": self.generated})
+        old_cookie = self.cookie
+        self.request("/api/admin-password", {"current": self.generated, "new": "my-new-password"})
+        self.cookie = old_cookie
+        self.assertEqual(self.request("/api/status")[0], 401)
+
 
 if __name__ == "__main__":
     unittest.main()

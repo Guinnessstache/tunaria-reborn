@@ -10,6 +10,7 @@ from .admin import AdminContext, AdminCredentials, start_admin
 from .config import ServerConfig, load_settings
 from .services import ServiceManager, install_log_buffer
 from .storage import JsonStore
+from .updater import Updater, running_under_launcher
 
 
 def parse_args() -> ServerConfig:
@@ -68,7 +69,9 @@ def main() -> None:
 
     services.start_all()
     credentials = AdminCredentials.load(config)
-    admin = start_admin(AdminContext(config, store, services, logs, credentials, stop))
+    updater = Updater(state_path=config.data_path.parent / "update_state.json")
+    context = AdminContext(config, store, services, logs, credentials, stop, updater=updater)
+    admin = start_admin(context)
 
     print(f"EQOA community server running: {config.shard_name}")
     print(f"  Auth TCP:   {config.host}:{config.auth_port}")
@@ -84,10 +87,12 @@ def main() -> None:
         console = sys.__stdout__
         console.write(
             f"\n  Admin password (generated, shown once): {credentials.generated_password}\n"
-            f"  Stored hashed in {config.data_path.parent / 'admin.json'}; "
-            "delete that file to generate a new one.\n\n"
+            "  You will be asked to choose a new one at first sign-in.\n"
+            f"  Forgot it? Stop the server and delete {config.data_path.parent / 'admin.json'}.\n\n"
         )
         console.flush()
+    if not running_under_launcher():
+        print("  Tip: start with start_server.bat / start_server.sh so the admin panel can restart and update the server.")
     print("Press Ctrl+C to stop.")
 
     # Wake periodically so Ctrl+C is handled promptly on Windows.
@@ -98,6 +103,9 @@ def main() -> None:
     if admin is not None:
         admin.shutdown()
         admin.server_close()
+    if context.exit_code:
+        print("Restarting...")
+    sys.exit(context.exit_code)
 
 
 if __name__ == "__main__":
