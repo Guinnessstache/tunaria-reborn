@@ -224,6 +224,12 @@ class GeneratedPasswordTests(unittest.TestCase):
         self.assertTrue(reloaded.check("my-new-password"))
         self.assertFalse(reloaded.check(self.generated))
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_admin_secrets_are_private(self):
+        data_dir = self.config.data_path.parent
+        for name in ("admin.json", "admin_session.key"):
+            self.assertEqual((data_dir / name).stat().st_mode & 0o777, 0o600, name)
+
     def test_password_change_invalidates_other_sessions(self):
         self.cookie = None
         self.request("/api/login", {"password": self.generated})

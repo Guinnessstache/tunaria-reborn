@@ -56,8 +56,14 @@ every option.
 points it at your server; `tools/make_local_pnach.py --ip <your IP>` builds a
 PCSX2 patch from the Sandstorm one.
 
-**Linux server:** to run it as a systemd service that starts at boot, follow
-[`docs/linux-server.md`](docs/linux-server.md).
+**Linux server:** one command installs it as a service that starts at boot
+(Ubuntu / Debian):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Guinnessstache/tunaria-reborn/main/deploy/install.sh | sudo bash
+```
+
+Details and the manual steps: [`docs/linux-server.md`](docs/linux-server.md).
 
 ### Ports
 

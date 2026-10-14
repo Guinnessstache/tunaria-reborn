@@ -40,6 +40,14 @@ ONLINE_WINDOW = 60.0
 MIN_PASSWORD_LENGTH = 8
 
 
+def _write_private(path: Path, data: bytes) -> None:
+    """Write a file only the server's user can read (the session key can forge admin logins)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    os.chmod(path, 0o600)
+
+
 def _hash_password(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS).hex()
 
@@ -74,8 +82,14 @@ class AdminCredentials:
         data_dir.mkdir(parents=True, exist_ok=True)
         key_path = data_dir / "admin_session.key"
         if not key_path.is_file():
-            key_path.write_bytes(os.urandom(32))
+            _write_private(key_path, os.urandom(32))
         session_key = key_path.read_bytes()
+        for secret in (key_path, data_dir / "admin.json"):
+            if secret.is_file():
+                try:
+                    os.chmod(secret, 0o600)  # tighten files created by older versions
+                except OSError:
+                    pass
 
         explicit = config.admin_password or os.environ.get("EQOA_ADMIN_PASSWORD")
         if explicit:
@@ -107,7 +121,7 @@ class AdminCredentials:
             "generation": self.generation,
         }
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        _write_private(tmp, json.dumps(payload).encode("utf-8"))
         tmp.replace(self.path)
 
     def check(self, password: str) -> bool:

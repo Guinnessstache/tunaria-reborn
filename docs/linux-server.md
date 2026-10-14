@@ -1,5 +1,31 @@
 # Running Tunaria Reborn on a Linux server
 
+## Quick install (one command)
+
+On a fresh Ubuntu or Debian server, while the repository is public:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Guinnessstache/tunaria-reborn/main/deploy/install.sh | sudo bash
+```
+
+It installs Python and git, creates the `tunaria` service user, downloads the
+server to `/opt/tunaria-reborn/server`, detects this server's IP, writes
+`/etc/tunaria-reborn.env`, installs and starts the systemd service, opens the
+ports if the `ufw` firewall is on, and prints the admin panel address and its
+first-time password. Run the same command again to update; settings and data are
+kept.
+
+Options go after `sudo`, for example a different public IP or an admin panel
+reachable only from the server itself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Guinnessstache/tunaria-reborn/main/deploy/install.sh \
+    | sudo PUBLIC_HOST=203.0.113.10 ADMIN_HOST=127.0.0.1 bash
+```
+
+The rest of this page is the same setup done by hand, which you need if the
+repository is private (it uses a deploy key) or you want to change something.
+
 This sets the server up as a systemd service: it starts at boot, restarts if it
 crashes, and the admin panel's **Restart server** and **Update & restart**
 buttons work. Commands are for Debian / Ubuntu; other distributions need the
