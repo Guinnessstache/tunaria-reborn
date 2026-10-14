@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -13,11 +14,16 @@ FAIL = [sys.executable, "-c", "import sys; sys.exit(1)"]
 
 
 def git(cwd, *args):
+    # Keep the full environment (Windows needs SYSTEMROOT etc.); only pin the identity
+    # and ignore the user's global git config.
+    env = dict(
+        os.environ,
+        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
+        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+    )
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
-        env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
-             "GIT_COMMITTER_EMAIL": "t@example.com", "PATH": __import__("os").environ["PATH"],
-             "HOME": str(cwd)},
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env,
     ).stdout.strip()
 
 
@@ -28,7 +34,8 @@ class UpdaterTests(unittest.TestCase):
         self.origin = root / "origin.git"
         self.server = root / "server"
         self.dev = root / "dev"
-        git(root, "init", "--bare", "-b", "main", str(self.origin))
+        git(root, "init", "--bare", str(self.origin))
+        git(self.origin, "symbolic-ref", "HEAD", "refs/heads/main")
         git(root, "clone", str(self.origin), str(self.dev))
         (self.dev / "app.txt").write_text("v1\n")
         git(self.dev, "add", ".")
