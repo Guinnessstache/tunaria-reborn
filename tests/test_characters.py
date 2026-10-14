@@ -77,6 +77,22 @@ class CharacterListTests(unittest.TestCase):
         self.assertEqual(message.message_number, 3)
         self.assertEqual(message.payload, listing)
 
+    def test_create_reply_is_exactly_one_list_message(self):
+        from eqoa_server.protocol import build_character_list_response, rdp_crc
+
+        characters = [Character(character_id=1, account_id=1, name="Magey"), Character(character_id=2, account_id=1, name="Elfy", race=1, gender=1)]
+        packet = build_character_list_response(0x0AD0, 0x20AD1, 4, 4, characters)
+        self.assertEqual(packet[-4:], struct.pack("<I", rdp_crc(packet[:-4])))
+        body = packet[4 + 2 + 4 : -4]  # endpoints, flags, instance; CRC
+        self.assertEqual(body[0], 0x20)
+        message = body[3:]
+        self.assertEqual(message[0], 0xFB)
+        size = message[1]
+        self.assertEqual(struct.unpack_from("<HH", message, 2), (4, 0x002C))
+        # size counts the opcode and payload; nothing may follow the message
+        self.assertEqual(len(message), 2 + 2 + size)
+        self.assertEqual(message[6:], build_character_list_payload(characters))
+
     def test_count_is_zigzag(self):
         self.assertEqual(self.sandstorm_list()[0], 0x10)  # 8 characters
         two = [Character(character_id=i, account_id=1, name=f"C{i}") for i in (1, 2)]

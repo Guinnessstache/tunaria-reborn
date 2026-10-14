@@ -809,7 +809,9 @@ def build_character_list_response(
     payload = build_character_list_payload(characters)
     message_data = struct.pack("<HH", message_number, 0x002C) + payload
     message = bytes([MessageType.RELIABLE]) + _write_size(len(message_data) - 2) + message_data
-    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", arrival) + message + b"\x00\x00"
+    # No padding after the message: with a correct size field, trailing bytes would be
+    # read as another (malformed) message and the client hangs on "Creating Character".
+    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", arrival) + message
     header = struct.pack("<HH", OLD_WORLD_SERVER_ENDPOINT, client_endpoint)
     packet = header + write_varuint(0x3000 + len(body)) + struct.pack("<I", instance_id) + body
     return packet + struct.pack("<I", rdp_crc(packet))
