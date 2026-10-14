@@ -85,28 +85,54 @@ def build_http_response(
     return "\r\n".join(headers).encode("ascii") + b"\r\n\r\n" + body
 
 
-def patch_file_bytes(config: ServerConfig, name: str, data: bytes) -> bytes:
-    if name == "eqahosts.txt.gz":
-        return gzip.compress(f"{config.public_host}\n\n".encode("ascii"), mtime=0)
-    if name == "eqoa-frontierslive-update.xml.gz":
+MANIFEST_NAME = "eqoa-frontierslive-update.xml.gz"
+DEFAULT_CHANGES = b"No changes.\n"
+
+
+def eqahosts_bytes(config: ServerConfig) -> bytes:
+    return gzip.compress(f"{config.public_host}\n\n".encode("ascii"), mtime=0)
+
+
+def changes_bytes(config: ServerConfig) -> bytes:
+    if config.patch_source_dir is not None:
+        changes_path = config.patch_source_dir / "Changes.txt"
+        if changes_path.is_file():
+            return changes_path.read_bytes()
+    return DEFAULT_CHANGES
+
+
+def generated_patch_file(config: ServerConfig, name: str) -> bytes | None:
+    """Files the server synthesizes itself, so no patch directory is required."""
+    lowered = name.lower()
+    if lowered == "eqahosts.txt.gz":
+        return eqahosts_bytes(config)
+    if lowered == "changes.txt":
+        return changes_bytes(config)
+    if lowered == MANIFEST_NAME:
         return build_verant_manifest(config)
-    return data
+    return None
+
+
+def patch_file_name(request_path: str) -> str:
+    clean = request_path.split("?", 1)[0].lstrip("/")
+    if clean.lower().startswith("patch/eqoa/"):
+        return clean[len("patch/eqoa/") :]
+    return Path(clean).name
 
 
 def load_patch_file(config: ServerConfig, request_path: str) -> bytes | None:
-    if config.patch_source_dir is None:
-        return None
-    clean = request_path.split("?", 1)[0].lstrip("/")
-    if clean.lower().startswith("patch/eqoa/"):
-        name = clean[len("patch/eqoa/") :]
-    else:
-        name = Path(clean).name
+    name = patch_file_name(request_path)
     if not name:
+        return None
+    generated = generated_patch_file(config, name)
+    if generated is not None:
+        return generated
+    if config.patch_source_dir is None:
         return None
     path = config.patch_source_dir / name
     if not path.exists() or not path.is_file():
         return None
-    return patch_file_bytes(config, name, path.read_bytes())
+    return path.read_bytes()
 
 
 def gz_info(config: ServerConfig, name: str) -> dict[str, int]:
@@ -122,7 +148,6 @@ def gz_info(config: ServerConfig, name: str) -> dict[str, int]:
 
 
 def build_verant_manifest(config: ServerConfig) -> bytes:
-    assert config.patch_source_dir is not None
     version = 26050317
 
     def file_entry(local: str, remote: str, info: dict[str, int]) -> str:
@@ -146,16 +171,13 @@ def build_verant_manifest(config: ServerConfig) -> bytes:
             pass
 
     try:
+        words = file_entry("WORDS.TXT", "words-11.txt.gz", gz_info(config, "words-11.txt.gz"))
         entries.append('<File LocalName="words.txt" Delete="True"></File>')
-        entries.append(file_entry("WORDS.TXT", "words-11.txt.gz", gz_info(config, "words-11.txt.gz")))
+        entries.append(words)
     except FileNotFoundError:
         pass
 
-    changes = b"No changes.\n"
-    changes_path = config.patch_source_dir / "Changes.txt"
-    if changes_path.exists():
-        changes = changes_path.read_bytes()
-    changes_crc = binascii.crc32(changes) & 0xFFFFFFFF
+    changes_crc = binascii.crc32(changes_bytes(config)) & 0xFFFFFFFF
 
     xml = (
         '<VerantPatcher Version="1">\r\n'
@@ -172,41 +194,17 @@ def build_verant_manifest(config: ServerConfig) -> bytes:
 
 
 def build_update_manifest_response(config: ServerConfig) -> bytes:
-    if config.patch_source_dir:
-        manifest = load_patch_file(config, "/patch/eqoa/eqoa-frontierslive-update.xml.gz")
-        if manifest:
-            return build_http_response(
-                manifest,
-                content_type="application/x-gzip",
-                extra_headers=[
-                    "Last-Modified: Tue, 24 Feb 2026 15:24:56 GMT",
-                    'ETag: "local-verant-manifest"',
-                    "Accept-Ranges: bytes",
-                    "Cache-Control: no-cache",
-                ],
-            )
-
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<VerantPatcher Version="1">\r\n'
-        '<Product Version="0">\r\n'
-        '<Distribution Name="Frontiers" >\r\n'
-        "</Distribution>\r\n"
-        '<Changes Server="127.0.0.1" Port="7000" Version="0" RemotePath="patch/eqoa/Changes.txt" CRC="0"></Changes>\r\n'
-        "</Product>\r\n"
-        "</VerantPatcher>\n"
-    ).encode("utf-8")
-    body = gzip.compress(xml, mtime=0)
     return build_http_response(
-        body,
+        build_verant_manifest(config),
         content_type="application/x-gzip",
         extra_headers=[
             "Last-Modified: Tue, 24 Feb 2026 15:24:56 GMT",
-            'ETag: "local-empty-update"',
+            'ETag: "local-verant-manifest"',
             "Accept-Ranges: bytes",
             "Cache-Control: no-cache",
         ],
     )
+
 
 @dataclass(slots=True)
 class PatchRequest:
@@ -258,8 +256,12 @@ class PatchTCPHandler(socketserver.BaseRequestHandler):
                 patch_data = load_patch_file(server.config, parsed.path)
                 if patch_data is not None:
                     content_type = "application/x-gzip" if parsed.path.endswith(".gz") else "application/octet-stream"
+                    if server.log_requests:
+                        print(f"PATCH   -> 200 {len(patch_data)} bytes")
                     self.request.sendall(build_http_response(patch_data, content_type=content_type))
                 else:
+                    if server.log_requests:
+                        print("PATCH   -> 404")
                     self.request.sendall(build_not_found_response())
             else:
                 self.request.sendall(build_not_found_response())

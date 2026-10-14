@@ -1,5 +1,9 @@
 import unittest
+import binascii
 import gzip
+import re
+import socket
+import threading
 from pathlib import Path
 
 from eqoa_server.config import ServerConfig
@@ -9,9 +13,20 @@ from eqoa_server.patch_tcp import (
     MOTD_RESPONSE_SIZE,
     UPDATE_MANIFEST_PATHS,
     build_motd_response,
+    PatchTCPServer,
     build_update_manifest_response,
     parse_patch_request,
 )
+
+
+def http_get(port: int, path: str, host: str) -> tuple[bytes, bytes]:
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+        sock.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode("ascii"))
+        chunks = []
+        while chunk := sock.recv(65536):
+            chunks.append(chunk)
+    head, body = b"".join(chunks).split(b"\r\n\r\n", 1)
+    return head, body
 
 
 class PatchTcpTests(unittest.TestCase):
@@ -38,6 +53,45 @@ class PatchTcpTests(unittest.TestCase):
         self.assertIn(b"Content-Type: application/x-gzip", head)
         xml = gzip.decompress(body)
         self.assertIn(b"<VerantPatcher", xml)
+
+    def test_manifest_without_patch_dir_advertises_eqahosts(self):
+        config = ServerConfig(public_host="192.168.1.51")
+        _head, body = build_update_manifest_response(config).split(b"\r\n\r\n", 1)
+        xml = gzip.decompress(body).decode("utf-8")
+        self.assertIn('Name="eqahosts.txt.gz"', xml)
+        self.assertIn('Server="192.168.1.51"', xml)
+        self.assertIn('<Changes Server="192.168.1.51" Port="7000"', xml)
+
+    def test_client_patch_sequence_without_patch_dir(self):
+        """Replays the request sequence a real client sent, with no patch files on disk."""
+        config = ServerConfig(public_host="192.168.1.51")
+        server = PatchTCPServer(("127.0.0.1", 0), config, log_requests=False)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            head, manifest_gz = http_get(
+                port, "/patch/eqoa/eqoa-frontierslive-update.xml.gz", "patch.everquestonlineadventures.com"
+            )
+            self.assertIn(b"200 OK", head)
+            xml = gzip.decompress(manifest_gz).decode("utf-8")
+
+            head, changes = http_get(port, "/patch/eqoa/Changes.txt", "192.168.1.51")
+            self.assertIn(b"200 OK", head)
+            changes_crc = int(re.search(r'<Changes [^>]*CRC="(\d+)"', xml).group(1))
+            self.assertEqual(binascii.crc32(changes) & 0xFFFFFFFF, changes_crc)
+
+            head, hosts_gz = http_get(port, "/eqahosts.txt.gz", "192.168.1.51")
+            self.assertIn(b"200 OK", head)
+            hosts = gzip.decompress(hosts_gz)
+            self.assertTrue(hosts.startswith(b"192.168.1.51"))
+            entry = re.search(r'<File LocalName="eqahosts.txt"[^>]*>', xml).group(0)
+            self.assertIn(f'CRC="{binascii.crc32(hosts) & 0xFFFFFFFF}"', entry)
+            self.assertIn(f'TotalSize="{len(hosts)}"', entry)
+            self.assertIn(f'DownloadSize="{len(hosts_gz)}"', entry)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_parse_update_manifest_request(self):
         path = sorted(UPDATE_MANIFEST_PATHS)[0]
