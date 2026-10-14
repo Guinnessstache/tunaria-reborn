@@ -178,6 +178,7 @@ class AdminPanelTests(unittest.TestCase):
         self.login()
         _, logs = self.request("/api/logs?after=0")
         self.assertEqual([line["text"] for line in logs["lines"]], ["first line", "second line"])
+        self.assertEqual(logs["started"], self.admin.context.started_at)
         _, logs = self.request(f"/api/logs?after={logs['lines'][0]['id']}")
         self.assertEqual([line["text"] for line in logs["lines"]], ["second line"])
         self.store.create_account("backup", "x")

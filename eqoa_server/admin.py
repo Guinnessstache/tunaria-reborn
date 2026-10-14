@@ -278,7 +278,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json(routes[url.path]())
         elif url.path == "/api/logs":
             after = int((query.get("after") or ["0"])[0])
-            self._json({"lines": self.ctx.logs.since(after)})
+            # "started" changes when the server restarts; the page then starts over, since
+            # line numbers begin again at 1 in the new process.
+            self._json({"lines": self.ctx.logs.since(after), "started": self.ctx.started_at})
         elif url.path == "/api/backup":
             data = self.ctx.config.data_path.read_bytes() if self.ctx.config.data_path.is_file() else b"{}"
             stamp = time.strftime("%Y%m%d-%H%M%S")

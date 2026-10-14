@@ -288,7 +288,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":
 // Same order as eqoa_server/game_data.py (RACES, CLASSES).
 const RACES = ["Human","Elf","Dark Elf","Gnome","Dwarf","Troll","Barbarian","Halfling","Erudite","Ogre"];
 const CLASSES = ["Warrior","Ranger","Paladin","Shadowknight","Monk","Bard","Rogue","Druid","Shaman","Cleric","Magician","Necromancer","Enchanter","Wizard","Alchemist"];
-let activeTab = "dashboard", lastLogId = 0, logLines = [], logPaused = false, motdLimit = 400, pollTimer = null;
+let activeTab = "dashboard", lastLogId = 0, logStarted = null, logLines = [], logPaused = false, motdLimit = 400, pollTimer = null;
 
 function duration(seconds) {
   if (seconds == null) return "–";
@@ -610,8 +610,15 @@ $("#settings-form").addEventListener("submit", async (e) => {
 
 async function pollLogs() {
   if (logPaused) return;
-  const { lines } = await api(`/api/logs?after=${lastLogId}`);
-  if (!lines.length) return;
+  let { lines, started } = await api(`/api/logs?after=${lastLogId}`);
+  if (logStarted !== null && started !== logStarted) {
+    // The server restarted: its line numbers began again at 1, so fetch the new log from the start.
+    logLines = [{ id: 0, time: started, text: "──── server restarted ────" }];
+    lastLogId = 0;
+    ({ lines } = await api("/api/logs?after=0"));
+  }
+  logStarted = started;
+  if (!lines.length) { renderLogs(); return; }
   lastLogId = lines[lines.length - 1].id;
   logLines.push(...lines); if (logLines.length > 3000) logLines = logLines.slice(-3000);
   renderLogs();
