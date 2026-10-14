@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 import binascii
 import gzip
@@ -16,7 +17,9 @@ from eqoa_server.patch_tcp import (
     STATION_PAK_PATH,
     PatchTCPServer,
     build_pak,
+    LEGACY_PRODUCT_VERSION,
     build_update_manifest_response,
+    build_verant_manifest,
     parse_pak,
     parse_patch_request,
 )
@@ -30,6 +33,11 @@ def http_get(port: int, path: str, host: str) -> tuple[bytes, bytes]:
             chunks.append(chunk)
     head, body = b"".join(chunks).split(b"\r\n\r\n", 1)
     return head, body
+
+
+def temp_config(**kwargs) -> ServerConfig:
+    """Manifests keep a version file next to the data; never touch a real data/ folder."""
+    return ServerConfig(data_path=Path(tempfile.mkdtemp()) / "server_state.json", **kwargs)
 
 
 class PatchTcpTests(unittest.TestCase):
@@ -50,7 +58,7 @@ class PatchTcpTests(unittest.TestCase):
         self.assertIn(b"Test Shard", body)
 
     def test_update_manifest_response_is_gzip_xml(self):
-        response = build_update_manifest_response(ServerConfig())
+        response = build_update_manifest_response(temp_config())
         head, body = response.split(b"\r\n\r\n", 1)
         self.assertIn(b"HTTP/1.1 200 OK", head)
         self.assertIn(b"Content-Type: application/x-gzip", head)
@@ -58,7 +66,7 @@ class PatchTcpTests(unittest.TestCase):
         self.assertIn(b"<VerantPatcher", xml)
 
     def test_manifest_without_patch_dir_advertises_eqahosts(self):
-        config = ServerConfig(public_host="192.168.1.51")
+        config = temp_config(public_host="192.168.1.51")
         _head, body = build_update_manifest_response(config).split(b"\r\n\r\n", 1)
         xml = gzip.decompress(body).decode("utf-8")
         self.assertIn('Name="eqahosts.txt.gz"', xml)
@@ -67,7 +75,7 @@ class PatchTcpTests(unittest.TestCase):
 
     def test_client_patch_sequence_without_patch_dir(self):
         """Replays the request sequence a real client sent, with no patch files on disk."""
-        config = ServerConfig(public_host="192.168.1.51")
+        config = temp_config(public_host="192.168.1.51")
         server = PatchTCPServer(("127.0.0.1", 0), config, log_requests=False)
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -112,6 +120,18 @@ class PatchTcpTests(unittest.TestCase):
         original = STATION_PAK_PATH.read_bytes()
         self.assertEqual(build_pak(parse_pak(original)), original)
 
+    def test_manifest_version_changes_with_content(self):
+        config = temp_config(public_host="192.168.1.51")
+        version = lambda: int(re.search(rb'<Product Version="(\d+)"', gzip.decompress(build_verant_manifest(config))).group(1))
+        first = version()
+        self.assertGreater(first, LEGACY_PRODUCT_VERSION)
+        self.assertEqual(version(), first)  # unchanged content, same version
+        config.public_host = "192.168.1.65"  # e.g. a different server: new login pack
+        second = version()
+        self.assertGreater(second, first)
+        config.public_host = "192.168.1.51"  # going back still moves forward
+        self.assertGreater(version(), second)
+
     def test_parse_update_manifest_request(self):
         path = sorted(UPDATE_MANIFEST_PATHS)[0]
         data = f"GET {path} HTTP/1.1\r\nHost: patch.everquestonlineadventures.com\r\n\r\n".encode("ascii")
@@ -123,7 +143,7 @@ class PatchTcpTests(unittest.TestCase):
         if not patch_dir.exists():
             self.skipTest("external portable patch directory not present")
         response = build_update_manifest_response(
-            ServerConfig(public_host="192.168.1.32", patch_source_dir=patch_dir)
+            temp_config(public_host="192.168.1.32", patch_source_dir=patch_dir)
         )
         _head, body = response.split(b"\r\n\r\n", 1)
         xml = gzip.decompress(body)

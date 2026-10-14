@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import socketserver
+import threading
 import gzip
 import io
 import struct
@@ -204,8 +207,39 @@ def gz_info(config: ServerConfig, name: str) -> dict[str, int]:
     }
 
 
+# Version this server's manifests used before they were versioned by content. Clients
+# remember the last version they patched to and skip checking files when it has not
+# changed, so new versions must differ (and stay above what clients already hold).
+LEGACY_PRODUCT_VERSION = 26050317
+_version_lock = threading.Lock()
+
+
+def product_version(config: ServerConfig, content: str) -> int:
+    """A manifest version that goes up whenever the served files change.
+
+    Without this, a client that already patched once never re-downloads changed
+    files, e.g. keeps the login pack of a previous server after switching servers.
+    """
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    path = config.data_path.parent / "patch_version.json"
+    with _version_lock:
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {"content": None, "version": LEGACY_PRODUCT_VERSION}
+        if saved.get("content") != digest:
+            saved = {"content": digest, "version": int(saved.get("version", LEGACY_PRODUCT_VERSION)) + 1}
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(saved), encoding="utf-8")
+                tmp.replace(path)
+            except OSError:
+                pass
+        return int(saved["version"])
+
+
 def build_verant_manifest(config: ServerConfig) -> bytes:
-    version = 26050317
 
     def file_entry(local: str, remote: str, info: dict[str, int]) -> str:
         return (
@@ -235,6 +269,7 @@ def build_verant_manifest(config: ServerConfig) -> bytes:
         pass
 
     changes_crc = binascii.crc32(changes_bytes(config)) & 0xFFFFFFFF
+    version = product_version(config, "".join(entries) + f"|changes={changes_crc}|{config.public_host}:{config.motd_port}")
 
     xml = (
         '<VerantPatcher Version="1">\r\n'
