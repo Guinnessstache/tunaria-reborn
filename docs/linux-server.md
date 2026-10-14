@@ -46,13 +46,11 @@ line printed above, leave **Allow write access** unticked, and save.
 ## 4. Download the server
 
 ```sh
-sudo -H -u tunaria git clone -b claude/serve-eqahosts \
-    git@github.com:Guinnessstache/tunaria-reborn.git /opt/tunaria-reborn/server
+sudo -H -u tunaria git clone git@github.com:Guinnessstache/tunaria-reborn.git /opt/tunaria-reborn/server
 ```
 
 The first connection asks you to confirm GitHub's host key; answer `yes`.
-`-b claude/serve-eqahosts` is the branch with the current work; use `main` once
-it has been merged there.
+This follows the `main` branch, so the admin panel's updates come from `main`.
 
 ## 5. Configure it
 
