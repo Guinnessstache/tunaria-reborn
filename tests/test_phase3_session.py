@@ -2,8 +2,12 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import eqoa_server.game_udp as game_udp
 
 from eqoa_server.config import ServerConfig
 from eqoa_server.game_udp import PHASE3_SESSION_ID, GameSession, GameUDPServer, _track_phase3_initial_packets
@@ -31,6 +35,9 @@ class Phase3SessionTests(unittest.TestCase):
     """Replays the Sandstorm client's world-entry ack pattern against the server."""
 
     def setUp(self):
+        patcher = mock.patch.object(game_udp, "PHASE3_KEEPALIVE_INTERVAL", 3600.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         store = JsonStore(Path(tempfile.mkdtemp()) / "state.json")
         self.server = GameUDPServer(("127.0.0.1", 0), ServerConfig(), store, log_packets=False)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -88,6 +95,14 @@ class Phase3SessionTests(unittest.TestCase):
         replies = self.exchange(acked)
         self.assertTrue(self.server.sessions[self.client.getsockname()].phase3_self_update_acked)
         self.assertFalse([r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20])
+
+    def test_idle_session_gets_keepalive_pings(self):
+        self.exchange(client_packet(0x03, 1, (30, 20)))
+        with mock.patch.object(game_udp, "PHASE3_KEEPALIVE_INTERVAL", 0.2):
+            self.client.settimeout(1.5)
+            data, _ = self.client.recvfrom(4096)
+        reply = parse_udp_packet(data)
+        self.assertEqual(reply.messages[0].message_type, 0xF9)
 
 
 if __name__ == "__main__":
