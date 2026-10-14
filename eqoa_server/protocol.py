@@ -99,7 +99,7 @@ PHASE3_MAGIC = bytes([0xD0, 0xCF, 0xAD, 0x01])
 
 
 def rdp_crc(data: bytes) -> int:
-    """EQOA/ReturnHome RDP CRC variant used by old world-list packets."""
+    """EQOA RDP CRC variant used by old world-list packets (as in EQOAGameServer)."""
     return (zlib.crc32(data) ^ 0xFFFFFFFF ^ 0x11F19ED3) & 0xFFFFFFFF
 
 

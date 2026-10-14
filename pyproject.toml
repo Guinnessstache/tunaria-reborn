@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eqoa-returnhome"
+name = "tunaria-reborn"
 version = "0.2.0"
-description = "EQOA (EverQuest Online Adventures) private server + reverse-engineered phase3 protocol library (ReturnHome)."
+description = "Project Tunaria Reborn: an EverQuest Online Adventures (EQOA) Frontiers community server and reverse-engineered protocol library."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "GuinnessStache" }]
-keywords = ["eqoa", "everquest", "ps2", "private-server", "reverse-engineering", "protocol", "returnhome"]
+keywords = ["eqoa", "everquest", "ps2", "private-server", "reverse-engineering", "protocol", "tunaria"]
 
 [project.optional-dependencies]
 pcap = ["scapy>=2.5"]
@@ -21,7 +21,7 @@ dev = ["pytest>=7", "scapy>=2.5"]
 eqoa-server = "eqoa_server.main:main"
 
 [project.urls]
-Homepage = "https://github.com/Guinnessstache/eqoa-returnhome"
+Homepage = "https://github.com/Guinnessstache/tunaria-reborn"
 
 [tool.setuptools]
 packages = ["eqoa_server", "eqoa_protocol"]

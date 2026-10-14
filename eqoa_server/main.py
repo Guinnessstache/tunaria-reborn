@@ -14,7 +14,7 @@ from .updater import Updater, running_under_launcher
 
 
 def parse_args() -> ServerConfig:
-    parser = argparse.ArgumentParser(description="Run an experimental EQOA community server.")
+    parser = argparse.ArgumentParser(description="Run the Project Tunaria Reborn EQOA server.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--public-host", default="127.0.0.1")
     parser.add_argument("--auth-port", type=int, default=9735)
@@ -73,7 +73,7 @@ def main() -> None:
     context = AdminContext(config, store, services, logs, credentials, stop, updater=updater)
     admin = start_admin(context)
 
-    print(f"EQOA community server running: {config.shard_name}")
+    print(f"Project Tunaria Reborn server running: {config.shard_name}")
     print(f"  Auth TCP:   {config.host}:{config.auth_port}")
     print(f"  MOTD TCP:   {config.host}:{config.motd_port}")
     print(f"  Game UDP:   {config.host}:{config.game_port}")

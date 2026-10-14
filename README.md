@@ -1,6 +1,6 @@
-# EQOA ReturnHome
+# Project Tunaria Reborn
 
-A private **EverQuest Online Adventures (EQOA)** server plus the reverse-engineered
+A community **EverQuest Online Adventures (EQOA): Frontiers** server plus the reverse-engineered
 **phase3 network protocol** it speaks — in one repo you can clone and run.
 
 > For lawful preservation / interoperability research on software you own. No Sony,
@@ -21,8 +21,8 @@ captures/         from_sandstorm.pcapng — the reference capture the protocol i
 ## Quick start
 
 ```powershell
-git clone https://github.com/Guinnessstache/eqoa-returnhome.git
-cd eqoa-returnhome
+git clone https://github.com/Guinnessstache/tunaria-reborn.git
+cd tunaria-reborn
 python -m pip install -e ".[dev]"        # installs scapy + pytest too
 python -m eqoa_server --host 0.0.0.0 --public-host 127.0.0.1
 ```
@@ -98,10 +98,19 @@ python tools\decode_pcap.py captures\from_sandstorm.pcapng     # classified phas
 python tools\analyze_pcap.py <your.pcapng> --out analysis\summary.json
 ```
 
-## Public sources
+## Acknowledgements
 
-Sandstorm (https://eqoa.live/), EQOAGameServer
-(https://github.com/devin103/EQOAGameServer), ESF notes
-(https://github.com/joukop/ESF-file-format/), EQOAEmu (https://eqoaemu.com/).
+Tunaria Reborn is an independent project. It builds on the work of others in the
+EQOA preservation community:
+
+- **Project ReturnHome** and its C# server, **EQOAGameServer**
+  (https://github.com/devin103/EQOAGameServer, AGPL-3.0). Auth message IDs,
+  packet header/bundle flags, message types, opcode IDs and parts of the
+  protocol handling were learned from or modelled on it.
+- **Sandstorm** (https://eqoa.live/), whose live server traffic in
+  `captures/from_sandstorm.pcapng` is the reference the protocol work is checked
+  against.
+- ESF file format notes (https://github.com/joukop/ESF-file-format/) and EQOAEmu
+  (https://eqoaemu.com/).
 
 MIT licensed (your code). EverQuest / EQOA are trademarks of their respective owners.

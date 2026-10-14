@@ -1,4 +1,4 @@
-# EQOA Frontiers — Disc Static Analysis (ReturnHome)
+# EQOA Frontiers — Disc Static Analysis
 
 **Target:** `SLUS_207.44 — EverQuest Online Adventures: Frontiers (USA)` (DNAS-bypass ISO, 2.85 GB)
 **Disc version:** `SYSTEM.CNF` → `BOOT2 = cdrom0:\SLUS_207.44;1`, `VER = 1.02`, `VMODE = NTSC`

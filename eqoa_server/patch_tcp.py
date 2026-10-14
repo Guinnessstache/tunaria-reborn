@@ -26,7 +26,7 @@ def default_motd_text(config: ServerConfig) -> str:
     return (
         f"Welcome to {config.shard_name}!\n"
         f"Server: {config.public_host}\n\n"
-        "This is a local EQOA community server scaffold.\n"
+        "This is a Project Tunaria Reborn server.\n"
         "Account creation and login are available. Character/world support is experimental.\n\n"
         "Next milestone: server select, character select, and a minimal empty-world login.\n"
     )

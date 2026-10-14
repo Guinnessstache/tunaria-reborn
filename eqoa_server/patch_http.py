@@ -18,7 +18,7 @@ class PatchHTTPHandler(BaseHTTPRequestHandler):
                 "authTcpPort": server.config.auth_port,
                 "motdTcpPort": server.config.motd_port,
                 "gameUdpPort": server.config.game_port,
-                "message": "EQOA community server scaffold is running.",
+                "message": "Project Tunaria Reborn server is running.",
             }
             body = json.dumps(payload, indent=2).encode("utf-8")
             self.send_response(200)
