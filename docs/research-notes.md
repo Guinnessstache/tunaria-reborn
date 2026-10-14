@@ -15,6 +15,15 @@ EQOAGameServer is the most useful public codebase for protocol constants. The pi
 
 The code in this project is a fresh Python implementation, not a vendored copy of the C# server. The cloned repository under `public-research/` is for local study only.
 
+## Reference Material
+
+- **Prima Official Game Guide — EverQuest Online Adventures: Frontiers**
+  <https://www.projectreturnhome.com/DownloadFiles/EverQuest-Online-Adventures-Frontiers-Prima.pdf>
+  (hosted by Project ReturnHome). Reference for populating game data: races,
+  classes and starting cities, spells and abilities by class, zones and maps,
+  NPCs, quests, items and crafting. Use it to look facts up; don't copy its text
+  or maps into the repo.
+
 ## Current Protocol Understanding
 
 Auth TCP:
