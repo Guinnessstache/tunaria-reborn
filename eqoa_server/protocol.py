@@ -417,42 +417,43 @@ def build_old_world_list(
     game_port: int,
     shard_name: str,
 ) -> bytes:
+    """GameServers (0x07B3) list, laid out like Sandstorm's (one entry per language).
+
+    Each entry: name as int32 character count + that many UTF-16 characters (variable
+    length, as in EQOAGameServer's ServerListManager), recommended flag, server
+    endpoint, port, IPv4 address, language. A name padded to a fixed width shifts the
+    following fields and the client shows an empty list; that only went unnoticed
+    because "Sandstorm" and "Local EQOA" (cut to 9) are both 9 characters.
+    """
     ip_bytes = bytes(int(part) for part in public_host.split(".")[:4])
     if len(ip_bytes) != 4:
         raise ValueError(f"public host must be an IPv4 address, got {public_host!r}")
 
-    raw_name = (shard_name or "VoxOnline")[:OLD_WORLD_NAME_CHARS]
-    name_bytes = raw_name.encode("utf-16-le").ljust(OLD_WORLD_NAME_CHARS * 2, b"\x00")
-    name_char_count = len(raw_name)
-
+    name = (shard_name or "VoxOnline")[:OLD_WORLD_NAME_CHARS]
     entries = bytearray()
     for language in range(OLD_WORLD_ENTRY_COUNT):
-        entry = bytearray()
-        entry += struct.pack("<I", name_char_count)
-        entry += name_bytes
-        entry += b"\x00"
-        entry += struct.pack("<H", OLD_WORLD_SERVER_ENDPOINT)
-        entry += struct.pack("<H", game_port)
-        entry += bytes(reversed(ip_bytes))
-        entry += bytes([language])
-        if len(entry) != 32:
-            raise ValueError(f"world-list entry must be 32 bytes, got {len(entry)}")
-        entries += entry
+        entries += struct.pack("<I", len(name)) + name.encode("utf-16-le")
+        entries += b"\x00"  # recommended
+        entries += struct.pack("<HH", OLD_WORLD_SERVER_ENDPOINT, game_port)
+        entries += bytes(reversed(ip_bytes))
+        entries += bytes([language])
 
+    list_message = (
+        bytes([MessageType.UNRELIABLE])
+        + _write_size(2 + 1 + len(entries))  # opcode, count, entries
+        + struct.pack("<H", 0x07B3)
+        + bytes([OLD_WORLD_VISIBLE_COUNT])
+        + bytes(entries)
+    )
     ps2_endpoint = struct.pack("<H", client_endpoint)
-    header = bytearray(32)
-    header[0:2] = b"\xb0\x73"
-    header[2:4] = ps2_endpoint
-    header[4:7] = bytes([0xDA, 0x21, 0x63])
-    header[7:9] = ps2_endpoint
-    header[9:12] = bytes([0x02, 0x00, 0x01])
-    header[12:16] = bytes([0x00, 0x01, 0x00, 0x02])
-    header[16:20] = bytes([0x00, 0xFB, 0x06, 0x01])
-    header[20:24] = bytes([0x00, 0x00, 0x00, 0x12])
-    header[24:28] = bytes([0x00, 0x00, 0x00, 0xFC])
-    header[28:32] = bytes([0xC3, 0xB3, 0x07, OLD_WORLD_VISIBLE_COUNT])
-
-    body = bytes(header) + bytes(entries)
+    rest = (
+        bytes([0x63])  # bundle flags
+        + ps2_endpoint
+        + bytes([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00])
+        + bytes([0xFB, 0x06, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00])  # DiscVersion
+        + list_message
+    )
+    body = b"\xb0\x73" + ps2_endpoint + write_varuint(0x1000 + len(rest)) + rest
     return body + struct.pack("<I", rdp_crc(body))
 
 

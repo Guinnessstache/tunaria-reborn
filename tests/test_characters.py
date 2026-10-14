@@ -93,6 +93,25 @@ class CharacterListTests(unittest.TestCase):
         self.assertEqual(len(message), 2 + 2 + size)
         self.assertEqual(message[6:], build_character_list_payload(characters))
 
+    def test_server_list_matches_sandstorm_and_handles_any_name_length(self):
+        from eqoa_server.protocol import build_old_world_list, parse_udp_packet
+
+        theirs = next(p for p in _server_udp_payloads(SANDSTORM_CAPTURE) if len(p) == 228)
+        endpoint = struct.unpack_from("<H", theirs, 2)[0]
+        self.assertEqual(build_old_world_list(endpoint, "5.161.217.188", 10070, "Sandstorm"), theirs)
+        for name in ("Tunaria", "X", "Local EQOA"):
+            packet = build_old_world_list(0x0AD0, "192.168.1.65", 10070, name)
+            payload = next(m for m in parse_udp_packet(packet).messages if m.opcode == 0x07B3).payload
+            offset = 1
+            for language in range(6):
+                length = struct.unpack_from("<I", payload, offset)[0]
+                self.assertEqual(payload[offset + 4 : offset + 4 + 2 * length].decode("utf-16-le"), name[:9])
+                offset += 4 + 2 * length + 1 + 2 + 2
+                self.assertEqual(payload[offset : offset + 4], bytes([65, 1, 168, 192]))
+                self.assertEqual(payload[offset + 4], language)
+                offset += 5
+            self.assertEqual(offset, len(payload))
+
     def test_count_is_zigzag(self):
         self.assertEqual(self.sandstorm_list()[0], 0x10)  # 8 characters
         two = [Character(character_id=i, account_id=1, name=f"C{i}") for i in (1, 2)]
