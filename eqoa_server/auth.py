@@ -141,6 +141,7 @@ class AuthTCPHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         server: AuthServer = self.server  # type: ignore[assignment]
         self.request.settimeout(120)
+        print(f"AUTH {self.client_address[0]}:{self.client_address[1]} connected")
         self.request.sendall(build_challenge())
         while True:
             try:

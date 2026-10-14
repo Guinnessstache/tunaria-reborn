@@ -13,8 +13,11 @@ from eqoa_server.patch_tcp import (
     MOTD_RESPONSE_SIZE,
     UPDATE_MANIFEST_PATHS,
     build_motd_response,
+    STATION_PAK_PATH,
     PatchTCPServer,
+    build_pak,
     build_update_manifest_response,
+    parse_pak,
     parse_patch_request,
 )
 
@@ -89,9 +92,25 @@ class PatchTcpTests(unittest.TestCase):
             self.assertIn(f'CRC="{binascii.crc32(hosts) & 0xFFFFFFFF}"', entry)
             self.assertIn(f'TotalSize="{len(hosts)}"', entry)
             self.assertIn(f'DownloadSize="{len(hosts_gz)}"', entry)
+
+            head, pak_gz = http_get(port, "/station4.pak.gz", "192.168.1.51")
+            self.assertIn(b"200 OK", head)
+            pak = gzip.decompress(pak_gz)
+            entry = re.search(r'<File LocalName="station.pak"[^>]*>', xml).group(0)
+            self.assertIn(f'CRC="{binascii.crc32(pak) & 0xFFFFFFFF}"', entry)
+            self.assertIn(f'TotalSize="{len(pak)}"', entry)
+            self.assertIn(f'DownloadSize="{len(pak_gz)}"', entry)
+            entries = dict(parse_pak(pak))
+            self.assertEqual(entries[b"stationdata/servers/stationLiveHosts.txt"], b"192.168.1.51:9735\n")
+            self.assertIn(b"http://192.168.1.51:7000/", entries[b"stationdata/config/options.cfg"])
+            self.assertIn(b"data/ui/login.xml", entries)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_station_pak_round_trips(self):
+        original = STATION_PAK_PATH.read_bytes()
+        self.assertEqual(build_pak(parse_pak(original)), original)
 
     def test_parse_update_manifest_request(self):
         path = sorted(UPDATE_MANIFEST_PATHS)[0]

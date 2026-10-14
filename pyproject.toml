@@ -25,5 +25,8 @@ Homepage = "https://github.com/Guinnessstache/eqoa-returnhome"
 [tool.setuptools]
 packages = ["eqoa_server", "eqoa_protocol"]
 
+[tool.setuptools.package-data]
+eqoa_server = ["patch_data/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

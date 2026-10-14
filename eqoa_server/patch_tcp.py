@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import socketserver
 import gzip
+import io
+import struct
 import binascii
 from pathlib import Path
 from dataclasses import dataclass
@@ -87,10 +89,58 @@ def build_http_response(
 
 MANIFEST_NAME = "eqoa-frontierslive-update.xml.gz"
 DEFAULT_CHANGES = b"No changes.\n"
+# Station login pak as served by Sandstorm (captures/from_sandstorm.pcapng, station4.pak.gz).
+# It carries the login UI pages plus the auth server address the client connects to.
+STATION_PAK_PATH = Path(__file__).parent / "patch_data" / "station4.pak"
+STATION_HOSTS_ENTRY = b"stationdata/servers/stationLiveHosts.txt"
+STATION_OPTIONS_ENTRY = b"stationdata/config/options.cfg"
+
+
+def gzip_named(name: str, data: bytes) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(filename=name, mode="wb", fileobj=out, mtime=0) as gz:
+        gz.write(data)
+    return out.getvalue()
 
 
 def eqahosts_bytes(config: ServerConfig) -> bytes:
-    return gzip.compress(f"{config.public_host}\n\n".encode("ascii"), mtime=0)
+    return gzip_named("eqahosts.txt", f"{config.public_host}\n\n".encode("ascii"))
+
+
+def parse_pak(data: bytes) -> list[tuple[bytes, bytes]]:
+    """A pak is a run of (u32 BE name length, name, u32 BE data length, data) entries."""
+    entries = []
+    offset = 0
+    while offset < len(data):
+        (name_len,) = struct.unpack_from(">I", data, offset)
+        name = data[offset + 4 : offset + 4 + name_len]
+        offset += 4 + name_len
+        (data_len,) = struct.unpack_from(">I", data, offset)
+        entries.append((name, data[offset + 4 : offset + 4 + data_len]))
+        offset += 4 + data_len
+    if offset != len(data):
+        raise ValueError("truncated pak")
+    return entries
+
+
+def build_pak(entries: list[tuple[bytes, bytes]]) -> bytes:
+    return b"".join(
+        struct.pack(">I", len(name)) + name + struct.pack(">I", len(data)) + data
+        for name, data in entries
+    )
+
+
+def station_pak_bytes(config: ServerConfig) -> bytes:
+    entries = []
+    for name, data in parse_pak(STATION_PAK_PATH.read_bytes()):
+        if name == STATION_HOSTS_ENTRY:
+            data = f"{config.public_host}:{config.auth_port}\n".encode("ascii")
+        elif name == STATION_OPTIONS_ENTRY:
+            data = (
+                f"NewsURL:http://{config.public_host}:{config.motd_port}{MOTD_PATH}\r\n"
+            ).encode("ascii")
+        entries.append((name, data))
+    return gzip_named("pak.pak", build_pak(entries))
 
 
 def changes_bytes(config: ServerConfig) -> bytes:
@@ -108,6 +158,8 @@ def generated_patch_file(config: ServerConfig, name: str) -> bytes | None:
         return eqahosts_bytes(config)
     if lowered == "changes.txt":
         return changes_bytes(config)
+    if lowered == "station4.pak.gz":
+        return station_pak_bytes(config)
     if lowered == MANIFEST_NAME:
         return build_verant_manifest(config)
     return None
