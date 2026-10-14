@@ -92,7 +92,7 @@ def main() -> None:
         )
         console.flush()
     if not running_under_launcher():
-        print("  Tip: start with start_server.bat / start_server.sh so the admin panel can restart and update the server.")
+        print("  Tip: start with .\\start_server.bat (Windows) or ./start_server.sh so the admin panel can restart and update the server.")
     print("Press Ctrl+C to stop.")
 
     # Wake periodically so Ctrl+C is handled promptly on Windows.

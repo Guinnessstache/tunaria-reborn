@@ -479,7 +479,7 @@ function renderUpdates(u) {
     ${u.ahead ? `<p class="error">This copy has ${u.ahead} commit(s) that are not on ${esc(u.upstream)}; updating is blocked.</p>` : ""}`;
   const launcher = $("#update-launcher");
   launcher.hidden = u.launcher;
-  launcher.innerHTML = "This server was started directly, so it cannot restart itself. Updating still downloads and tests the code, but you will need to restart it from the console. Start it with <code>start_server.bat</code> (Windows) or <code>./start_server.sh</code> to restart automatically.";
+  launcher.innerHTML = "This server was started directly, so it cannot restart itself. Updating still downloads and tests the code, but you will need to restart it from the console. Start it with <code>.\\start_server.bat</code> (Windows PowerShell) or <code>./start_server.sh</code> to restart automatically.";
   $("#update-incoming").innerHTML = u.behind
     ? `<p><strong>${u.behind} new commit(s)</strong></p><ul>${u.incoming.map((c) => `<li><code>${esc(c.commit)}</code> ${esc(c.subject)} <span class="muted">· ${esc(c.author)}, ${esc(date(c.time))}</span></li>`).join("")}</ul>`
     : "You are up to date with the last check.";

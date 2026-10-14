@@ -27,6 +27,14 @@ python -m pip install -e ".[dev]"        # installs scapy + pytest too
 python -m eqoa_server --host 0.0.0.0 --public-host 127.0.0.1
 ```
 
+To let the admin panel restart and update the server, start it with the
+launcher instead (same options):
+
+```powershell
+.\start_server.bat --host 0.0.0.0 --public-host 127.0.0.1    # Windows PowerShell
+./start_server.sh --host 0.0.0.0 --public-host 127.0.0.1      # Linux / macOS
+```
+
 Ports: Auth TCP `9735`, MOTD TCP `7000`, Game UDP `10070`, Patch HTTP `8080`,
 Admin panel `8090`.
 

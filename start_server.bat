@@ -1,7 +1,8 @@
 @echo off
 rem Runs the EQOA server and restarts it when the admin panel asks (exit code 75),
 rem e.g. after "Update & restart". Pass your usual options, for example:
-rem   start_server.bat --host 0.0.0.0 --public-host 192.168.1.51
+rem   .\start_server.bat --host 0.0.0.0 --public-host 192.168.1.51   (PowerShell)
+rem   start_server.bat --host 0.0.0.0 --public-host 192.168.1.51     (cmd.exe)
 rem Set PYTHON to use a specific interpreter (default: python).
 
 rem A batch file is read from disk while it runs, so run from a temp copy in case
