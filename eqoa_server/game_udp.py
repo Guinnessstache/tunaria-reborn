@@ -312,6 +312,12 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                             f"continuation={len(continuation_packets)}"
                         )
             else:
+                # A well-formed packet that matched no specific branch. Before the
+                # generic minimal ack (which used the wrong 0xFFFE endpoint and
+                # caused the server-select timeout), try the pcap-verified control
+                # handler: the 0x87 list-hover reliable-control lands here.
+                if self._try_handle_short_phase3_control(data, sock, server):
+                    return
                 sock.sendto(build_minimal_ack(packet, server.server_endpoint), self.client_address)
         except Exception as exc:
             if self._try_handle_phase3_fallback(data, sock, server):
