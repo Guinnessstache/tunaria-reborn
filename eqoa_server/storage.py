@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import json
+import secrets
+import threading
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from time import time
+
+
+@dataclass(slots=True)
+class Account:
+    account_id: int
+    username: str
+    password_token: str
+    created_at: float = field(default_factory=time)
+    last_login_at: float | None = None
+
+
+@dataclass(slots=True)
+class Character:
+    character_id: int
+    account_id: int
+    name: str
+    race: int = 0
+    klass: int = 10
+    gender: int = 0
+    level: int = 1
+    experience: int = 0
+    hp: int = 100
+    max_hp: int = 100
+    mana: int = 50
+    max_mana: int = 50
+    zone_id: int = 1
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    heading: float = 0.0
+    appearance: str = ""
+
+
+class JsonStore:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.RLock()
+        self.accounts: dict[str, Account] = {}
+        self.characters: dict[int, Character] = {}
+        self._next_account_id = 1
+        self._next_character_id = 1
+        self.load()
+
+    def load(self) -> None:
+        with self._lock:
+            if not self.path.exists():
+                return
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            self.accounts = {
+                row["username"].lower(): Account(**row)
+                for row in payload.get("accounts", [])
+            }
+            self.characters = {
+                int(row["character_id"]): Character(**row)
+                for row in payload.get("characters", [])
+            }
+            self._next_account_id = payload.get("next_account_id", 1)
+            self._next_character_id = payload.get("next_character_id", 1)
+
+    def save(self) -> None:
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "next_account_id": self._next_account_id,
+                "next_character_id": self._next_character_id,
+                "accounts": [asdict(account) for account in self.accounts.values()],
+                "characters": [asdict(character) for character in self.characters.values()],
+            }
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+
+    def create_account(self, username: str, password_token: str) -> Account | None:
+        key = username.strip().lower()
+        if not key or key in self.accounts:
+            return None
+        with self._lock:
+            account = Account(self._next_account_id, username.strip(), password_token)
+            self._next_account_id += 1
+            self.accounts[key] = account
+            self.save()
+            return account
+
+    def authenticate(self, username: str, password_token: str) -> Account | None:
+        with self._lock:
+            account = self.accounts.get(username.strip().lower())
+            if account is None:
+                account = self.create_account(username, password_token)
+            if account and secrets.compare_digest(account.password_token, password_token):
+                account.last_login_at = time()
+                self.save()
+                return account
+            return None
+
+    def change_password(self, username: str, old_token: str, new_token: str) -> bool:
+        with self._lock:
+            account = self.accounts.get(username.strip().lower())
+            if account is None or not secrets.compare_digest(account.password_token, old_token):
+                return False
+            account.password_token = new_token
+            self.save()
+            return True
+
+    def latest_account(self) -> Account | None:
+        with self._lock:
+            if not self.accounts:
+                return None
+            return max(self.accounts.values(), key=lambda account: account.last_login_at or account.created_at)
+
+    def list_characters(self, account_id: int) -> list[Character]:
+        with self._lock:
+            return [
+                character
+                for character in sorted(self.characters.values(), key=lambda row: row.character_id)
+                if character.account_id == account_id
+            ]
+
+    def get_character(self, character_id: int) -> Character | None:
+        with self._lock:
+            return self.characters.get(character_id)
+
+    def create_character(
+        self,
+        account_id: int,
+        name: str,
+        *,
+        race: int = 0,
+        klass: int = 10,
+        gender: int = 0,
+        appearance: bytes = b"",
+    ) -> Character:
+        with self._lock:
+            for character in self.characters.values():
+                if character.account_id == account_id and character.name.lower() == name.lower():
+                    return character
+            hp, mana = _starting_vitals(race, klass)
+            zone_id, x, y, z = _starting_position(race)
+            character = Character(
+                character_id=self._next_character_id,
+                account_id=account_id,
+                name=name,
+                race=race,
+                klass=klass,
+                gender=gender,
+                hp=hp,
+                max_hp=hp,
+                mana=mana,
+                max_mana=mana,
+                zone_id=zone_id,
+                x=x,
+                y=y,
+                z=z,
+                appearance=appearance.hex(),
+            )
+            self._next_character_id += 1
+            self.characters[character.character_id] = character
+            self.save()
+            return character
+
+
+def _starting_vitals(race: int, klass: int) -> tuple[int, int]:
+    if klass in {7, 8, 9, 10, 11, 12, 13, 14}:
+        return (100, 100)
+    return (100, 50)
+
+
+def _starting_position(race: int) -> tuple[int, float, float, float]:
+    starts = {
+        0: (1, 25273.03125, 54.125, 15723.29102),  # Human -> Freeport
+        1: (3, 0.0, 0.0, 0.0),  # Barbarian -> Halas
+        2: (1, 0.0, 0.0, 0.0),
+        3: (2, 0.0, 0.0, 0.0),
+        4: (2, 0.0, 0.0, 0.0),
+        5: (8, 0.0, 0.0, 0.0),
+        6: (6, 0.0, 0.0, 0.0),
+        7: (1, 0.0, 0.0, 0.0),
+        8: (4, 0.0, 0.0, 0.0),
+        9: (1, 0.0, 0.0, 0.0),
+        10: (8, 0.0, 0.0, 0.0),
+        11: (7, 0.0, 0.0, 0.0),
+        12: (1, 0.0, 0.0, 0.0),
+    }
+    return starts.get(race, starts[0])

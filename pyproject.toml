@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eqoa-returnhome"
+version = "0.2.0"
+description = "EQOA (EverQuest Online Adventures) private server + reverse-engineered phase3 protocol library (ReturnHome)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "GuinnessStache" }]
+keywords = ["eqoa", "everquest", "ps2", "private-server", "reverse-engineering", "protocol", "returnhome"]
+
+[project.optional-dependencies]
+pcap = ["scapy>=2.5"]
+dev = ["pytest>=7", "scapy>=2.5"]
+
+[project.scripts]
+eqoa-server = "eqoa_server.main:main"
+
+[project.urls]
+Homepage = "https://github.com/Guinnessstache/eqoa-returnhome"
+
+[tool.setuptools]
+packages = ["eqoa_server", "eqoa_protocol"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
