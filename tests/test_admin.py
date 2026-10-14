@@ -12,11 +12,18 @@ from unittest import mock
 from eqoa_server.admin import AdminContext, AdminCredentials, AdminServer
 from eqoa_server.auth import LOGIN_GOOD, LOGIN_REQUEST, AuthRequest
 from eqoa_server.config import ServerConfig, load_settings
+from eqoa_server.netconfig import NetworkHelper
 from eqoa_server.patch_tcp import MOTD_BODY_SIZE, fixed_motd_body
 from eqoa_server.services import LogBuffer, ServiceManager
 from eqoa_server.storage import JsonStore
 
 PASSWORD = "test-admin-password"
+
+
+def isolated_network() -> NetworkHelper:
+    """Never let tests reach a real network helper installed on the machine running them."""
+    missing = Path(tempfile.mkdtemp()) / "no-helper"
+    return NetworkHelper(missing / "requests", missing / "status.json")
 
 
 class AdminPanelTests(unittest.TestCase):
@@ -39,7 +46,7 @@ class AdminPanelTests(unittest.TestCase):
         self.stop_event = threading.Event()
         context = AdminContext(
             self.config, self.store, self.services, self.logs,
-            AdminCredentials.load(self.config), self.stop_event,
+            AdminCredentials.load(self.config), self.stop_event, network=isolated_network(),
         )
         self.admin = AdminServer(("127.0.0.1", 0), context)
         threading.Thread(target=self.admin.serve_forever, daemon=True).start()
@@ -212,7 +219,9 @@ class GeneratedPasswordTests(unittest.TestCase):
     def start_admin(self, credentials):
         store = JsonStore(self.config.data_path)
         services = ServiceManager(self.config, store)
-        context = AdminContext(self.config, store, services, LogBuffer(), credentials, threading.Event())
+        context = AdminContext(
+            self.config, store, services, LogBuffer(), credentials, threading.Event(), network=isolated_network()
+        )
         self.admin = AdminServer(("127.0.0.1", 0), context)
         threading.Thread(target=self.admin.serve_forever, daemon=True).start()
         self.addCleanup(self.admin.server_close)

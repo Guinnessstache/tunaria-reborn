@@ -11,19 +11,20 @@ from eqoa_server.netconfig import NetworkHelper
 from eqoa_server.services import LogBuffer, ServiceManager
 from eqoa_server.storage import JsonStore
 
-from test_admin import AdminPanelTests
-from test_netconfig_helper import NetconfigHelperTests
+# Import the modules, not the classes, so unittest does not collect their tests here too.
+import test_admin
+import test_netconfig_helper
 
 PASSWORD = "test-admin-password"
 
 
 @unittest.skipIf(os.name == "nt", "the helper runs on Linux servers")
 class NetworkAdminTests(unittest.TestCase):
-    request = AdminPanelTests.request
+    request = test_admin.AdminPanelTests.request
 
     def setUp(self):
         # Fake root + stub commands + the helper module, as in the helper tests.
-        NetconfigHelperTests.setUp(self)
+        test_netconfig_helper.NetconfigHelperTests.setUp(self)
         self.network = NetworkHelper(
             self.root / "opt/tunaria-reborn/netconfig", self.root / "run/tunaria-netconfig/status.json"
         )
