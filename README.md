@@ -113,4 +113,17 @@ EQOA preservation community:
 - ESF file format notes (https://github.com/joukop/ESF-file-format/) and EQOAEmu
   (https://eqoaemu.com/).
 
-MIT licensed (your code). EverQuest / EQOA are trademarks of their respective owners.
+## License
+
+Copyright (c) 2026 GuinnessStache and contributors.
+
+Licensed under the **GNU Affero General Public License v3.0** (`AGPL-3.0-only`,
+see `LICENSE`), the same license as EQOAGameServer, which parts of this project
+are modelled on. In short: you may use, change and share it, but changed
+versions you distribute **or run as a server that other people connect to** must
+make their source available under the same license. If you run a modified
+server for other players, give them a way to get the source, for example a link
+in the message of the day.
+
+EverQuest and EverQuest Online Adventures are trademarks of their respective
+owners. This project is not affiliated with or endorsed by them.
