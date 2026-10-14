@@ -52,6 +52,8 @@ class Updater:
                 cwd=self.repo_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 env=env,
             )
@@ -138,7 +140,9 @@ class Updater:
     def _run_tests(self) -> tuple[bool, str]:
         try:
             result = subprocess.run(
-                self.test_command, cwd=self.repo_dir, capture_output=True, text=True, timeout=TEST_TIMEOUT
+                self.test_command, cwd=self.repo_dir, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT,
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
             )
         except subprocess.TimeoutExpired:
             return False, f"tests timed out after {TEST_TIMEOUT}s"
