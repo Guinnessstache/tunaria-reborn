@@ -8,6 +8,7 @@ segmented MemoryDump the Sandstorm server sent in ``from_sandstorm.pcapng``.
 """
 from __future__ import annotations
 
+import re
 import struct
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,7 @@ from .protocol import MessageType, read_varuint
 
 SANDSTORM_CAPTURE = Path(__file__).resolve().parents[1] / "captures" / "from_sandstorm.pcapng"
 GAME_PORT = 10070
+PATCH_PORT = 7000
 MEMORY_DUMP_OPCODE = 0x000D
 MEMORY_DUMP_FIRST_MESSAGE = 5
 
@@ -52,6 +54,63 @@ def _server_udp_payloads(path: Path) -> list[bytes]:
         if sport == GAME_PORT:
             payloads.append(udp[8:length])
     return payloads
+
+
+def _tcp_segments(path: Path):
+    """(source port, destination port, sequence number, payload) for every IPv4 TCP segment with data."""
+    data = path.read_bytes()
+    endian = "<"
+    offset = 0
+    while offset + 12 <= len(data):
+        block_type, block_len = struct.unpack_from(endian + "II", data, offset)
+        if block_len < 12 or offset + block_len > len(data):
+            break
+        body = data[offset + 8 : offset + block_len - 4]
+        offset += block_len
+        if block_type == _PCAPNG_SECTION_HEADER:
+            endian = "<" if struct.unpack_from("<I", body, 0)[0] == 0x1A2B3C4D else ">"
+            continue
+        if block_type != _PCAPNG_ENHANCED_PACKET or len(body) < 20:
+            continue
+        captured_len = struct.unpack_from(endian + "I", body, 12)[0]
+        frame = body[20 : 20 + captured_len]
+        if len(frame) < 14 + 20 + 20 or frame[12:14] != b"\x08\x00" or frame[14 + 9] != 6:
+            continue
+        ip = frame[14:]
+        ihl = (ip[0] & 0x0F) * 4
+        total = struct.unpack_from("!H", ip, 2)[0]
+        tcp = ip[ihl:total]
+        sport, dport, seq = struct.unpack_from("!HHI", tcp, 0)
+        payload = tcp[(tcp[12] >> 4) * 4 :]
+        if payload:
+            yield sport, dport, seq, payload
+
+
+@lru_cache(maxsize=1)
+def sandstorm_patch_files(path: Path = SANDSTORM_CAPTURE, port: int = PATCH_PORT) -> dict[str, bytes]:
+    """Files the Sandstorm patch server sent in the capture, by request name (e.g. "ss-patch-6.dat.gz")."""
+    if not path.is_file():
+        return {}
+    requests: dict[int, bytes] = {}
+    responses: dict[int, dict[int, bytes]] = {}
+    for sport, dport, seq, payload in _tcp_segments(path):
+        if dport == port:
+            requests[sport] = requests.get(sport, b"") + payload
+        elif sport == port:
+            responses.setdefault(dport, {})[seq] = payload
+    files: dict[str, bytes] = {}
+    for client_port, request in requests.items():
+        line = request.split(b"\r\n", 1)[0].split()
+        if len(line) < 2 or client_port not in responses:
+            continue
+        stream = b"".join(segment for _, segment in sorted(responses[client_port].items()))
+        head, _, body = stream.partition(b"\r\n\r\n")
+        length = re.search(rb"(?im)^content-length:\s*(\d+)", head)
+        if not head.startswith(b"HTTP/1.1 200") or not length or len(body) < int(length.group(1)):
+            continue
+        name = line[1].decode("ascii", "replace").rsplit("/", 1)[-1]
+        files[name] = body[: int(length.group(1))]
+    return files
 
 
 def _phase3_inner(packet: bytes) -> bytes | None:

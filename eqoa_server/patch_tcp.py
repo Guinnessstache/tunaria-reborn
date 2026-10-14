@@ -12,6 +12,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from email.utils import formatdate
 
+from .capture_template import sandstorm_patch_files
 from .config import ServerConfig
 
 
@@ -180,6 +181,12 @@ def patch_file_name(request_path: str) -> str:
     return Path(clean).name
 
 
+# Client files Sandstorm's patch server hands out, served from the capture when no
+# patch folder provides them. A memory card that never patched against Sandstorm
+# lacks them, and without them the server list stays empty.
+CAPTURED_PATCH_FILES = ("ss-patch-6.dat.gz", "addart-2.csf.gz", "words-11.txt.gz")
+
+
 def load_patch_file(config: ServerConfig, request_path: str) -> bytes | None:
     name = patch_file_name(request_path)
     if not name:
@@ -187,12 +194,13 @@ def load_patch_file(config: ServerConfig, request_path: str) -> bytes | None:
     generated = generated_patch_file(config, name)
     if generated is not None:
         return generated
-    if config.patch_source_dir is None:
-        return None
-    path = config.patch_source_dir / name
-    if not path.exists() or not path.is_file():
-        return None
-    return path.read_bytes()
+    if config.patch_source_dir is not None:
+        path = config.patch_source_dir / name
+        if path.is_file():
+            return path.read_bytes()
+    if name in CAPTURED_PATCH_FILES:
+        return sandstorm_patch_files().get(name)
+    return None
 
 
 def gz_info(config: ServerConfig, name: str) -> dict[str, int]:

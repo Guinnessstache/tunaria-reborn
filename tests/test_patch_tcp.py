@@ -132,6 +132,17 @@ class PatchTcpTests(unittest.TestCase):
         config.public_host = "192.168.1.51"  # going back still moves forward
         self.assertGreater(version(), second)
 
+    def test_manifest_offers_sandstorms_client_files_like_sandstorm(self):
+        xml = gzip.decompress(build_verant_manifest(temp_config(public_host="192.168.1.65"))).decode()
+        # Same files and checksums as the manifest in the Sandstorm capture.
+        for local, remote, crc in [("SS", "ss-patch-6.dat.gz", 2070785177), ("addart.csf", "addart-2.csf.gz", 2419064749),
+                                   ("WORDS.TXT", "words-11.txt.gz", 3115897291)]:
+            entry = re.search(rf'<File LocalName="{re.escape(local)}"[^>]*>', xml)
+            self.assertIsNotNone(entry, local)
+            self.assertIn(f'Name="{remote}" CRC="{crc}"', entry.group(0))
+        self.assertIn('<File LocalName="words.txt" Delete="True">', xml)
+        self.assertIn('LocalName="station.pak"', xml)
+
     def test_parse_update_manifest_request(self):
         path = sorted(UPDATE_MANIFEST_PATHS)[0]
         data = f"GET {path} HTTP/1.1\r\nHost: patch.everquestonlineadventures.com\r\n\r\n".encode("ascii")
