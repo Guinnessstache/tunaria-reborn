@@ -4,9 +4,11 @@ A community server for **EverQuest Online Adventures: Frontiers**, the PlayStati
 MMO, written from scratch in Python. Point a PS2 or PCSX2 client at it, create a
 character and walk into Tunaria.
 
-> For preservation and interoperability on software you own. No Sony, SOE,
-> Daybreak or EQOA game files or client code are included, only an independent
-> server and a description of the network protocol. Keep deployments non-commercial.
+> For preservation and interoperability on software you own. The game client and
+> disc files are not included: you need your own copy of the game. A small amount
+> of game data recorded from the Sandstorm server is included so the server works
+> out of the box: the network capture in `captures/` and the login-screen pack in
+> `eqoa_server/patch_data/`. Keep deployments non-commercial.
 
 ## Status
 
@@ -133,6 +135,13 @@ Analyse a capture:
 ```sh
 python tools/decode_pcap.py captures/from_sandstorm.pcapng
 python tools/analyze_pcap.py <your.pcapng> --out analysis/summary.json
+```
+
+Before committing a capture of your own, strip your login, session keys and
+machine details from it:
+
+```sh
+python tools/sanitize_capture.py my-capture.pcapng captures/my-capture.pcapng
 ```
 
 ### Documentation
