@@ -379,7 +379,8 @@ def parse_messages(data: bytes) -> list[UdpMessage]:
             message_number = struct.unpack_from("<H", data, offset)[0]
             offset += 2
         if message_type == MessageType.PING:
-            messages.append(UdpMessage(message_type, message_number))
+            messages.append(UdpMessage(message_type, message_number, payload=data[offset : offset + size]))
+            offset += size
             continue
         opcode = None
         if message_type in (MessageType.UNRELIABLE, MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE):

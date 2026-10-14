@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socketserver
+import time
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,9 +27,13 @@ from .protocol import (
     build_phase2_character_select_ack,
     build_phase2_character_select_resend,
     build_phase2_guaranteed_ack,
+    MessageType,
+    PacketBundleFlags,
+    parse_messages,
     parse_phase3_client_packet,
     parse_create_character_payload,
     parse_udp_packet,
+    read_varuint,
 )
 from .storage import Character, JsonStore
 
@@ -56,6 +61,13 @@ class GameSession:
     phase3_last_server_ping_arrival: int = 0
     selected_character: Character | None = None
     external_character_id: int | None = None
+    # Reliable phase3 bundles the server has sent: (highest message number, inner body).
+    phase3_reliable: list[tuple[int, bytes]] = field(default_factory=list)
+    phase3_next_message: int = 1
+    phase3_acked_message: int = 0
+    phase3_client_message: int = 0
+    phase3_last_resend: float = 0.0
+    phase3_last_ping: float = 0.0
 
 
 class GameUDPHandler(socketserver.BaseRequestHandler):
@@ -205,6 +217,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         session.selected_character,
                     )
                     session.phase3_started = True
+                    _track_phase3_initial_packets(session, session.phase3_packets)
                     sent_phase3 = True
                     for response in session.phase3_packets:
                         sock.sendto(response, self.client_address)
@@ -224,94 +237,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 if session is None:
                     session = GameSession(packet.client_endpoint, packet.instance_id or 0)
                     server.sessions[self.client_address] = session
-                phase3_packet = parse_phase3_client_packet(data)
-                if phase3_packet.instance_id is not None:
-                    session.instance_id = phase3_packet.instance_id
-                if (
-                    session.phase3_last_client_arrival
-                    and phase3_packet.arrival > session.phase3_last_client_arrival + 500
-                ):
-                    if session.phase3_max_client_message > 0:
-                        ack = build_phase3_guaranteed_ack(
-                            packet.client_endpoint,
-                            session.instance_id,
-                            session.phase3_next_arrival,
-                            phase3_packet.arrival,
-                            session.phase3_max_client_message,
-                        )
-                        session.phase3_next_arrival += 1
-                        sock.sendto(ack, self.client_address)
-                    if server.log_packets:
-                        print(
-                            f"UDP phase3 large-arrival ack sent to {self.client_address[0]}:{self.client_address[1]} "
-                            f"client_arrival={phase3_packet.arrival} last={session.phase3_last_client_arrival} "
-                            f"client_msg={session.phase3_max_client_message} raw={data.hex()}"
-                        )
-                    return
-                session.phase3_last_client_arrival = max(
-                    session.phase3_last_client_arrival, phase3_packet.arrival
-                )
-                if _is_plausible_client_message_sequence(
-                    session.phase3_max_client_message, phase3_packet.max_reliable_sequence
-                ):
-                    session.phase3_max_client_message = phase3_packet.max_reliable_sequence
-                elif phase3_packet.max_reliable_sequence > session.phase3_max_client_message and server.log_packets:
-                    print(
-                        f"UDP phase3 ignored implausible client_msg jump from {self.client_address[0]}:{self.client_address[1]} "
-                        f"current={session.phase3_max_client_message} candidate={phase3_packet.max_reliable_sequence} "
-                        f"arrival={phase3_packet.arrival}"
-                    )
-                max_client_message = session.phase3_max_client_message
-                if max_client_message > 0:
-                    ack = build_phase3_guaranteed_ack(
-                        packet.client_endpoint,
-                        session.instance_id,
-                        session.phase3_next_arrival,
-                        phase3_packet.arrival,
-                        max_client_message,
-                    )
-                    session.phase3_next_arrival += 1
-                    sock.sendto(ack, self.client_address)
-                    send_server_ping = phase3_packet.has_ping
-                    if send_server_ping:
-                        ping = build_phase3_server_ping(
-                            packet.client_endpoint,
-                            session.instance_id,
-                            session.phase3_next_arrival,
-                        )
-                        session.phase3_next_arrival += 1
-                        session.phase3_last_server_ping_arrival = phase3_packet.arrival
-                        sock.sendto(ping, self.client_address)
-                    if phase3_packet.client_update_sequence is not None:
-                        client_update_ack = build_phase3_client_update_ack(
-                            packet.client_endpoint,
-                            session.instance_id,
-                            session.phase3_next_arrival,
-                            phase3_packet.client_update_sequence,
-                        )
-                        session.phase3_next_arrival += 1
-                        sock.sendto(client_update_ack, self.client_address)
-                    continuation_packets: list[bytes] = []
-                    if (
-                        max_client_message >= 4
-                        and not session.phase3_continuation_sent
-                        and session.selected_character is None
-                    ):
-                        continuation_packets = server.build_phase3_continuation_packets(
-                            packet.client_endpoint, session.instance_id
-                        )
-                        for response in continuation_packets:
-                            sock.sendto(response, self.client_address)
-                        session.phase3_continuation_sent = True
-                    if server.log_packets:
-                        print(
-                            f"UDP phase3 ack sent to {self.client_address[0]}:{self.client_address[1]} "
-                            f"client_arrival={phase3_packet.arrival} client_msg={max_client_message} "
-                            f"state={phase3_packet.has_state_update} ack_len={len(ack)} "
-                            f"ping={phase3_packet.has_ping} server_ping={send_server_ping} "
-                            f"client_update={phase3_packet.client_update_sequence} "
-                            f"continuation={len(continuation_packets)}"
-                        )
+                self._handle_phase3(packet, data, sock, server, session)
             else:
                 # A well-formed packet that matched no specific branch. Before the
                 # generic minimal ack (which used the wrong 0xFFFE endpoint and
@@ -325,6 +251,103 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 return
             if server.log_packets:
                 print(f"UDP parse failed from {self.client_address}: {exc}; {data.hex()}")
+
+    def _handle_phase3(self, packet, data: bytes, sock, server: "GameUDPServer", session: GameSession) -> None:
+        """Reliable phase3 session, modelled on the Sandstorm capture.
+
+        - The client reports the highest server bundle/message it holds (bundle flags 0x03).
+          Anything after that message is retransmitted under new bundle numbers.
+        - Client reliable messages, pings included, are acked with flags 0x23.
+        - Once everything is acked the server pings with the next reliable message number.
+        """
+        if packet.instance_id is not None:
+            session.instance_id = packet.instance_id
+        endpoint = packet.client_endpoint
+        sent: list[str] = []
+
+        if packet.client_message_ack is not None:
+            session.phase3_acked_message = max(session.phase3_acked_message, packet.client_message_ack)
+
+        client_messages = [
+            msg.message_number
+            for msg in packet.messages
+            if msg.message_number is not None
+            and msg.message_type in (MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE, MessageType.PING)
+        ]
+        if client_messages:
+            session.phase3_client_message = max(session.phase3_client_message, *client_messages)
+            sock.sendto(
+                build_phase3_guaranteed_ack(
+                    endpoint,
+                    session.instance_id,
+                    _next_phase3_arrival(session),
+                    packet.client_bundle_number,
+                    session.phase3_client_message,
+                ),
+                self.client_address,
+            )
+            sent.append(f"ack={packet.client_bundle_number}/{session.phase3_client_message}")
+
+        update = next((msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None)
+        if update is not None and update.message_number is not None:
+            sock.sendto(
+                build_phase3_client_update_ack(
+                    endpoint, session.instance_id, _next_phase3_arrival(session), update.message_number
+                ),
+                self.client_address,
+            )
+            sent.append(f"update-ack={update.message_number}")
+
+        now = time.monotonic()
+        unacked = [body for number, body in session.phase3_reliable if number > session.phase3_acked_message]
+        if unacked and now - session.phase3_last_resend >= PHASE3_RESEND_INTERVAL:
+            session.phase3_last_resend = now
+            for body in unacked:
+                sock.sendto(
+                    build_phase3_packet(
+                        endpoint,
+                        session.instance_id,
+                        _with_arrival(body, _next_phase3_arrival(session)),
+                        new_instance=False,
+                    ),
+                    self.client_address,
+                )
+            sent.append(f"resent={len(unacked)} after msg {session.phase3_acked_message}")
+        elif (
+            not unacked
+            and session.phase3_started
+            and now - session.phase3_last_ping >= PHASE3_PING_INTERVAL
+        ):
+            session.phase3_last_ping = now
+            message = session.phase3_next_message
+            session.phase3_next_message += 1
+            body = (
+                bytes([PacketBundleFlags.PROCESS_MESSAGES])
+                + b"\x00\x00"
+                + bytes([MessageType.PING, 0x01])
+                + message.to_bytes(2, "little")
+                + b"\x12"
+            )
+            session.phase3_reliable.append((message, body))
+            sock.sendto(
+                build_phase3_packet(
+                    endpoint,
+                    session.instance_id,
+                    _with_arrival(body, _next_phase3_arrival(session)),
+                    new_instance=False,
+                ),
+                self.client_address,
+            )
+            sent.append(f"ping=#{message}")
+
+        if server.log_packets:
+            print(
+                f"UDP phase3 {self.client_address[0]}:{self.client_address[1]} "
+                f"bundle={packet.client_bundle_number} flags={int(packet.bundle_flags):#04x} "
+                f"acks_server_msg={packet.client_message_ack} "
+                f"(server sent up to {session.phase3_next_message - 1}) "
+                f"-> {', '.join(sent) or 'nothing'}"
+            )
 
     def _try_handle_phase3_fallback(self, data: bytes, sock, server: "GameUDPServer") -> bool:
         try:
@@ -650,3 +673,44 @@ def _renumber_phase3_reliable_bundle(inner_body: bytes, arrival: int, start_mess
         else:
             offset += size
     return bytes(rewritten)
+
+
+PHASE3_RESEND_INTERVAL = 0.5
+PHASE3_PING_INTERVAL = 2.0
+
+
+def _next_phase3_arrival(session: GameSession) -> int:
+    arrival = session.phase3_next_arrival
+    session.phase3_next_arrival += 1
+    return arrival
+
+
+def _with_arrival(inner_body: bytes, arrival: int) -> bytes:
+    return inner_body[:1] + (arrival & 0xFFFF).to_bytes(2, "little") + inner_body[3:]
+
+
+def _phase3_inner_body(packet: bytes) -> bytes:
+    _flags, offset = read_varuint(packet, 4)
+    return packet[offset + 4 + 1 + len(PHASE3_MAGIC) : -4]
+
+
+def _track_phase3_initial_packets(session: GameSession, packets: list[bytes]) -> None:
+    """Record reliable bodies of the world-entry burst so they can be retransmitted."""
+    session.phase3_reliable = []
+    highest_arrival = 0
+    highest_message = 0
+    for packet in packets:
+        body = _phase3_inner_body(packet)
+        highest_arrival = max(highest_arrival, int.from_bytes(body[1:3], "little"))
+        numbers = [
+            msg.message_number
+            for msg in parse_messages(body[3:])
+            if msg.message_number is not None
+            and msg.message_type in (MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE)
+        ]
+        if numbers:
+            session.phase3_reliable.append((max(numbers), body))
+            highest_message = max(highest_message, *numbers)
+    session.phase3_next_arrival = highest_arrival + 1
+    session.phase3_next_message = highest_message + 1
+    session.phase3_acked_message = 0
