@@ -1,0 +1,48 @@
+# systemd unit for Project Tunaria Reborn. Setup steps: docs/linux-server.md
+#
+#   sudo cp deploy/tunaria-reborn.service /etc/systemd/system/
+#   sudo cp deploy/tunaria-reborn.env.example /etc/tunaria-reborn.env   # then edit it
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tunaria-reborn
+
+[Unit]
+Description=Project Tunaria Reborn (EQOA Frontiers server)
+Documentation=https://github.com/Guinnessstache/tunaria-reborn
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tunaria
+Group=tunaria
+WorkingDirectory=/opt/tunaria-reborn/server
+EnvironmentFile=/etc/tunaria-reborn.env
+# Tells the admin panel it may restart the server (e.g. after "Update & restart").
+Environment=EQOA_LAUNCHER=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m eqoa_server $TUNARIA_ARGS
+
+# Exit code 75 is the admin panel asking for a restart; crashes restart too.
+# "Shut down server" in the panel exits 0 and leaves the service stopped.
+Restart=on-failure
+RestartForceExitStatus=75
+RestartSec=2
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# Hardening: the server only needs to write under /opt/tunaria-reborn (data/,
+# the git checkout and the deploy key's known_hosts when updating).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tunaria-reborn
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

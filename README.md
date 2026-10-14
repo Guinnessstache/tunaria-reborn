@@ -35,6 +35,9 @@ launcher instead (same options):
 ./start_server.sh --host 0.0.0.0 --public-host 127.0.0.1      # Linux / macOS
 ```
 
+Running it on a Linux server as a systemd service (starts at boot, restarts
+from the admin panel): see [`docs/linux-server.md`](docs/linux-server.md).
+
 Ports: Auth TCP `9735`, MOTD TCP `7000`, Game UDP `10070`, Patch HTTP `8080`,
 Admin panel `8090`.
 
