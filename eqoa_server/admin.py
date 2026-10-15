@@ -482,6 +482,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             started = ctx.self_test().start(bool(body.get("quick")), ctx.ignored_opcodes)
             print(f"ADMIN self-test {'started' if started else 'already running'}")
             self._json({"ok": started, **ctx.self_test().status()})
+        elif parts == ["selftest", "reset-live"]:
+            game = ctx.services.game_server
+            if game is not None:
+                game.ignored_opcodes.clear()
+            print("ADMIN self-test: live-play counts cleared")
+            self._json({"ok": True})
         elif parts == ["selftest", "capture", "delete"]:
             self._json({"ok": ctx.self_test().delete_capture(str(body.get("name", ""))),
                         "captures": ctx.self_test().captures()})

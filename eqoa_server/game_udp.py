@@ -1194,6 +1194,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             e.get("type") == "Create Item" for e in row.get("effects", ())) else []
         said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
         self.sync_speed(session)
+        healing = sum(ability_effects.amount(character, e) for e in row.get("effects", ())
+                      if e.get("type") == "Dmg/Heal" and e.get("attribute") == "HP" and int(e.get("change", 0)) > 0
+                      and ability_effects.lands_on_caster(e, targeting_other))
+        if healing > 0:  # Sandstorm showed a self heal as a hit on yourself (0xDB) of the heal's size
+            self.send_reliable(session, HIT_OPCODE, struct.pack("<I", PHASE3_SESSION_ID) + _write_varuint(healing)
+                               + struct.pack("<I", PHASE3_SESSION_ID))
         for line in said:  # chat lines for the player
             self.send_client_message(session, line)
         notes = self.ability_on_creature(session, spell, row, target) if targeting_other else []  # log only
@@ -1594,7 +1600,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if character is None:
             return
         for channel, data in ((player_stats.STATS_CHANNEL, ability_effects.stat_block(character, session.buffs)),
-                              (player_stats.BUFFS_CHANNEL, player_stats.buffs_block(character))):
+                              (player_stats.BUFFS_CHANNEL, player_stats.buffs_block(ability_effects.buff_list(character, session.buffs)))):
             player = session.player_channels.setdefault(channel, PlayerChannel())
             if data != player.data:
                 player.data, player.sequence, player.acked, player.last_send = data, player.sequence + 1, False, 0.0

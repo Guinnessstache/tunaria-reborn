@@ -111,6 +111,8 @@ class AdminPanelTests(unittest.TestCase):
         self.assertIsNone(body["error"])
         self.assertIn("1. [", body["report"]["text"])
         self.assertTrue(any(f["area"] == "live play" for f in body["report"]["findings"]))
+        self.assertEqual(self.request("/api/selftest/reset-live", {})[0], 200)
+        self.assertEqual(self.game_server().ignored_opcodes, {})
 
     def game_server(self):
         return self.services.game_server

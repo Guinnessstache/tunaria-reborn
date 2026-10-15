@@ -60,13 +60,28 @@ def max_power(character: Character, buffs: list[Buff]) -> int:
     return max(0, character.max_mana + bonus(buffs, "Power Max"))
 
 
+def armor_class(character: Character, buffs: list[Buff]) -> int:
+    """Field 14: the AC on the character's gear plus AC buffs (Sandstorm also added a few
+    per level, 4 at level 4: not known how, left out)."""
+    return max(0, items.gear_ac(character.inventory) + bonus(buffs, "AC"))
+
+
+def buff_list(character: Character, buffs: list[Buff]) -> list[tuple[int, str]]:
+    """(icon, name) of each spell with something on the character, for channel 0x43."""
+    seen: dict[str, int] = {}
+    for buff in buffs:
+        if buff.spell not in seen:
+            seen[buff.spell] = items.spell_icon(buff.spell, character.klass)
+    return [(icon, name) for name, icon in seen.items()]
+
+
 def stat_block(character: Character, buffs: list[Buff]) -> bytes:
     stats = stat_values(character, buffs)
-    return player_stats.stat_block(character, stats=stats, max_hp=max_hp(character, buffs),
+    return player_stats.stat_block(character, stats=stats, ac=armor_class(character, buffs), max_hp=max_hp(character, buffs),
                                    max_power=max_power(character, buffs))
 
 
-def _lands_on_caster(effect: dict, targeting_other: bool) -> bool:
+def lands_on_caster(effect: dict, targeting_other: bool) -> bool:
     scope = effect.get("scope")
     return scope in ("Self", "Group") or (scope == "Target" and not targeting_other)
 
@@ -95,7 +110,7 @@ def handled(effect: dict, ability_name: str | None = None) -> bool:
     if kind == "Statistic Change":
         if attribute == "DoT":
             return change < 0 and duration > 0 and effect.get("scope") == "Target"
-        if attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES:
+        if attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES + ("AC",):
             return duration > 0 and change > 0 and effect.get("scope") != "Pet"  # debuffs: not yet
         if attribute in ("HoT", "PoT"):
             return duration > 0 and change > 0 and effect.get("scope") != "Pet"
@@ -124,7 +139,7 @@ def apply(character: Character, row: dict, buffs: list[Buff], now: float, target
     ``buffs``; returns what happened, for the chat window."""
     said = []
     for effect in row.get("effects", ()):
-        if not _lands_on_caster(effect, targeting_other):
+        if not lands_on_caster(effect, targeting_other):
             continue
         kind, attribute = effect.get("type"), effect.get("attribute")
         value, duration = amount(character, effect), int(effect.get("duration", 0))
@@ -132,7 +147,7 @@ def apply(character: Character, row: dict, buffs: list[Buff], now: float, target
             before = character.hp
             character.hp = min(max_hp(character, buffs), character.hp + value)
             said.append(f"You are healed for {character.hp - before}.")
-        elif kind == "Statistic Change" and attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES and duration > 0 and value > 0:
+        elif kind == "Statistic Change" and attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES + ("AC",) and duration > 0 and value > 0:
             buffs[:] = [b for b in buffs if not (b.spell == row["name"] and b.attribute == attribute)]
             buffs.append(Buff(row["name"], attribute, value, now + duration))
             said.append(f"{row['name']}: {value:+d} {attribute} for {_duration(duration)}.")

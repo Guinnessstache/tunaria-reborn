@@ -318,10 +318,12 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
     <div data-panel="selftest" hidden>
       <section class="card">
         <h2>Self-test <span class="actions">
+          <button class="btn" id="selftest-reset" title="Forget the messages the game sent during play that the server ignored">Clear live-play counts</button>
           <button class="btn" id="selftest-quick">Quick run</button>
           <button class="btn primary" id="selftest-run">Run self-test</button>
         </span></h2>
-        <p class="hint">A bot plays through the server: every class makes a character and enters the world, casts every ability, fights and loots creatures at several levels, and buys, uses and sells at every merchant. It also checks the data and compares the server with any captures of an official-style server below. It runs on a throwaway copy, so players aren't affected. It can't see how the game draws things, so it doesn't replace testing in game.</p>
+        <p class="hint">A bot plays through the server: every class makes a character and enters the world, casts every ability, fights and loots creatures at several levels, and buys, uses and sells at every merchant. It also checks the data and compares the server with any captures of an official-style server below. It runs on a throwaway copy, so players aren't affected. It can't see how the game draws things, so it doesn't replace testing in game.
+          Each run starts from scratch; only the "live play" findings (what the game sent during real play that the server ignored) add up since the server started. Clear them to count from now.</p>
         <div id="selftest-state" class="muted">Not run yet.</div>
         <p class="error" id="selftest-error"></p>
       </section>
@@ -955,6 +957,9 @@ async function startSelfTest(quick) {
 }
 $("#selftest-run").onclick = () => startSelfTest(false);
 $("#selftest-quick").onclick = () => startSelfTest(true);
+$("#selftest-reset").onclick = async () => {
+  try { await api("/api/selftest/reset-live", {}); toast("Live-play counts cleared"); } catch (err) { toast(err.message); }
+};
 $("#selftest-copy").onclick = async () => {
   try { await navigator.clipboard.writeText(selftestText); toast("Copied the findings"); }
   catch { const w = window.open("", "_blank"); if (w) { w.document.body.innerText = selftestText; } }

@@ -376,6 +376,18 @@ spiritmaster `bind` ([world, x, y, z, facing], used by Return Home and death).
 
 Sandstorm also answered a sale with "You receive N tunar." (we do now).
 
+Same capture, the player's own channels: stat field 14 is AC (0, 7 with the
+tunic on, 11 and 14 at levels 3-4, 26 with Woodskin's +12) and field 42 went
+1, 2, 3 with levels 1-3 (still 3 at level 4; we leave it at 3). We send AC as
+gear AC + AC buffs (the per-level part is unknown). Channel 0x43 is the buff
+list: u32 count, then per buff u32 icon, int32 name length, UTF-16 name padded
+to 124 bytes (132 per buff); Sandstorm listed Minor Healing for ~24 s after
+casting it, "Food" while eating, Woodskin and Nature's Wisdom. We send one
+entry per spell with something on the character, with the spell's icon from
+our spell table (Sandstorm's icons differ: Woodskin 0x727C44F8). A self heal
+showed as 0xDB from the player to the player with the heal's size (76 for
+Minor Healing); we do that too.
+
 ## Confirmed working in game
 
 - Login, server list and character select. The session stays alive while idle

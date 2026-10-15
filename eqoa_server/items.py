@@ -667,6 +667,29 @@ def created_item(ability_name: str) -> int | None:
     return _items_by_name().get(ability_name.lower())
 
 
+AC_STAT = 14  # item stat id (WIKI_STATS "ac")
+
+
+def gear_ac(inventory: list[dict] | None) -> int:
+    """AC from the stats of equipped items."""
+    total = 0
+    for entry in inventory or ():
+        if entry.get("equip", NOT_EQUIPPED) != NOT_EQUIPPED and entry["item"] in item_patterns():
+            total += sum(value for stat, value in item_patterns()[entry["item"]]["stats"] if stat == AC_STAT)
+    return total
+
+
+def spell_icon(spell_name: str, klass: int) -> int:
+    """The icon of a spell (by name, the class's own first)."""
+    lowered, fallback = spell_name.lower(), None
+    for spell in spell_patterns().values():
+        if spell["name"].lower() == lowered:
+            if spell.get("class_mask", ALL_CLASSES) >> klass & 1:
+                return spell["icon"]
+            fallback = fallback if fallback is not None else spell["icon"]
+    return fallback if fallback is not None else 0
+
+
 def cannot_equip(item_id: int, klass: int, level: int) -> str | None:
     """Why a character can't equip an item (its class mask or level), or None."""
     item = item_patterns()[item_id]

@@ -108,3 +108,27 @@ class DialogueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuffDisplayTests(unittest.TestCase):
+    """Stat field 14 (AC), the buff list on channel 0x43 and heals, as Sandstorm sent them."""
+
+    def test_ac_from_gear_and_buffs(self):
+        from eqoa_server import ability_effects, player_stats
+        from eqoa_server.storage import Character
+
+        character = Character(1, 1, "Tree", klass=7)
+        armor = next(i for i, p in items.item_patterns().items() if any(s == 14 and v > 0 for s, v in p["stats"]))
+        ac = sum(v for s, v in items.item_patterns()[armor]["stats"] if s == 14)
+        character.inventory = [{"item": armor, "stack": 1, "equip": 1, "key": 0}]
+        buffs = []
+        row = {"name": "Woodskin", "effects": [{"type": "Statistic Change", "scope": "Self", "attribute": "AC",
+                                                 "change": 12, "duration": 60}]}
+        ability_effects.apply(character, row, buffs, 0.0, False)
+        block = ability_effects.stat_block(character, buffs)
+        self.assertEqual(struct.unpack_from("<i", block, 14 * 4)[0], ac + 12)
+        listed = player_stats.buffs_block(ability_effects.buff_list(character, buffs))
+        self.assertEqual(len(listed), 4 + 132)
+        self.assertEqual(struct.unpack_from("<I", listed)[0], 1)
+        self.assertEqual(text_of(listed, 8), "Woodskin")
+        self.assertEqual(player_stats.buffs_block([]), bytes(4))
