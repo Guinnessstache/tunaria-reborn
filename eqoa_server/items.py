@@ -206,6 +206,39 @@ def _class_spell_ids(klass: int, level: int) -> list[int]:
     return ids
 
 
+ITEM_SLOT_NAMES = {
+    -1: "", 1: "Head", 2: "Robe", 3: "Earring", 4: "Neck", 5: "Chest", 6: "Bracelet", 7: "Bracers",
+    8: "Ring", 9: "Belt", 10: "Legs", 11: "Feet", 12: "One hand", 13: "Shield", 14: "Off hand",
+    15: "Two hands", 16: "Bow", 17: "Thrown", 18: "Held", 19: "Hands", 20: "Fishing", 21: "Bait",
+}
+
+
+def search_items(text: str, limit: int = 30) -> list[dict]:
+    """Items whose name contains ``text`` (or with that id), lowest level first."""
+    text = text.strip().lower()
+    if not text:
+        return []
+    patterns = item_patterns()
+    if text.isdigit() and int(text) in patterns:
+        found = [patterns[int(text)]]
+    else:
+        found = sorted(
+            (item for item in patterns.values() if text in item["name"].lower()),
+            key=lambda item: (item["level"], item["name"].lower()),
+        )[:limit]
+    return [describe_item(item["id"]) for item in found]
+
+
+def describe_item(item_id: int) -> dict:
+    item = item_patterns()[item_id]
+    return {
+        "id": item_id, "name": item["name"], "level": item["level"],
+        "slot": ITEM_SLOT_NAMES.get(item["slot"], str(item["slot"])),
+        "equippable": equip_slot_for(item_id) != NOT_EQUIPPED,
+        "visible": bool(item["model"]), "max_stack": max(1, item["max_stack"]),
+    }
+
+
 def equip_slot_for(item_id: int) -> int:
     pattern = item_patterns().get(item_id)
     return ITEM_SLOT_TO_EQUIP.get(pattern["slot"], NOT_EQUIPPED) if pattern else NOT_EQUIPPED

@@ -76,6 +76,13 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
 .account-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .account-head strong { font-size: 15px; }
 .chars { margin: 8px 0 0 0; }
+.inv-row td { border-top: 0; padding-top: 0; }
+.inv { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.item { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px 3px 8px; font-size: 13px; }
+.item.equipped { border-color: var(--accent); }
+.item button.btn { padding: 2px 7px; font-size: 12px; }
+.give-results { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.give-results div { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 #login { max-width: 360px; margin: 12vh auto; }
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 #toast.show { opacity: 1; }
@@ -372,7 +379,9 @@ $("#tabs").addEventListener("click", (e) => {
 async function refresh() {
   try {
     if (activeTab === "dashboard" || activeTab === "players") renderStatus(await api("/api/status"));
-    if (activeTab === "accounts") renderAccounts(await api("/api/accounts"));
+    // Don't redraw the accounts list under someone typing in a give-item box.
+    const giving = [...document.querySelectorAll(".give-search")].some((i) => i.value || i === document.activeElement);
+    if (activeTab === "accounts" && !giving) renderAccounts(await api("/api/accounts"));
     if (activeTab === "logs") await pollLogs();
   } catch (err) { if (err.message !== "login required") console.warn(err); }
 }
@@ -486,6 +495,44 @@ $("#check-passwords").addEventListener("change", async (e) => {
   catch (err) { if (err.message !== "login required") { toast(err.message); e.target.checked = !on; } }
 });
 
+let giveTimer = null;
+document.addEventListener("input", (e) => {
+  const box = e.target.closest && e.target.closest(".give-search");
+  if (!box) return;
+  clearTimeout(giveTimer);
+  giveTimer = setTimeout(async () => {
+    const out = document.querySelector(`[data-give-results="${box.dataset.giveChar}"]`);
+    if (!box.value.trim()) { out.innerHTML = ""; return; }
+    try {
+      const { items } = await api(`/api/items?q=${encodeURIComponent(box.value)}`);
+      out.innerHTML = items.length ? items.map((it) => `<div>
+        <button class="btn primary" data-give-item="${it.id}" data-give-to="${box.dataset.giveChar}" data-give-name="${esc(it.name)}">Give</button>
+        <span>${esc(it.name)}</span><span class="muted">#${it.id} · level ${it.level}${it.slot ? " · " + esc(it.slot) : ""}${it.max_stack > 1 ? ` · stacks of ${it.max_stack}` : ""}${it.equippable && !it.visible ? " · no model" : ""}</span></div>`).join("")
+        : '<div class="muted">No items match.</div>';
+    } catch (err) { if (err.message !== "login required") toast(err.message); }
+  }, 250);
+});
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest && e.target.closest("button[data-give-item], button[data-inv-action]");
+  if (!t) return;
+  try {
+    if (t.dataset.giveItem) {
+      const character = t.dataset.giveTo;
+      const equip = document.querySelector(`.give-equip[data-give-char="${character}"]`).checked;
+      const stack = 1e9;  // the server caps it at the item's stack size
+      await api(`/api/characters/${character}/give`, { item: Number(t.dataset.giveItem), stack, equip });
+      document.querySelector(`.give-search[data-give-char="${character}"]`).value = "";
+      toast(`Gave ${t.dataset.giveName}. It shows the next time the character enters the world.`);
+    } else {
+      const { invChar, invIndex, invAction, invName } = t.dataset;
+      if (invAction === "remove" && !confirm(`Remove ${invName}?`)) return;
+      await api(`/api/characters/${invChar}/items/${invIndex}/${invAction}`, {});
+      toast("Done. Changes show the next time the character enters the world.");
+    }
+    renderAccounts(await api("/api/accounts"));
+  } catch (err) { if (err.message !== "login required") toast(err.message); }
+});
+
 function renderAccounts(data) {
   const box = $("#check-passwords");
   if (document.activeElement !== box) box.checked = data.check_passwords;
@@ -514,7 +561,18 @@ function renderAccounts(data) {
           <td><div class="row-actions">
             <button class="btn" data-character="${c.id}" data-name="${esc(c.name)}" data-action="reset-position">Reset position</button>
             <button class="btn danger" data-character="${c.id}" data-name="${esc(c.name)}" data-action="delete">Delete</button>
-          </div></td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">No characters.</p>'}
+          </div></td></tr>
+          <tr class="inv-row"><td colspan="6">
+            <div class="inv">${c.inventory.length ? c.inventory.map((it) => `
+              <span class="item ${it.equipped ? "equipped" : ""}" title="#${it.id} · level ${it.level}${it.slot ? " · " + esc(it.slot) : ""}${it.equippable && !it.visible ? " · no model, won't show on the character" : ""}">
+                ${esc(it.name)}${it.stack > 1 ? ` ×${it.stack}` : ""}${it.equipped ? " <span class=\"muted\">(equipped)</span>" : ""}
+                ${it.equippable ? `<button class="btn" data-inv-char="${c.id}" data-inv-index="${it.index}" data-inv-action="${it.equipped ? "unequip" : "equip"}">${it.equipped ? "Unequip" : "Equip"}</button>` : ""}
+                <button class="btn danger" data-inv-char="${c.id}" data-inv-index="${it.index}" data-inv-action="remove" data-inv-name="${esc(it.name)}">×</button>
+              </span>`).join("") : '<span class="muted">No items.</span>'}</div>
+            <div class="inline"><input type="text" class="give-search" data-give-char="${c.id}" placeholder="Give ${esc(c.name)} an item: type a name or item id">
+              <label class="muted"><input type="checkbox" class="give-equip" data-give-char="${c.id}" checked> equip it</label></div>
+            <div class="give-results" data-give-results="${c.id}"></div>
+          </td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">No characters.</p>'}
     </div>`).join("") : '<p class="muted">No accounts yet. Log in from the game to create one.</p>';
 }
 

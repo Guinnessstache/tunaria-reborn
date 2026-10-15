@@ -20,11 +20,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import items
 from .config import ServerConfig, save_settings
 from .netconfig import NetworkError, NetworkHelper, local_ipv4_addresses, validate_network_config, validate_public_host
 from .patch_tcp import MOTD_BODY_SIZE, default_motd_text
 from .services import LogBuffer, ServiceManager
-from .storage import JsonStore
+from .storage import InventoryError, JsonStore
 from .updater import RESTART_EXIT_CODE, Updater, UpdateError, running_under_launcher
 
 try:
@@ -276,6 +277,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
         elif url.path in routes:
             self._json(routes[url.path]())
+        elif url.path == "/api/items":
+            self._json({"items": items.search_items((query.get("q") or [""])[0])})
         elif url.path == "/api/logs":
             after = int((query.get("after") or ["0"])[0])
             # "started" changes when the server restarts; the page then starts over, since
@@ -314,10 +317,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         try:
             self._dispatch(parts, body)
+        except (CredentialError, UpdateError, NetworkError, InventoryError) as exc:
+            self._error(409, str(exc))
         except (KeyError, ValueError) as exc:
             self._error(400, f"bad request: {exc}")
-        except (CredentialError, UpdateError, NetworkError) as exc:
-            self._error(409, str(exc))
 
     def _dispatch(self, parts: list[str], body: dict) -> None:
         ctx = self.ctx
@@ -405,6 +408,23 @@ class AdminHandler(BaseHTTPRequestHandler):
                 raise KeyError(action)
             print(f"ADMIN {action} account {account.username if account else account_id} -> {'ok' if ok else 'failed'}")
             self._json({"ok": ok})
+        elif len(parts) == 3 and parts[:1] == ["characters"] and parts[2] == "give":
+            character_id, item_id = int(parts[1]), int(body["item"])
+            entry = ctx.store.give_item(character_id, item_id, int(body.get("stack", 1)), bool(body.get("equip")))
+            name = items.describe_item(item_id)["name"]
+            print(f"ADMIN gave {entry['stack']} x {name} to character {character_id}"
+                  f"{' (equipped)' if entry['equip'] != items.NOT_EQUIPPED else ''}")
+            self._json({"ok": True})
+        elif len(parts) == 5 and parts[0] == "characters" and parts[2] == "items":
+            character_id, index, action = int(parts[1]), int(parts[3]), parts[4]
+            if action in ("equip", "unequip"):
+                ctx.store.set_item_equipped(character_id, index, action == "equip")
+            elif action == "remove":
+                ctx.store.remove_item(character_id, index)
+            else:
+                raise KeyError(action)
+            print(f"ADMIN {action} item {index} of character {character_id}")
+            self._json({"ok": True})
         elif len(parts) == 3 and parts[0] == "characters":
             character_id, action = int(parts[1]), parts[2]
             if action == "delete":
@@ -627,6 +647,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                                 "class": c.klass,
                                 "zone": c.zone_id,
                                 "position": [round(c.x, 1), round(c.y, 1), round(c.z, 1)],
+                                "inventory": [
+                                    {**items.describe_item(entry["item"]), "index": index, "stack": entry["stack"],
+                                     "equipped": entry.get("equip", items.NOT_EQUIPPED) != items.NOT_EQUIPPED}
+                                    for index, entry in enumerate(c.inventory or ())
+                                    if entry["item"] in items.item_patterns()
+                                ],
                             }
                             for c in store.list_characters(account.account_id)
                         ],

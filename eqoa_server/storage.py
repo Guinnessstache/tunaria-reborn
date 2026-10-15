@@ -227,6 +227,65 @@ class JsonStore:
         with self._lock:
             return self.characters.get(character_id)
 
+    def give_item(self, character_id: int, item_id: int, stack: int = 1, equip: bool = False) -> dict:
+        with self._lock:
+            character = self._character_or_error(character_id)
+            if item_id not in items.item_patterns():
+                raise InventoryError(f"no item with id {item_id}")
+            stack = max(1, min(int(stack), items.describe_item(item_id)["max_stack"]))
+            entry = {"item": item_id, "stack": stack, "equip": items.NOT_EQUIPPED}
+            character.inventory.append(entry)
+            if equip:
+                self._equip(character, len(character.inventory) - 1)
+            self.save()
+            return entry
+
+    def set_item_equipped(self, character_id: int, index: int, equipped: bool) -> None:
+        with self._lock:
+            character = self._character_or_error(character_id)
+            self._entry_or_error(character, index)
+            if equipped:
+                self._equip(character, index)
+            else:
+                character.inventory[index]["equip"] = items.NOT_EQUIPPED
+            self.save()
+
+    def remove_item(self, character_id: int, index: int) -> None:
+        with self._lock:
+            character = self._character_or_error(character_id)
+            self._entry_or_error(character, index)
+            del character.inventory[index]
+            self.save()
+
+    def _character_or_error(self, character_id: int) -> Character:
+        character = self.characters.get(character_id)
+        if character is None:
+            raise InventoryError(f"no character {character_id}")
+        return character
+
+    @staticmethod
+    def _entry_or_error(character: Character, index: int) -> dict:
+        if not 0 <= index < len(character.inventory):
+            raise InventoryError(f"no item at position {index}")
+        return character.inventory[index]
+
+    @staticmethod
+    def _equip(character: Character, index: int) -> None:
+        entry = character.inventory[index]
+        slot = items.equip_slot_for(entry["item"])
+        if slot == items.NOT_EQUIPPED:
+            raise InventoryError(f"{items.describe_item(entry['item'])['name']} can't be equipped")
+        # One item per slot; a two-handed weapon also takes both hands and the shield's place.
+        clashes = {slot}
+        if slot == items.EQUIP_TWO_HAND:
+            clashes |= {items.EQUIP_PRIMARY, items.EQUIP_SECONDARY, items.EQUIP_SHIELD}
+        elif slot in (items.EQUIP_PRIMARY, items.EQUIP_SECONDARY, items.EQUIP_SHIELD):
+            clashes.add(items.EQUIP_TWO_HAND)
+        for other in character.inventory:
+            if other is not entry and other.get("equip") in clashes:
+                other["equip"] = items.NOT_EQUIPPED
+        entry["equip"] = slot
+
     def create_character(
         self,
         account_id: int,
@@ -283,6 +342,10 @@ class JsonStore:
             self.characters[character.character_id] = character
             self.save()
             return character
+
+
+class InventoryError(ValueError):
+    pass
 
 
 def _give_starting_kit(character: Character) -> None:

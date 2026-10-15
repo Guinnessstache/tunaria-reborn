@@ -154,6 +154,30 @@ class AdminPanelTests(unittest.TestCase):
         load_settings(reloaded)
         self.assertFalse(reloaded.check_passwords)
 
+    def test_give_equip_and_remove_items(self):
+        from eqoa_server import items
+
+        account = self.store.create_account("giver", "x")
+        character = self.store.create_character(account.account_id, "Chanty", klass=12)
+        self.login()
+        status, found = self.request("/api/items?q=apprentice%20staff")
+        self.assertEqual(status, 200)
+        self.assertEqual(found["items"][0]["id"], items.APPRENTICE_STAFF)
+        base = f"/api/characters/{character.character_id}"
+        self.assertEqual(self.request(f"{base}/give", {"item": items.APPRENTICE_STAFF, "equip": True})[0], 200)
+        self.assertEqual(self.request(f"{base}/give", {"item": items.APPRENTICE_SWORD, "equip": True})[0], 200)
+        inventory = self.store.get_character(character.character_id).inventory
+        # rations, then the staff (unequipped by the sword: two hands vs one) and the sword
+        self.assertEqual([(e["item"], e["equip"]) for e in inventory[1:]],
+                         [(items.APPRENTICE_STAFF, -1), (items.APPRENTICE_SWORD, items.EQUIP_PRIMARY)])
+        self.assertEqual(self.request(f"{base}/items/0/equip", {})[0], 409)  # rations can't be worn
+        self.assertEqual(self.request(f"{base}/give", {"item": 999999})[0], 409)
+        _, accounts = self.request("/api/accounts")
+        listed = accounts["accounts"][0]["characters"][0]["inventory"]
+        self.assertEqual([i["equipped"] for i in listed], [False, False, True])
+        self.assertEqual(self.request(f"{base}/items/2/remove", {})[0], 200)
+        self.assertEqual(len(self.store.get_character(character.character_id).inventory), 2)
+
     def test_delete_account_removes_characters(self):
         account = self.store.create_account("deleteme", "x")
         self.store.create_character(account.account_id, "Gone")

@@ -93,8 +93,10 @@ Forgot it? Stop the server and delete `data/admin.json`.)
   request counts, CPU and memory (with `pip install psutil`), data backup,
   shut down.
 - **Players**: live game sessions and their stage; kick a session.
-- **Accounts**: accounts and their characters; delete, reset a stuck character's
-  position.
+- **Accounts**: accounts and their characters; delete, reset a password or a
+  stuck character's position. Give a character any item (search by name or
+  id), equip, unequip or remove items; changes show the next time the
+  character enters the world.
 - **Settings**: shard name, message of the day, admin password.
 - **Logs**: the live server log with a filter.
 - **Updates**: see new commits on GitHub, then **Update & restart**. The update
