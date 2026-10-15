@@ -157,7 +157,7 @@ RACE_OFFSET = 144
 CLASS_OFFSET = 145
 
 
-def build_object_update(character: Character, object_id: int) -> bytes:
+def build_object_update(character: Character, object_id: int, preview: dict[str, int] | None = None) -> bytes:
     update = bytearray(SELF_OBJECT_UPDATE_TEMPLATE)
     x, y, z, heading = _spawn_position(character)
     _write_u32(update, OBJECT_ID_OFFSET, object_id)
@@ -176,7 +176,10 @@ def build_object_update(character: Character, object_id: int) -> bytes:
     # are the captured character's).
     _write_u32(update, MODEL_OFFSET, character.model_id)
     worn = items.gear(character.inventory)
-    update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = struct.pack("<iii", worn.primary, worn.secondary, worn.shield)
+    weapons = {"primary": worn.primary, "secondary": worn.secondary, "shield": worn.shield, **(preview or {})}
+    update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = struct.pack(
+        "<iii", *(items._signed(weapons[slot]) for slot in ("primary", "secondary", "shield"))
+    )
     update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = worn.armor + worn.colors
     update[HAIR_OFFSET : HAIR_OFFSET + 4] = bytes(
         value & 0xFF for value in (character.hair_color, character.hair_length, character.hair_style, character.face)

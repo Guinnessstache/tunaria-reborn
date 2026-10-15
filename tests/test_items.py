@@ -66,7 +66,7 @@ class StartingKitTests(unittest.TestCase):
     def test_gear_shows_on_the_character(self):
         character = Character(character_id=1, account_id=1, name="Chanty", klass=ENCHANTER,
                               inventory=[{"item": items.APPRENTICE_STAFF, "stack": 1, "equip": items.EQUIP_TWO_HAND}])
-        staff_model = items.item_patterns()[items.APPRENTICE_STAFF]["model"]
+        staff_model = items.model_for(items.APPRENTICE_STAFF)
         self.assertNotEqual(staff_model, 0)
         update = build_object_update(character, 1)
         self.assertEqual(struct.unpack_from("<iii", update, WEAPONS_OFFSET), (staff_model, 0, 0))

@@ -24,6 +24,9 @@ from .protocol import (
     build_character_list_response,
     build_minimal_ack,
     build_old_world_ack,
+    apply_client_update_delta,
+    decode_client_update,
+    rle_zero_decode,
     discovery_instance,
     build_old_world_list,
     build_discovery_bundle,
@@ -87,6 +90,11 @@ class GameSession:
     phase3_self_update_sequence: int = 1
     # Highest client reliable message already acted on (the client resends until acked).
     phase3_handled_message: int = 0
+    # Recent de-XORed client updates by message number (later updates are XORed with one).
+    client_updates: dict[int, bytes] = field(default_factory=dict)
+    last_position_save: float = 0.0
+    # Model browser in the admin panel: {"primary" / "secondary" / "shield": model id} drawn live.
+    appearance_preview: dict[str, int] | None = None
     phase3_self_update_acked: bool = False
     phase3_last_self_update: float = 0.0
     phase3_address: tuple[str, int] | None = None
@@ -382,8 +390,13 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
             ]
             if client_messages:
                 session.phase3_client_message = max(session.phase3_client_message, *client_messages)
+            for msg in packet.messages:
+                if msg.message_type == MessageType.CLIENT_UPDATE and msg.message_number is not None:
+                    server.track_position(session, msg)
             if any(msg.opcode == DISCONNECT_CLIENT_OPCODE for msg in packet.messages):
                 session.phase3_closed = True
+                if session.selected_character is not None:
+                    server.store.save()  # keep where the character logged out
             for msg in packet.messages:
                 if msg.message_number is None or msg.message_number <= session.phase3_handled_message:
                     continue
@@ -657,12 +670,54 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             result = f"equipped {name}"
         else:
             return [f"used {name} (not handled yet)"]
-        # Redraw the character with its new gear.
-        session.phase3_self_update = build_object_update(character, PHASE3_SESSION_ID)
+        self.refresh_appearance(session)
+        return [result]
+
+    def refresh_appearance(self, session: GameSession) -> None:
+        """Redraw the character (new gear or a model preview): a new own-character update."""
+        if session.selected_character is None:
+            return
+        session.phase3_self_update = build_object_update(
+            session.selected_character, PHASE3_SESSION_ID, session.appearance_preview
+        )
         session.phase3_self_update_sequence += 1
         session.phase3_self_update_acked = False
         session.phase3_last_self_update = 0.0
-        return [result]
+
+    def session_in_world(self, character_id: int) -> GameSession | None:
+        with self.lock:
+            return next(
+                (s for s in self.sessions.values()
+                 if s.phase3_in_world and not s.phase3_closed and s.selected_character is not None
+                 and s.selected_character.character_id == character_id),
+                None,
+            )
+
+    def track_position(self, session: GameSession, msg) -> None:
+        """Follow the character from its client updates, so redraws and the next login
+        put it where the player is."""
+        payload = rle_zero_decode(msg.payload)
+        if msg.xor:
+            base = session.client_updates.get((msg.message_number - msg.xor) & 0xFFFF)
+            if base is None:
+                return
+            payload = apply_client_update_delta(base, payload)
+        session.client_updates[msg.message_number] = payload
+        if len(session.client_updates) > 64:
+            for old in sorted(session.client_updates)[:-32]:
+                del session.client_updates[old]
+        position = decode_client_update(payload)
+        character = session.selected_character
+        if position is None or character is None:
+            return
+        if not (-4000 <= position.x <= 32000 and -1000 <= position.y <= 1000 and -4000 <= position.z <= 32000):
+            return
+        character.x, character.y, character.z = position.x, position.y, position.z
+        character.heading = position.heading
+        now = time.monotonic()
+        if now - session.last_position_save >= POSITION_SAVE_INTERVAL:
+            session.last_position_save = now
+            self.store.save()
 
     def send_self_update(self, session: GameSession) -> list[str]:
         now = time.monotonic()
@@ -922,6 +977,7 @@ DISCONNECT_CLIENT_OPCODE = 0x09B0
 # Sandstorm uses the phase3 session id as the player's own object id on channel 0.
 PHASE3_SESSION_ID = read_varuint(b"\xB8" + PHASE3_MAGIC, 0)[0]
 SELF_CHANNEL = 0
+POSITION_SAVE_INTERVAL = 15.0
 INTERACT_ITEM_OPCODE = 0x003E
 EQUIP_ITEM_OPCODE = 0x003F
 UNEQUIP_ITEM_OPCODE = 0x0040

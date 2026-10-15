@@ -227,6 +227,140 @@ ITEM_SLOT_NAMES = {
 }
 
 
+# -- models ------------------------------------------------------------------------------
+# What the client draws comes from the model id in the object update. Known-good ids: the
+# Sandstorm capture's, ids present on the game disc (reference_data/item_models.json,
+# tools/import_item_models.py), and ones the operator picked in the admin panel's model
+# browser (data/item_models.json). Other weapons get a disc model of the same shape.
+
+_overrides_path: Path | None = None
+_overrides: dict[int, int] = {}
+
+WEAPON_WORDS = (
+    (("dagger", "knife", "dirk", "stiletto", "kris", "shiv", "ripper"), "flat_short"),
+    (("staff", "stave", "crook"), "pole"),
+    (("spear", "lance", "glaive", "pike", "halberd", "trident", "guisarme", "partizan", "partisan",
+      "polearm", "scythe", "beheader"), "pole"),
+    (("wand", "scepter", "sceptre", "baton", "rod"), "round_short"),
+    (("club", "mace", "hammer", "morningstar", "flail", "cudgel", "mallet", "branch", "bludgeon", "maul"),
+     "round_medium"),
+    (("axe", "hatchet", "cleaver", "sickle", "kama", "tomahawk"), "flat_medium"),
+    (("sword", "blade", "scimitar", "saber", "sabre", "rapier", "cutlass", "falchion", "katana",
+      "claymore", "edge", "brand"), "flat_medium"),
+    (("orb", "idol", "totem", "tome", "book", "lantern", "torch"), "held"),
+)
+SLOT_FALLBACK = {12: "flat_medium", 14: "flat_medium", 15: "flat_long", 18: "held", 13: "shield"}
+TWO_HANDED_UPGRADE = {"flat_medium": "flat_long", "round_medium": "pole", "round_short": "pole", "flat_short": "flat_long"}
+CATEGORY_FALLBACK = {"flat_long": "pole", "round_long": "pole", "pole": "flat_long", "round_short": "held",
+                     "held": "round_short"}
+
+
+@lru_cache(maxsize=1)
+def disc_models() -> dict[int, dict]:
+    path = DATA / "item_models.json"
+    if not path.is_file():
+        return {}
+    return {model["id"]: model for model in json.loads(path.read_text(encoding="utf-8"))}
+
+
+@lru_cache(maxsize=1)
+def _models_by_category() -> dict[str, list[int]]:
+    grouped: dict[str, list[int]] = {}
+    for model in disc_models().values():
+        grouped.setdefault(model["category"], []).append(model["id"])
+    return {category: sorted(ids) for category, ids in grouped.items()}
+
+
+def item_category(item_id: int) -> str | None:
+    """Which kind of model a weapon / shield / held item should look like."""
+    item = item_patterns().get(item_id)
+    if item is None or item["slot"] not in SLOT_FALLBACK:
+        return None
+    if item["slot"] == 13:
+        return "shield"
+    name = item["name"].lower().replace("-", " ")
+    words = set(name.split())
+    category = next(
+        (cat for keys, cat in WEAPON_WORDS if any(key in words or name.endswith(key) for key in keys)),
+        SLOT_FALLBACK[item["slot"]],
+    )
+    if item["slot"] == 15:
+        category = TWO_HANDED_UPGRADE.get(category, category)
+    return category
+
+
+def configure_overrides(path: Path) -> None:
+    """Use (and keep) the operator's item -> model choices in ``path``."""
+    global _overrides_path, _overrides
+    _overrides_path = path
+    try:
+        _overrides = {int(k): int(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+    except (OSError, ValueError):
+        _overrides = {}
+
+
+def _signed(model_id: int) -> int:
+    model_id &= 0xFFFFFFFF
+    return model_id - (1 << 32) if model_id >= 1 << 31 else model_id
+
+
+def set_model_override(item_id: int, model_id: int | None) -> None:
+    if model_id is not None:
+        model_id = _signed(model_id)
+    if model_id is None:
+        _overrides.pop(item_id, None)
+    else:
+        _overrides[item_id] = model_id
+    if _overrides_path is not None:
+        _overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        _overrides_path.write_text(json.dumps({str(k): v for k, v in sorted(_overrides.items())}, indent=1),
+                                   encoding="utf-8")
+
+
+def model_source(item_id: int) -> str:
+    item = item_patterns().get(item_id)
+    if item is None:
+        return "none"
+    if item_id in _overrides:
+        return "chosen"
+    if item.get("captured") or item_id in _sandstorm_ids():
+        return "sandstorm"
+    model = item["model"] or 0
+    if 0 < model < 256 or (model and (model & 0xFFFFFFFF) in disc_models()):
+        return "database"
+    return "similar" if _similar_model(item_id) else "none"
+
+
+def model_for(item_id: int) -> int:
+    """The model id to draw an item with (0 = nothing)."""
+    item = item_patterns().get(item_id)
+    if item is None:
+        return 0
+    if item_id in _overrides:
+        return _overrides[item_id]
+    model = item["model"] or 0
+    if item_id in _sandstorm_ids() or 0 < model < 256:
+        return model  # armor pieces use small model numbers
+    if model and (model & 0xFFFFFFFF) in disc_models():
+        return model
+    return _similar_model(item_id)
+
+
+def _similar_model(item_id: int) -> int:
+    category = item_category(item_id)
+    groups = _models_by_category()
+    choices = groups.get(category) or groups.get(CATEGORY_FALLBACK.get(category, ""), [])
+    if not choices:
+        return 0
+    return _signed(choices[item_id % len(choices)])  # as the signed int32 the update holds
+
+
+@lru_cache(maxsize=1)
+def _sandstorm_ids() -> frozenset[int]:
+    path = DATA / "sandstorm_items.json"
+    return frozenset(item["id"] for item in json.loads(path.read_text(encoding="utf-8"))) if path.is_file() else frozenset()
+
+
 def search_items(text: str, limit: int = 30) -> list[dict]:
     """Items whose name contains ``text`` (or with that id), lowest level first."""
     text = text.strip().lower()
@@ -249,7 +383,8 @@ def describe_item(item_id: int) -> dict:
         "id": item_id, "name": item["name"], "level": item["level"],
         "slot": ITEM_SLOT_NAMES.get(item["slot"], str(item["slot"])),
         "equippable": equip_slot_for(item_id) != NOT_EQUIPPED,
-        "visible": bool(item["model"]), "max_stack": max(1, item["max_stack"]),
+        "visible": bool(model_for(item_id)), "max_stack": max(1, item["max_stack"]),
+        "model": model_for(item_id), "model_source": model_source(item_id),
     }
 
 
@@ -276,7 +411,7 @@ def gear(inventory: list[dict] | None) -> Gear:
         pattern = item_patterns().get(entry["item"])
         if pattern is not None and entry.get("equip", NOT_EQUIPPED) != NOT_EQUIPPED:
             worn[entry["equip"]] = pattern
-    model = lambda slot: worn[slot]["model"] or 0 if slot in worn else 0
+    model = lambda slot: model_for(worn[slot]["id"]) if slot in worn else 0
     primary = next((model(slot) for slot in PRIMARY_SLOTS if model(slot)), 0)
     armor = bytes(model(slot) & 0xFF if 0 < model(slot) < 256 else 0 for slot in ARMOR_ORDER)
     colors = bytes(_color_byte(worn[slot]["color"]) if slot in worn else 0 for slot in ARMOR_ORDER)

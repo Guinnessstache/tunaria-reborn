@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import struct
 import zlib
 from dataclasses import dataclass, field
@@ -137,6 +138,8 @@ class UdpMessage:
     message_number: int | None = None
     opcode: int | None = None
     payload: bytes = b""
+    # Client updates (0x40): how many messages back the update this one is XORed with (0 = full).
+    xor: int = 0
 
     @property
     def opcode_name(self) -> str:
@@ -389,16 +392,72 @@ def parse_messages(data: bytes) -> list[UdpMessage]:
             opcode = struct.unpack_from("<H", data, offset)[0]
             offset += 2
             size = max(0, size - 2)
-        elif message_type == MessageType.CLIENT_UPDATE:
+        xor = 0
+        if message_type == MessageType.CLIENT_UPDATE:
             if offset < len(data):
+                xor = data[offset]
                 offset += 1
                 size = max(0, size - 1)
-        else:
+        elif message_type not in (MessageType.UNRELIABLE, MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE):
             break
         payload = data[offset : offset + size]
         offset += size
-        messages.append(UdpMessage(message_type, message_number, opcode, payload))
+        messages.append(UdpMessage(message_type, message_number, opcode, payload, xor))
     return messages
+
+
+@dataclass(frozen=True, slots=True)
+class ClientPosition:
+    world: int
+    x: float
+    y: float
+    z: float
+    heading: float
+
+
+def rle_zero_decode(data: bytes) -> bytes:
+    """Undo the zero-run compression of object / client updates (EQOAGameServer's
+    UnreliableCompression): a byte >= 0x80 is (literal count & 0x7F) followed by a zero
+    count byte; a smaller one packs literals in its high and zeros in its low nibble.
+    Zeros come first, then the literals; 0x00 ends."""
+    out = bytearray()
+    offset = 0
+    while offset < len(data):
+        control = data[offset]
+        offset += 1
+        if control == 0:
+            break
+        if control & 0x80:
+            literals = control & 0x7F
+            zeros = data[offset] if offset < len(data) else 0
+            offset += 1
+        else:
+            literals, zeros = control >> 4, control & 0x0F
+        out += bytes(zeros) + data[offset : offset + literals]
+        offset += literals
+    return bytes(out)
+
+
+def apply_client_update_delta(base: bytes, delta: bytes) -> bytes:
+    """A (decompressed) client update XORed with an earlier one; missing bytes are unchanged."""
+    size = max(len(base), len(delta))
+    return bytes(a ^ b for a, b in zip(delta.ljust(size, b"\x00"), base.ljust(size, b"\x00")))
+
+
+def decode_client_update(update: bytes) -> ClientPosition | None:
+    """Position in a decompressed, de-XORed client update, laid out as EQOAGameServer reads
+    it: world, then x, y (height), z as big-endian 24-bit fractions of the map, velocity,
+    facing. Checked against the Sandstorm capture (the first update is the spawn point)."""
+    if len(update) < 23:
+        return None
+    u24 = lambda offset: int.from_bytes(update[offset : offset + 3], "big")
+    x = 36000.0 * u24(1) / 0xFFFFFF - 4000.0
+    y = 2000.0 * u24(4) / 0xFFFFFF - 1000.0
+    z = 36000.0 * u24(7) / 0xFFFFFF - 4000.0
+    # Facing is 1/256 of a turn measured from the opposite direction to the server's heading
+    # (the capture's spawn: byte 0x16, heading 3.706).
+    heading = (update[22] * 2 * math.pi / 256 + math.pi) % (2 * math.pi)
+    return ClientPosition(update[0], x, y, z, heading - 2 * math.pi if heading > math.pi else heading)
 
 
 def build_minimal_ack(packet: UdpPacket, server_endpoint: int = 0xFFFE) -> bytes:

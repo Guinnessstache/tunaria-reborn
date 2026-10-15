@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from .admin import AdminContext, AdminCredentials, start_admin
+from . import items
 from .config import ServerConfig, load_settings
 from .services import ServiceManager, install_log_buffer
 from .storage import JsonStore
@@ -58,6 +59,7 @@ def main() -> None:
     load_settings(config)
     logs = install_log_buffer()
     store = JsonStore(config.data_path)
+    items.configure_overrides(config.data_path.parent / "item_models.json")
     services = ServiceManager(config, store)
     stop = threading.Event()
 

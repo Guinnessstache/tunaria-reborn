@@ -195,6 +195,33 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request(base, {"level": 61})[0], 409)
         self.assertEqual(self.request(base, {"level": 30, "learn_abilities": False})[1]["learned"], 0)
 
+    def test_model_browser_previews_live_and_saves_item_models(self):
+        from eqoa_server import items
+        from eqoa_server.game_udp import GameSession
+
+        account = self.store.create_account("browser", "x")
+        character = self.store.create_character(account.account_id, "Chanty", klass=12)
+        game = self.services.game_server
+        session = GameSession(0x0AD0, 0x20AD1, phase3_in_world=True, selected_character=character)
+        game.sessions[("127.0.0.1", 40000)] = session
+        self.login()
+        _, models = self.request("/api/models")
+        self.assertIn("shield", models["categories"])
+        self.assertEqual(models["in_world"][0]["name"], "Chanty")
+        shield = models["categories"]["shield"][0]
+        status, result = self.request("/api/preview", {"character": character.character_id, "slot": "shield", "model": shield})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(struct.unpack_from("<I", session.phase3_self_update, 75)[0], shield)  # shield model offset
+        self.assertFalse(session.phase3_self_update_acked)
+        self.assertEqual(self.request("/api/preview", {"character": 999, "slot": "shield", "model": shield})[0], 409)
+
+        self.addCleanup(items.set_model_override, items.APPRENTICE_STAFF, None)
+        self.request("/api/item-models", {"item": items.APPRENTICE_STAFF, "model": shield})
+        self.assertEqual(items.model_for(items.APPRENTICE_STAFF) & 0xFFFFFFFF, shield)
+        self.assertEqual(items.model_source(items.APPRENTICE_STAFF), "chosen")
+        self.request("/api/item-models", {"item": items.APPRENTICE_STAFF, "model": None})
+        self.assertEqual(items.model_source(items.APPRENTICE_STAFF), "similar")
+
     def test_delete_account_removes_characters(self):
         account = self.store.create_account("deleteme", "x")
         self.store.create_character(account.account_id, "Gone")

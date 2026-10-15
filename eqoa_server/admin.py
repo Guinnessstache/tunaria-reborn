@@ -277,6 +277,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
         elif url.path in routes:
             self._json(routes[url.path]())
+        elif url.path == "/api/models":
+            self._json(self._models())
         elif url.path == "/api/items":
             self._json({"items": items.search_items((query.get("q") or [""])[0])})
         elif url.path == "/api/logs":
@@ -415,6 +417,17 @@ class AdminHandler(BaseHTTPRequestHandler):
             print(f"ADMIN gave {entry['stack']} x {name} to character {character_id}"
                   f"{' (equipped)' if entry['equip'] != items.NOT_EQUIPPED else ''}")
             self._json({"ok": True})
+        elif parts == ["preview"]:
+            self._json(self._preview(int(body["character"]), str(body["slot"]), body.get("model")))
+        elif parts == ["item-models"]:
+            item_id = int(body["item"])
+            if item_id not in items.item_patterns():
+                raise InventoryError(f"no item with id {item_id}")
+            model = body.get("model")
+            items.set_model_override(item_id, None if model in (None, "") else int(model))
+            print(f"ADMIN model for item {item_id} ({items.describe_item(item_id)['name']}): "
+                  f"{'automatic' if model in (None, '') else hex(int(model) & 0xFFFFFFFF)}")
+            self._json({"ok": True, "item": items.describe_item(item_id)})
         elif len(parts) == 3 and parts[:1] == ["characters"] and parts[2] == "level":
             character_id, level = int(parts[1]), int(body["level"])
             learned = ctx.store.set_level(character_id, level, bool(body.get("learn_abilities", True)))
@@ -577,6 +590,38 @@ class AdminHandler(BaseHTTPRequestHandler):
         state = ((status or network.status() or {}).get("state")) or {}
         boot = state.get("service_boot")
         return {"available": boot in ("enabled", "disabled"), "enabled": boot == "enabled", "raw": boot}
+
+    def _models(self) -> dict:
+        grouped: dict[str, list[int]] = {}
+        for model in items.disc_models().values():
+            grouped.setdefault(model["category"], []).append(model["id"])
+        game = self.ctx.services.game_server
+        in_world = []
+        if game is not None:
+            with game.lock:
+                for session in game.sessions.values():
+                    character = session.selected_character
+                    if session.phase3_in_world and not session.phase3_closed and character is not None:
+                        in_world.append({"id": character.character_id, "name": character.name,
+                                         "preview": session.appearance_preview or {}})
+        return {"categories": {k: sorted(v) for k, v in sorted(grouped.items())}, "in_world": in_world}
+
+    def _preview(self, character_id: int, slot: str, model) -> dict:
+        if slot not in ("primary", "secondary", "shield"):
+            raise ValueError(f"unknown slot {slot}")
+        game = self.ctx.services.game_server
+        session = game.session_in_world(character_id) if game is not None else None
+        if session is None:
+            raise InventoryError("That character isn't in the world right now; log in with it first.")
+        with game.lock:
+            preview = dict(session.appearance_preview or {})
+            if model in (None, ""):
+                preview.pop(slot, None)
+            else:
+                preview[slot] = int(model)
+            session.appearance_preview = preview or None
+            game.refresh_appearance(session)
+        return {"ok": True, "preview": preview}
 
     def _game_sessions(self) -> list[dict]:
         game = self.ctx.services.game_server

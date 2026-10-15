@@ -28,7 +28,9 @@ Early but playable to the point of logging in and walking around.
   hair and face, starting at its race's (or home city's) starting point.
 - Characters start with a stack of their home region's rations and all of
   their class's level 1 abilities plus Return Home (from the Prima guide's
-  ability tables). Equipped weapons, shields and armor show on the character.
+  ability tables). Equipped weapons, shields and armor show on the character,
+  and items can be equipped and unequipped in game.
+- Characters log back in where they left off.
 - A web **admin panel**: start / stop / restart services, players online,
   accounts, MOTD, live log, and one-click updates from GitHub.
 
@@ -38,7 +40,9 @@ Early but playable to the point of logging in and walking around.
 - Abilities can't be cast yet, and only Warrior, Shadowknight and Return Home
   records are copies of real server data; the others are built from the guide's
   numbers, with icons of the same kind of ability. Stats come from a captured
-  template. Armor appearance needs model data most items don't have.
+  template. Weapon and shield models are exact only where known (the Sandstorm
+  capture, or picked in the model browser); other weapons get a game model of
+  the same shape. Armor appearance needs model data most items don't have.
 - No other players, NPCs, combat or quests in the world yet.
 
 ## Quick start
@@ -97,7 +101,9 @@ Forgot it? Stop the server and delete `data/admin.json`.)
   stuck character's position. Set a character's level (optionally learning
   the class's abilities up to it), give it any item (search by name or id),
   equip, unequip or remove items; changes show the next time the character
-  enters the world.
+  enters the world. The **model browser** tries weapon and shield models on a
+  character in the world, live, and saves the right one for an item
+  (`data/item_models.json`).
 - **Settings**: shard name, message of the day, admin password.
 - **Logs**: the live server log with a filter.
 - **Updates**: see new commits on GitHub, then **Update & restart**. The update
