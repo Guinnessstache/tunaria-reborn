@@ -237,7 +237,7 @@ class AbilityTests(InWorldCase):
         self.character.x, self.character.y, self.character.z = 1000.0, 10.0, 2000.0
         notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
         self.assertIn("Return Home", notes[0])
-        due, _ = self.session.pending_cast
+        due = self.session.pending_cast[0]
         # Sent at once, as Sandstorm did: greyed out for 60 + 5 s + 0.3 s, and the blue glow.
         (cooldown_op, cooldown), (effect_op, effect) = self.sent
         self.assertEqual((cooldown_op, cooldown), (0xCD, bytes([order]) + bytes.fromhex("00000000a8fc07")))
@@ -245,7 +245,7 @@ class AbilityTests(InWorldCase):
         self.assertEqual(effect[8:], bytes.fromhex("0060ea00003382b28f"))  # byte 0, 60000 ms, glow
         self.sent.clear()
         again = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
-        self.assertIn("not ready", again[0])
+        self.assertIn("still casting", again[0])
         self.assertEqual(self.session.pending_cast[0], due)  # pressing again doesn't restart it
         self.assertEqual(self.server.finish_cast(self.session, due - 1), [])
         self.assertEqual(self.sent, [])
@@ -339,3 +339,62 @@ class SpellEffectTests(unittest.TestCase):
         self.assertIn(colour[spell_effects.effect_for("Burst of Frost")], ("blue", "cyan"))
         self.assertIn(colour[spell_effects.effect_for("Fire Bolt")], ("red", "orange"))
         self.assertEqual(spell_effects.family({"name": "Protection of Air"}), "buff")  # not "rot"
+
+
+class AbilityEffectTests(InWorldCase):
+    """Heals and buffs on the caster, with the Prima guide's numbers."""
+
+    def cast(self, name, target=0xFFFFFFFF):
+        from eqoa_server import ability_effects
+
+        spell_id = next(i for i, s in items.spell_patterns().items()
+                        if s["name"] == name and i >= items.GUIDE_SPELL_ID_BASE + self.character.klass * 1000
+                        and i < items.GUIDE_SPELL_ID_BASE + (self.character.klass + 1) * 1000)
+        self.character.spells.append({"spell": spell_id, "hotbar": 9})
+        self.character.mana = self.character.max_mana = 500
+        notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([9]) + struct.pack("<I", target))
+        if self.session.pending_cast:
+            notes = self.server.finish_cast(self.session, self.session.pending_cast[0])
+        return notes
+
+    def test_self_heal(self):
+        self.character.klass = items.CLASS_NAMES.index("Druid")
+        self.character.hp, self.character.max_hp = 10, 200
+        notes = self.cast("Minor Healing")  # the guide: 20 HP + 25% of Cha every tick for 24 s
+        self.assertIn("HP every 6 s", notes[0])
+        self.assertIn(0x0A7A, [op for op, _ in self.sent])  # said in chat
+        hot = next(b for b in self.session.buffs if b.attribute == "HoT")
+        self.server.run_buffs(self.session, hot.next_tick)
+        self.assertEqual(self.character.hp, 10 + hot.change)
+
+    def test_stat_buff_shows_and_wears_off(self):
+        from eqoa_server import ability_effects
+
+        self.character.klass = items.CLASS_NAMES.index("Warrior")
+        before = struct.unpack_from("<7i", ability_effects.stat_block(self.character, self.session.buffs))
+        self.cast("Concentration")  # +10 Dexterity for 30 s, self
+        buff = next(b for b in self.session.buffs if b.attribute == "Dexterity")
+        after = struct.unpack_from("<7i", self.session.player_channels[0x42].data)
+        self.assertEqual(after[3], before[3] + buff.change)
+        self.server.run_buffs(self.session, buff.expires)
+        self.assertEqual(self.session.buffs, [])
+        self.assertEqual(struct.unpack_from("<7i", self.session.player_channels[0x42].data), before)
+
+    def test_heal_over_time_ticks(self):
+        from eqoa_server import ability_effects
+
+        self.character.hp, self.character.max_hp = 10, 5000
+        buffs = []
+        row = {"name": "Test Boon", "effects": [{"type": "Statistic Change", "scope": "Self", "attribute": "HoT",
+                                                 "change": 25, "duration": 30, "percent": 0}]}
+        ability_effects.apply(self.character, row, buffs, 100.0, targeting_other=False)
+        ability_effects.tick(self.character, buffs, 100.0 + 30)
+        self.assertEqual(self.character.hp, 10 + 25 * 5)  # 30 s / 6 s ticks
+        self.assertEqual(buffs, [])
+
+    def test_target_spells_on_others_are_left_for_combat(self):
+        self.character.klass = items.CLASS_NAMES.index("Druid")
+        self.character.hp, self.character.max_hp = 10, 200
+        notes = self.cast("Minor Healing", target=0x01004600)  # an NPC targeted
+        self.assertEqual(self.character.hp, 10)
+        self.assertIn("needs combat", notes[0])

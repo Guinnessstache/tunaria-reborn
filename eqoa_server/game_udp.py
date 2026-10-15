@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data, items, merchants, npcs, player_stats, spell_effects
+from . import ability_effects, game_data, items, merchants, npcs, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -102,9 +102,11 @@ class GameSession:
     last_entity_refresh: float = 0.0
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
-    pending_cast: tuple[float, int] | None = None
+    pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
     # Spell book order -> monotonic time the ability is ready again.
     cooldowns: dict[int, float] = field(default_factory=dict)
+    # Buffs and heal/power-over-time on the character (ability_effects.Buff); not saved.
+    buffs: list = field(default_factory=list)
     # The player's own channels 0x42 (stats) and 0x43: {channel: PlayerChannel}.
     player_channels: dict[int, "PlayerChannel"] = field(default_factory=dict)
     last_regen: float = 0.0
@@ -930,6 +932,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         spell_id = book[order]["spell"]
         spell = items.spell_patterns()[spell_id]
         now = time.monotonic()
+        if session.pending_cast is not None:
+            return [f"{spell['name']}: still casting something else"]
         if session.cooldowns.get(order, 0.0) > now:
             # The client shouldn't send it while greyed out; in game Return Home was pressed
             # 15 times in 7 s when we didn't grey it out.
@@ -950,10 +954,28 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 struct.pack("<II", PHASE3_SESSION_ID, effect_target) + b"\x00"
                 + struct.pack("<iI", spell["cast_time"] * 1000, effect),
             )
-        if spell_id == items.RETURN_HOME:
-            session.pending_cast = (now + spell["cast_time"], spell_id)
+        if spell["cast_time"] > 0:
+            session.pending_cast = (now + spell["cast_time"], spell_id, target)
             return [f"casting {spell['name']} ({spell['cast_time']} s, {spell['power']} power)"]
-        return [f"cast {spell['name']} ({spell['power']} power; no effect yet)"]
+        return self.land_ability(session, spell_id, target)
+
+    def land_ability(self, session: GameSession, spell_id: int, target: int) -> list[str]:
+        """The ability takes effect (its cast time is over)."""
+        character = session.selected_character
+        spell = items.spell_patterns()[spell_id]
+        if spell_id == items.RETURN_HOME:
+            world, x, y, z, facing = bind_point(character)
+            self.teleport(session, world, x, y, z, facing)
+            return [f"return home -> {x:.0f}, {y:.0f}, {z:.0f}"]
+        row = ability_effects.guide_row(character, spell["name"])
+        if row is None:
+            return [f"cast {spell['name']} (no guide data)"]
+        targeting_other = target not in (0, 0xFFFFFFFF, PHASE3_SESSION_ID)
+        said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
+        for line in said:
+            self.send_client_message(session, line)
+        self.update_player_channels(session)
+        return [f"cast {spell['name']}: " + (" ".join(said) if said else "nothing on you (needs combat)")]
 
     def end_cooldowns(self, session: GameSession, now: float) -> list[str]:
         """AbilityCooldown with 0 ms when an ability is ready again (Sandstorm sent it as the
@@ -970,9 +992,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         character = session.selected_character
         if character is None:
             return
-        for channel, build in ((player_stats.STATS_CHANNEL, player_stats.stat_block),
-                               (player_stats.BUFFS_CHANNEL, player_stats.buffs_block)):
-            data = build(character)
+        for channel, data in ((player_stats.STATS_CHANNEL, ability_effects.stat_block(character, session.buffs)),
+                              (player_stats.BUFFS_CHANNEL, player_stats.buffs_block(character))):
             player = session.player_channels.setdefault(channel, PlayerChannel())
             if data != player.data:
                 player.data, player.sequence, player.acked, player.last_send = data, player.sequence + 1, False, 0.0
@@ -1001,23 +1022,33 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             return []
         session.last_regen = now
         before = (character.hp, character.mana)
-        character.hp = min(character.max_hp, character.hp + max(1, character.max_hp // 20))
-        character.mana = min(character.max_mana, character.mana + max(1, character.max_mana // 20))
+        top_hp = ability_effects.max_hp(character, session.buffs)
+        top_power = ability_effects.max_power(character, session.buffs)
+        character.hp = min(top_hp, character.hp + max(1, top_hp // 20))
+        character.mana = min(top_power, character.mana + max(1, top_power // 20))
         if (character.hp, character.mana) != before:
             self.update_player_channels(session)
         return []
 
+    def run_buffs(self, session: GameSession, now: float) -> list[str]:
+        character = session.selected_character
+        if character is None or not session.buffs:
+            return []
+        changed, said = ability_effects.tick(character, session.buffs, now)
+        for line in said:
+            self.send_client_message(session, line)
+        if changed:
+            self.update_player_channels(session)
+        return said
+
     def finish_cast(self, session: GameSession, now: float) -> list[str]:
         if session.pending_cast is None or now < session.pending_cast[0]:
             return []
-        _due, spell_id = session.pending_cast
+        _due, spell_id, target = session.pending_cast
         session.pending_cast = None
-        character = session.selected_character
-        if character is None or spell_id != items.RETURN_HOME:
+        if session.selected_character is None:
             return []
-        world, x, y, z, facing = bind_point(character)
-        self.teleport(session, world, x, y, z, facing)
-        return [f"return home -> {x:.0f}, {y:.0f}, {z:.0f}"]
+        return self.land_ability(session, spell_id, target)
 
     def teleport(self, session: GameSession, world: int, x: float, y: float, z: float, facing: float) -> None:
         """SetPosition (0xB2): byte world, float x, y, z, facing, 12 zero bytes. The Sandstorm
@@ -1169,6 +1200,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 sent += self.send_player_channels(session)
                 sent += self.finish_cast(session, now)
                 sent += self.end_cooldowns(session, now)
+                sent += self.run_buffs(session, now)
                 sent += self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
                     print(f"UDP phase3 keepalive {address[0]}:{address[1]} -> {', '.join(sent)}")

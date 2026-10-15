@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 140 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 144 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -346,9 +346,13 @@ to learn them."
 3. **NPCs are static.** They don't move, talk (no dialogue), or fight. There is
    no banker window yet; the banker NPC type is 0x82. Scale and race bytes come
    from a template.
-4. **Only Return Home does anything when cast** (hotbar assignment works).
-   Everything else is logged as "no effect yet". Return Home spends power;
-   HP and power regenerate a twentieth every 6 s (our guess).
+4. **Abilities on yourself work; abilities on others need combat.** Every
+   ability spends power, greys out and plays an effect. `ability_effects.py`
+   applies the guide's numbers to the caster: heals, stat and max HP / power
+   buffs for their duration, heal and power over time (a tick every 6 s, our
+   guess). That covers about 400 of 1,413 abilities. Buffs aren't saved over a
+   relog and show no icon (channel 0x43 isn't decoded). AC changes aren't
+   shown (no AC field found). HP and power regenerate a twentieth every 6 s.
    Only the records for Warrior, Shadowknight and Return Home are real data. The others are built from the guide.
 5. **No other players are visible.** The game needs to share entity channels
    between sessions.

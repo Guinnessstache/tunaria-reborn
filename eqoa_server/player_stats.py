@@ -36,15 +36,16 @@ def base_stats(character: Character) -> tuple[int, ...]:
     return tuple(start.stats) if start is not None else (DEFAULT_STAT,) * 7
 
 
-def stat_block(character: Character) -> bytes:
+def stat_block(character: Character, stats=None, max_hp: int | None = None, max_power: int | None = None) -> bytes:
+    """``stats``, ``max_hp`` and ``max_power`` with buffs in (base values without)."""
     fields = [0] * FIELDS
     for index, value in _SANDSTORM_FIELDS.items():
         fields[index] = value
-    stats = base_stats(character)
-    fields[0:7] = stats
-    fields[29:36] = stats
-    fields[7], fields[8], fields[37] = character.hp, character.max_hp, character.max_hp
-    fields[9], fields[10], fields[39] = character.mana, character.max_mana, character.max_mana
+    base = base_stats(character)
+    fields[0:7] = stats if stats is not None else base
+    fields[29:36] = base
+    fields[7], fields[8], fields[37] = character.hp, max_hp or character.max_hp, character.max_hp
+    fields[9], fields[10], fields[39] = character.mana, max_power or character.max_mana, character.max_mana
     return struct.pack(f"<{FIELDS}i", *fields) + b"\xFF"
 
 
