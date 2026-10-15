@@ -5,9 +5,10 @@ from pathlib import Path
 from unittest import mock
 
 from eqoa_server import items, merchants, npcs
+from eqoa_server.capture_template import _skip_spell
 from eqoa_server.config import ServerConfig
 from eqoa_server.game_udp import GameSession, GameUDPServer
-from eqoa_server.storage import JsonStore
+from eqoa_server.storage import JsonStore, bind_point
 
 
 def zigzag(value):
@@ -121,8 +122,11 @@ class MerchantHandlerTests(unittest.TestCase):
         spell_id = items.class_spell_id(warrior, position)
         self.assertIn(spell_id, [entry["spell"] for entry in self.character.spells])
         self.assertEqual(len(self.character.inventory), index)
-        self.assertEqual([op for op, _ in self.sent], [0x3C, 0x0A7A])
-        self.assertIn(ability["name"].encode("utf-16-le"), self.sent[1][1])
+        self.assertEqual([op for op, _ in self.sent], [0x3C, 0xB3, 0x0A7A])
+        add_spell = self.sent[1][1]
+        self.assertEqual(add_spell[:8], struct.pack("<ii", 0, 1))
+        self.assertEqual(_skip_spell(add_spell, 8), len(add_spell))  # exactly one spell record
+        self.assertIn(ability["name"].encode("utf-16-le"), add_spell)
         self.assertIn("scribed", notes[0])
 
     def test_items_are_named_by_key_after_one_is_used_up(self):
@@ -192,3 +196,55 @@ class MerchantHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbilityTests(unittest.TestCase):
+    """Hotbar and casting, as the Sandstorm server answered them in a capture of a level 4
+    warrior using Kick and Return Home."""
+
+    def setUp(self):
+        self.store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")
+        account = self.store.create_account("caster", "secret")
+        self.character = self.store.create_character(account.account_id, "Casty", race=0, klass=0)
+        self.server = GameUDPServer(("127.0.0.1", 0), ServerConfig(), self.store, log_packets=False)
+        self.addCleanup(self.server.server_close)
+        self.session = GameSession(0x0AD0, 0x20AD1, phase3_started=True, phase3_in_world=True,
+                                   selected_character=self.character)
+        self.sent = []
+        patcher = mock.patch.object(self.server, "send_reliable",
+                                    side_effect=lambda s, op, body: self.sent.append((op, body)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def book_order(self, spell_id):
+        return next(i for i, e in enumerate(self.server._spell_book(self.character)) if e["spell"] == spell_id)
+
+    def test_assign_hotbar_is_echoed(self):
+        order = self.book_order(items.RETURN_HOME)
+        payload = struct.pack("<i", 0) + bytes([order, 6])  # Sandstorm: 00000000 02 01
+        self.server.assign_hotbar(self.session, payload)
+        self.assertEqual(self.sent, [(0xB4, payload)])
+        self.assertEqual(self.server._spell_book(self.character)[order]["hotbar"], 6)
+
+    def test_return_home_lands_after_its_cast_time(self):
+        order = self.book_order(items.RETURN_HOME)
+        self.server.assign_hotbar(self.session, struct.pack("<i", 0) + bytes([order, 6]))
+        self.sent.clear()
+        self.character.x, self.character.y, self.character.z = 1000.0, 10.0, 2000.0
+        notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
+        self.assertIn("Return Home", notes[0])
+        due, _ = self.session.pending_cast
+        self.assertEqual(self.server.finish_cast(self.session, due - 1), [])
+        self.assertEqual(self.sent, [])
+        self.server.finish_cast(self.session, due)
+        opcode, body = self.sent[0]
+        self.assertEqual((opcode, len(body)), (0xB2, 29))  # as Sandstorm's SetPosition
+        world, x, y, z, facing = bind_point(self.character)
+        self.assertEqual(body, bytes([world]) + struct.pack("<4f", x, y, z, facing) + bytes(12))
+        self.assertEqual((self.character.x, self.character.z), (x, z))
+        self.assertIsNone(self.session.pending_cast)
+
+    def test_empty_hotbar_slot_does_nothing(self):
+        notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([9]) + struct.pack("<I", 0))
+        self.assertIn("nothing", notes[0])
+        self.assertIsNone(self.session.pending_cast)

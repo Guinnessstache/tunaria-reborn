@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 131 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 134 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -253,6 +253,34 @@ Treating the two as one broke using or selling items after any item was used up.
 | 0x4A | MerchantBuy | zz slot, zz qty, u32 npc |
 | 0x4B | MerchantSell | i32 index, zz qty, u32 npc |
 
+### Abilities (Sandstorm capture of a level 4 warrior, 2026-10-15)
+
+The user captured Sandstorm while a level 4 warrior learned Kick from a scroll,
+put it on the hotbar, used it on two mobs, then cast Return Home. Sandstorm
+also says "abilities are no longer automatically learned. You need a scroll
+to learn them."
+
+| Opcode | Direction | Name | Payload |
+| --- | --- | --- | --- |
+| 0x10 | C>S | SelectTarget | u32 0, u32 target (sent all the time; the logs' `Unknown_0x0010`) |
+| 0x0F | C>S | Attack | u32 target (auto attack) |
+| 0x32 | C>S | UseAbility | u32 0, byte **hotbar slot**, u32 target |
+| 0x33 | C>S | AssignHotbar | u32 0, byte spell book order, byte hotbar slot |
+| 0xB4 | S>C | HotbarAssigned | the 0x33 payload echoed |
+| 0xB3 | S>C | AddSpell | i32 0, i32 1, one spell record (sent after a scroll is used) |
+| 0xB2 | S>C | SetPosition | byte world, float x, y, z, facing, 12 zero bytes (world entry; end of Return Home) |
+| 0x15 / 0x16 | C>S | ? | u32 target / empty (consider and close?) |
+| 0x7E1 | C>S | ? | periodic client debug text ("0: discarded (old)") |
+
+- The client runs the casting bar itself. For Return Home (60 s cast) the
+  server sent nothing until SetPosition, about 61 s after UseAbility, putting
+  the character where it had entered the world.
+- Kick killed mobs. The server's replies were 0xDB (u32 attacker, byte, u32
+  target; combat animations or hits), stat channel 0x42 updates, 0x20 (3
+  bytes), 0xD9 (u32 0) and a ClientMessage "You receive 138 XP". Not decoded.
+- In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
+  1 when it's on the hotbar.
+
 ## Confirmed working in game
 
 - Login, server list and character select. The session stays alive while idle
@@ -284,8 +312,7 @@ Treating the two as one broke using or selling items after any item was used up.
    1000 + guide position). Spell merchants sell one per spell in their range.
    Using a scroll (InteractItem) learns the spell, removes the scroll and sends
    a ClientMessage (0x0A7A, int32 length + UTF-16). The opcode that adds a spell
-   to the open spell book is unknown, so the spell appears on the next world
-   entry. Scribing works in game (the chat line shows in white).
+   to the open spell book is AddSpell (0xB3), so the spell appears at once. Scribing works in game (the chat line shows in white).
    Merchants don't sell level 1 scrolls (every character starts with those),
    scribing needs the scroll's level, and the panel's **Set level** only
    teaches abilities when its checkbox is ticked (off by default). Prices are our own formula:
@@ -297,8 +324,9 @@ Treating the two as one broke using or selling items after any item was used up.
 3. **NPCs are static.** They don't move, talk (no dialogue), or fight. There is
    no banker window yet; the banker NPC type is 0x82. Scale and race bytes come
    from a template.
-4. **Spells can't be cast.** Only the records for Warrior, Shadowknight and
-   Return Home are real data. The others are built from the guide.
+4. **Only Return Home does anything when cast** (hotbar assignment works).
+   Everything else is logged as "no effect yet". Power isn't spent.
+   Only the records for Warrior, Shadowknight and Return Home are real data. The others are built from the guide.
 5. **No other players are visible.** The game needs to share entity channels
    between sessions.
 6. **Combat, experience, loot and quests** are not implemented.

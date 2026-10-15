@@ -401,6 +401,16 @@ def _starting_vitals(race: int, klass: int) -> tuple[int, int]:
     return (100, 50)
 
 
+def bind_point(character: Character) -> tuple[int, float, float, float, float]:
+    """(world, x, y, z, facing) Return Home sends the character to: where its class and
+    race start (the Sandstorm capture returned a character to where it entered the world)."""
+    start = game_data.starting_character(character.klass, character.race, character.human_type)
+    if start is not None:
+        return start.world, start.x, start.y, start.z, start.facing
+    _zone, x, y, z = _starting_position(character.race)
+    return 0, x, y, z, 0.0
+
+
 def _starting_position(race: int) -> tuple[int, float, float, float]:
     starts = {
         0: (1, 25273.03125, 54.125, 15723.29102),  # Human -> Freeport

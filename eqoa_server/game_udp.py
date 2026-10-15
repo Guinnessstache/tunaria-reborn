@@ -54,7 +54,7 @@ from .protocol import (
     parse_udp_packet,
     read_varuint,
 )
-from .storage import Character, JsonStore
+from .storage import Character, JsonStore, bind_point
 
 # Pcap-verified phase3 control handling (see docs/PROTOCOL.md, captures/).
 from eqoa_protocol import (
@@ -101,6 +101,8 @@ class GameSession:
     entity_channels: dict[int, "EntityChannel"] = field(default_factory=dict)
     last_entity_refresh: float = 0.0
     world: int = 0
+    # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
+    pending_cast: tuple[float, int] | None = None
     phase3_self_update_acked: bool = False
     phase3_last_self_update: float = 0.0
     phase3_address: tuple[str, int] | None = None
@@ -432,6 +434,10 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         sent += server.merchant_buy(session, msg.payload)
                     elif msg.opcode == MERCHANT_SELL_OPCODE:
                         sent += server.merchant_sell(session, msg.payload)
+                    elif msg.opcode == ASSIGN_HOTBAR_OPCODE:
+                        sent += server.assign_hotbar(session, msg.payload)
+                    elif msg.opcode == USE_ABILITY_OPCODE:
+                        sent += server.use_ability(session, msg.payload)
             update = next(
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
@@ -865,10 +871,73 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.store.learn_spell(character.character_id, spell_id)
         self.store.remove_item(character.character_id, index)
         self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 1]) + _write_zigzag(1))
-        self.send_client_message(
-            session, f"You have scribed {scroll}. It will be in your spell book the next time you enter the world."
-        )
+        # AddSpell, as the Sandstorm server sent after a scroll was used: int32 0, int32 1,
+        # then the spell record (its order is its place in the spell book).
+        book = [entry for entry in character.spells if entry["spell"] in items.spell_patterns()]
+        order = next(i for i, entry in enumerate(book) if entry["spell"] == spell_id)
+        self.send_reliable(session, ADD_SPELL_OPCODE, struct.pack("<ii", 0, 1) + items.spell_record(book[order], order))
+        self.send_client_message(session, f"You have scribed {scroll}.")
         return [f"scribed {scroll} (spell {spell_id})"]
+
+    def _spell_book(self, character) -> list[dict]:
+        """The spells as the client numbers them (the order in the MemoryDump / AddSpell)."""
+        return [entry for entry in character.spells or () if entry["spell"] in items.spell_patterns()]
+
+    def assign_hotbar(self, session: GameSession, payload: bytes) -> list[str]:
+        """AssignHotbar (0x33): int32 0, byte spell book order, byte hotbar slot. The Sandstorm
+        server echoed it back as HotbarAssigned (0xB4)."""
+        character = session.selected_character
+        if character is None or len(payload) < 6:
+            return []
+        order, slot = payload[4], payload[5]
+        book = self._spell_book(character)
+        if order >= len(book):
+            return [f"hotbar: no spell {order}"]
+        for entry in book:
+            if entry.get("hotbar", -1) == slot:
+                entry["hotbar"] = -1
+        book[order]["hotbar"] = slot
+        self.store.save()
+        self.send_reliable(session, HOTBAR_ASSIGNED_OPCODE, bytes(payload[:6]))
+        name = items.spell_patterns()[book[order]["spell"]]["name"]
+        return [f"hotbar {slot}: {name}"]
+
+    def use_ability(self, session: GameSession, payload: bytes) -> list[str]:
+        """UseAbility (0x32): int32 0, byte hotbar slot, u32 target. The client runs the casting
+        bar itself; the Sandstorm server answered Return Home only when the 60 s cast ended,
+        with SetPosition. Other abilities don't do anything yet."""
+        character = session.selected_character
+        if character is None or len(payload) < 5:
+            return []
+        slot = payload[4]
+        entry = next((e for e in self._spell_book(character) if e.get("hotbar", -1) == slot), None)
+        if entry is None:
+            return [f"use ability: nothing on hotbar {slot}"]
+        spell = items.spell_patterns()[entry["spell"]]
+        if entry["spell"] == items.RETURN_HOME:
+            session.pending_cast = (time.monotonic() + spell["cast_time"], entry["spell"])
+            return [f"casting {spell['name']} ({spell['cast_time']} s)"]
+        return [f"cast {spell['name']} (no effect yet)"]
+
+    def finish_cast(self, session: GameSession, now: float) -> list[str]:
+        if session.pending_cast is None or now < session.pending_cast[0]:
+            return []
+        _due, spell_id = session.pending_cast
+        session.pending_cast = None
+        character = session.selected_character
+        if character is None or spell_id != items.RETURN_HOME:
+            return []
+        world, x, y, z, facing = bind_point(character)
+        self.teleport(session, world, x, y, z, facing)
+        return [f"return home -> {x:.0f}, {y:.0f}, {z:.0f}"]
+
+    def teleport(self, session: GameSession, world: int, x: float, y: float, z: float, facing: float) -> None:
+        """SetPosition (0xB2): byte world, float x, y, z, facing, 12 zero bytes. The Sandstorm
+        server sent it on entering the world and to end a Return Home."""
+        character = session.selected_character
+        character.x, character.y, character.z, character.heading = x, y, z, facing
+        self.store.save()
+        self.send_reliable(session, SET_POSITION_OPCODE, bytes([world & 0xFF]) + struct.pack("<4f", x, y, z, facing) + bytes(12))
 
     def send_client_message(self, session: GameSession, text: str) -> None:
         """A line of text in the player's chat window (ClientMessage, as EQOAGameServer:
@@ -1008,6 +1077,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         self.send_phase2_ping(session)
                     continue
                 sent = self.service_entities(session)
+                sent += self.finish_cast(session, now)
                 sent += self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
                     print(f"UDP phase3 keepalive {address[0]}:{address[1]} -> {', '.join(sent)}")
@@ -1201,6 +1271,11 @@ MERCHANT_BOX_OPCODE = 0x00B7
 ADD_INVENTORY_ITEM_OPCODE = 0x003B
 REMOVE_INVENTORY_ITEM_OPCODE = 0x003C
 CLIENT_MESSAGE_OPCODE = 0x0A7A
+USE_ABILITY_OPCODE = 0x0032
+ASSIGN_HOTBAR_OPCODE = 0x0033
+SET_POSITION_OPCODE = 0x00B2
+ADD_SPELL_OPCODE = 0x00B3
+HOTBAR_ASSIGNED_OPCODE = 0x00B4
 PLAYER_TUNAR_OPCODE = 0x0052
 RELIABLE_SEGMENT_BYTES = 0x0484
 EQUIP_ITEM_OPCODE = 0x003F
