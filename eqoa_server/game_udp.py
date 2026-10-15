@@ -832,10 +832,39 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     self.send_reliable(session, UNEQUIP_ITEM_OPCODE, struct.pack("<B", old_slot & 0xFF))
             self.send_reliable(session, EQUIP_ITEM_OPCODE, struct.pack("<Bb", index & 0xFF, entry["equip"]))
             result = f"equipped {name}"
+        elif items.is_scroll(entry["item"]):
+            return self.scribe(session, index)
         else:
             return [f"used {name} (not handled yet)"]
         self.refresh_appearance(session)
         return [result]
+
+    def scribe(self, session: GameSession, index: int) -> list[str]:
+        """Use a spell scroll: the character learns the spell and the scroll is used up.
+        We don't know the message that adds a spell to the open spell book yet, so the
+        spell shows up the next time the character enters the world (the MemoryDump)."""
+        character = session.selected_character
+        entry = character.inventory[index]
+        scroll = items.describe_item(entry["item"])["name"]
+        spell_id = items.scroll_spell(entry["item"], character.klass)
+        if spell_id is None:
+            self.send_client_message(session, f"You can't scribe {scroll}.")
+            return [f"scribe {scroll}: not a {items.CLASS_NAMES[character.klass]} spell"]
+        if any(known["spell"] == spell_id for known in character.spells or ()):
+            self.send_client_message(session, f"You already know {scroll}.")
+            return [f"scribe {scroll}: already known"]
+        self.store.learn_spell(character.character_id, spell_id)
+        self.store.remove_item(character.character_id, index)
+        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([index & 0xFF, 1]) + _write_zigzag(1))
+        self.send_client_message(
+            session, f"You have scribed {scroll}. It will be in your spell book the next time you enter the world."
+        )
+        return [f"scribed {scroll} (spell {spell_id})"]
+
+    def send_client_message(self, session: GameSession, text: str) -> None:
+        """A line of text in the player's chat window (ClientMessage, as EQOAGameServer:
+        int32 length, then UTF-16)."""
+        self.send_reliable(session, CLIENT_MESSAGE_OPCODE, struct.pack("<i", len(text)) + text.encode("utf-16-le"))
 
     def refresh_appearance(self, session: GameSession) -> None:
         """Redraw the character (new gear or a model preview): a new own-character update."""
@@ -1160,6 +1189,7 @@ MERCHANT_SELL_OPCODE = 0x004B
 MERCHANT_BOX_OPCODE = 0x00B7
 ADD_INVENTORY_ITEM_OPCODE = 0x003B
 REMOVE_INVENTORY_ITEM_OPCODE = 0x003C
+CLIENT_MESSAGE_OPCODE = 0x0A7A
 PLAYER_TUNAR_OPCODE = 0x0052
 RELIABLE_SEGMENT_BYTES = 0x0484
 EQUIP_ITEM_OPCODE = 0x003F

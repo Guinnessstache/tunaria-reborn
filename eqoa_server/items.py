@@ -56,6 +56,7 @@ def item_patterns() -> dict[int, dict]:
     for item in json.loads((DATA / "sandstorm_items.json").read_text(encoding="utf-8")):
         item["class_mask"] = item.get("class_use") or ALL_CLASSES  # as the Sandstorm server sent it
         patterns[item["id"]] = item
+    patterns.update(_built_scrolls(patterns))
     return patterns
 
 
@@ -264,12 +265,109 @@ def _class_spell_ids(klass: int, level: int) -> list[int]:
         # Rows without a power cost are another ability's effect ("Chilling Aura Effect", procs).
         if ability["level"] != level or not ability["power"]:
             continue
-        spell_id = RETURN_HOME if ability["name"] == "Return Home" else KNOWN_SPELL_IDS.get(
-            (name, ability["name"]), GUIDE_SPELL_ID_BASE + klass * 1000 + position
-        )
+        spell_id = class_spell_id(klass, position)
         if spell_id in patterns and spell_id not in ids:
             ids.append(spell_id)
     return ids
+
+
+def class_spell_id(klass: int, position: int) -> int:
+    """The spell id of row ``position`` in the class's guide table."""
+    name = CLASS_NAMES[klass]
+    ability = class_abilities()[name][position]
+    if ability["name"] == "Return Home":
+        return RETURN_HOME
+    return KNOWN_SPELL_IDS.get((name, ability["name"]), GUIDE_SPELL_ID_BASE + klass * 1000 + position)
+
+
+# Spells are sold as scrolls: items whose description reads "This allows you to scribe <name>."
+# (294 of them in EQOAGameServer's table, all with this icon). Using one scribes the spell.
+# The table only covers some spells, so the rest get built scrolls with ids of their own.
+SCROLL_ICON = -607649328
+SCRIBE_TEXT = "This allows you to scribe "
+SCROLL_ID_BASE = 200000  # built scrolls: base + class * 1000 + guide table position
+
+
+def _scribes(item: dict) -> str | None:
+    """The spell name a scroll item scribes, or None for other items."""
+    description = item.get("description") or ""
+    if not description.startswith(SCRIBE_TEXT):
+        return None
+    return description[len(SCRIBE_TEXT):].rstrip(" .").strip() or None
+
+
+def _sellable_abilities():
+    """(class, guide position, ability) for every ability a scroll can teach."""
+    for klass, name in enumerate(CLASS_NAMES):
+        for position, ability in enumerate(class_abilities().get(name, ())):
+            if ability["power"] and ability["name"] != "Return Home":
+                yield klass, position, ability
+
+
+def _scroll_key(name: str, level: int) -> tuple[str, int]:
+    # Several classes share spell names at different levels ("Infusion"), so a scroll in
+    # the item table matches an ability only when its level does too.
+    return name.lower(), level
+
+
+def _built_scrolls(patterns: dict[int, dict]) -> dict[int, dict]:
+    real = {_scroll_key(_scribes(item), item["level"]) for item in patterns.values() if _scribes(item)}
+    built = {}
+    for klass, position, ability in _sellable_abilities():
+        if _scroll_key(ability["name"], ability["level"]) in real:
+            continue
+        item_id = SCROLL_ID_BASE + klass * 1000 + position
+        built[item_id] = {
+            "id": item_id, "icon": SCROLL_ICON, "slot": -1, "trade": 1, "rent": 1, "attack_type": 0,
+            "damage": 0, "level": ability["level"], "max_stack": 1, "max_hp": 0, "duration": 0,
+            "class_mask": 1 << klass, "proc_anim": 2, "lore": 1, "craft": 0, "name": ability["name"],
+            "description": f"{SCRIBE_TEXT}{ability['name']}.", "model": 0, "color": 0xFFFFFFFF, "stats": [],
+        }
+    return built
+
+
+@lru_cache(maxsize=None)
+def scroll_for(klass: int, position: int) -> int:
+    """The scroll item that teaches row ``position`` of the class's table: the item
+    table's own scroll when it has one, otherwise the built one."""
+    ability = class_abilities()[CLASS_NAMES[klass]][position]
+    built = SCROLL_ID_BASE + klass * 1000 + position
+    if built in item_patterns():
+        return built
+    return _real_scrolls().get(_scroll_key(ability["name"], ability["level"]), built)
+
+
+@lru_cache(maxsize=1)
+def _real_scrolls() -> dict[tuple[str, int], int]:
+    found: dict[tuple[str, int], int] = {}
+    for item in sorted(item_patterns().values(), key=lambda item: item["id"]):
+        name = _scribes(item)
+        if name and item["id"] < SCROLL_ID_BASE:
+            found.setdefault(_scroll_key(name, item["level"]), item["id"])
+    return found
+
+
+def is_scroll(item_id: int) -> bool:
+    item = item_patterns().get(item_id)
+    return item is not None and _scribes(item) is not None
+
+
+def scroll_spell(item_id: int, klass: int) -> int | None:
+    """The spell id a scroll teaches a character of ``klass``, or None when the class
+    can't scribe it."""
+    item = item_patterns().get(item_id)
+    name = _scribes(item) if item else None
+    if name is None or not 0 <= klass < len(CLASS_NAMES):
+        return None
+    if SCROLL_ID_BASE <= item_id < SCROLL_ID_BASE + len(CLASS_NAMES) * 1000:
+        if (item_id - SCROLL_ID_BASE) // 1000 != klass:
+            return None
+        return class_spell_id(klass, (item_id - SCROLL_ID_BASE) % 1000)
+    for position, ability in enumerate(class_abilities().get(CLASS_NAMES[klass], ())):
+        if ability["power"] and _scroll_key(ability["name"], ability["level"]) == _scroll_key(name, item["level"]):
+            spell_id = class_spell_id(klass, position)
+            return spell_id if spell_id in spell_patterns() else None
+    return None
 
 
 ITEM_SLOT_NAMES = {
@@ -545,9 +643,9 @@ def base_price(item_id: int) -> int:
     capture's well water is worth 20, ours 15; its level 20 sword 2453, ours 2500."""
     item = item_patterns()[item_id]
     level = max(1, item["level"])
-    if item["slot"] == -1:
+    if item["slot"] == -1 and _scribes(item) is None:
         return 5 + 5 * level
-    return 100 + 120 * level
+    return 100 + 120 * level  # gear and spell scrolls
 
 
 def item_record(entry: dict, key: int, cost: int | None = None) -> bytes:

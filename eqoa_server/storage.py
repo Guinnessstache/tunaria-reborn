@@ -266,6 +266,17 @@ class JsonStore:
             self.save()
             return learned
 
+    def learn_spell(self, character_id: int, spell_id: int) -> bool:
+        """Add a spell to the character's book (not on the hotbar). False if already known."""
+        with self._lock:
+            character = self._character_or_error(character_id)
+            character.spells = character.spells or []
+            if any(entry["spell"] == spell_id for entry in character.spells):
+                return False
+            character.spells.append({"spell": spell_id, "hotbar": -1})
+            self.save()
+            return True
+
     def set_tunar(self, character_id: int, tunar: int) -> None:
         if not 0 <= tunar <= 2_000_000_000:
             raise InventoryError("tunar must be 0 to 2000000000")

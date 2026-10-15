@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 126 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 129 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -264,12 +264,16 @@ Fields, in order:
    - The auth log prints the token and stored fingerprints, so compare those
      across two logins.
    - The user has turned checking off for now (Settings).
-2. **Spell merchants are nearly empty.** Their stock comes from item records
-   named after the class's spells, and almost none exist (Enchanter 16-29: 2
-   of 34). We don't know yet whether the real game sold spells as items or
-   taught them directly. Prices are our own formula:
+2. **Spell scrolls are untested in game.** Spells were sold as scroll items
+   ("This allows you to scribe X.", icon -607649328). The item table only has
+   294, so every other class ability gets a built scroll (ids 200000 + class ·
+   1000 + guide position). Spell merchants sell one per spell in their range.
+   Using a scroll (InteractItem) learns the spell, removes the scroll and sends
+   a ClientMessage (0x0A7A, int32 length + UTF-16). The opcode that adds a spell
+   to the open spell book is unknown, so the spell appears on the next world
+   entry. Prices are our own formula:
    - Consumables cost 5 + 5·level.
-   - Everything else costs 100 + 120·level.
+   - Everything else, scrolls included, costs 100 + 120·level.
    - Merchants buy back at a quarter of that.
    - Only 519 of the 1051 merchants have a guide description. The rest sell food
      and drink.

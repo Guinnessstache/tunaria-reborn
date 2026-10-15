@@ -37,6 +37,16 @@ class StockTests(unittest.TestCase):
         for item_id in goods:
             self.assertIn(items.item_patterns()[item_id]["name"].lower(), rogue)
 
+    def test_spell_merchant_sells_a_scroll_per_spell(self):
+        goods = merchants.stock("Merchant Mianda")  # "Enchanter Spells Level 16-29": 34 spells
+        enchanter = [a for a in items.class_abilities()["Enchanter"] if 16 <= a["level"] <= 29 and a["power"]]
+        self.assertEqual(len(goods), len(enchanter))
+        for item_id in goods:
+            self.assertTrue(items.is_scroll(item_id))
+            self.assertIsNotNone(items.scroll_spell(item_id, items.CLASS_NAMES.index("Enchanter")))
+        # The item table's own scrolls are used where they exist (Power Boon is item 8421).
+        self.assertIn(8421, goods)
+
     def test_unknown_merchant_sells_food_and_drink(self):
         goods = merchants.stock("Nobody We Know")
         self.assertTrue(goods)
@@ -90,6 +100,32 @@ class MerchantHandlerTests(unittest.TestCase):
         self.assertIn(zigzag(item_id) + zigzag(items.base_price(item_id)), body)
         self.assertEqual(merchants.price(item_id), items.base_price(item_id))
         self.assertEqual(merchants.sell_price(item_id), max(1, (items.base_price(item_id) * 25 + 50) // 100))
+
+    def test_using_a_scroll_scribes_the_spell(self):
+        warrior = items.CLASS_NAMES.index("Warrior")
+        position, ability = next((i, a) for i, a in enumerate(items.class_abilities()["Warrior"])
+                                 if a["level"] > 1 and a["power"])
+        scroll = items.scroll_for(warrior, position)
+        self.store.give_item(self.character.character_id, scroll)
+        index = len(self.character.inventory) - 1
+        notes = self.server.interact_item(self.session, struct.pack("<II", index, 0) + zigzag(0))
+        spell_id = items.class_spell_id(warrior, position)
+        self.assertIn(spell_id, [entry["spell"] for entry in self.character.spells])
+        self.assertEqual(len(self.character.inventory), index)
+        self.assertEqual([op for op, _ in self.sent], [0x3C, 0x0A7A])
+        self.assertIn(ability["name"].encode("utf-16-le"), self.sent[1][1])
+        self.assertIn("scribed", notes[0])
+
+    def test_scrolls_of_other_classes_are_refused(self):
+        wizard = items.CLASS_NAMES.index("Wizard")
+        position = next(i for i, a in enumerate(items.class_abilities()["Wizard"]) if a["level"] > 1 and a["power"])
+        self.store.give_item(self.character.character_id, items.scroll_for(wizard, position))
+        before = list(self.character.spells)
+        index = len(self.character.inventory) - 1
+        self.server.interact_item(self.session, struct.pack("<II", index, 0) + zigzag(0))
+        self.assertEqual(self.character.spells, before)
+        self.assertEqual(len(self.character.inventory), index + 1)
+        self.assertEqual([op for op, _ in self.sent], [0x0A7A])
 
     def test_window_ignores_non_merchants(self):
         guard = next(n for n in npcs.all_npcs() if not n.is_merchant)

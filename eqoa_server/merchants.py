@@ -81,9 +81,11 @@ def _stock_for(description: str) -> tuple[int, ...]:
     if "spells" in words:
         klass = next((i for i, name in enumerate(items.CLASS_NAMES) if name.lower() in words), None)
         if klass is not None:
-            wanted = {a["name"].lower() for a in items.class_abilities()[items.CLASS_NAMES[klass]]
-                      if low <= a["level"] <= high and a["power"]}
-            found = [item for item in patterns if item["name"].lower() in wanted]
+            # One scroll per spell of the class in the level range.
+            every = items.item_patterns()
+            found = [every[items.scroll_for(klass, position)]
+                     for position, ability in enumerate(items.class_abilities()[items.CLASS_NAMES[klass]])
+                     if low <= ability["level"] <= high and ability["power"] and ability["name"] != "Return Home"]
     elif words & set(MATERIALS) and words & {"armor", "mail", "chainmail"}:
         keys = {key for word in words & set(MATERIALS) for key in MATERIALS[word]}
         found = [item for item in patterns if item["slot"] in items.ARMOR_ITEM_SLOTS + (2,) and in_range(item)
