@@ -915,6 +915,11 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             return [f"use ability: nothing on hotbar {slot}"]
         spell = items.spell_patterns()[entry["spell"]]
         if entry["spell"] == items.RETURN_HOME:
+            if session.pending_cast is not None:
+                # Pressing it again mid-cast must not restart the 60 s (in game it was pressed
+                # 15 times in 7 s).
+                left = session.pending_cast[0] - time.monotonic()
+                return [f"{spell['name']} already casting, {max(0, left):.0f} s left"]
             session.pending_cast = (time.monotonic() + spell["cast_time"], entry["spell"])
             return [f"casting {spell['name']} ({spell['cast_time']} s)"]
         return [f"cast {spell['name']} (no effect yet)"]

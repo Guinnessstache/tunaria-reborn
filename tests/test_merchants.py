@@ -234,6 +234,9 @@ class AbilityTests(unittest.TestCase):
         notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
         self.assertIn("Return Home", notes[0])
         due, _ = self.session.pending_cast
+        again = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
+        self.assertIn("already casting", again[0])
+        self.assertEqual(self.session.pending_cast[0], due)  # pressing again doesn't restart it
         self.assertEqual(self.server.finish_cast(self.session, due - 1), [])
         self.assertEqual(self.sent, [])
         self.server.finish_cast(self.session, due)
