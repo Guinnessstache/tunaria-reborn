@@ -449,26 +449,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     continue
                 if msg.message_type in (MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE):
                     session.phase3_handled_message = msg.message_number
-                    if msg.opcode == INTERACT_ITEM_OPCODE:
-                        sent += server.interact_item(session, msg.payload)
-                    elif msg.opcode == MERCHANT_DIALOG_OPCODE:
-                        sent += server.merchant_window(session, msg.payload)
-                    elif msg.opcode == MERCHANT_BUY_OPCODE:
-                        sent += server.merchant_buy(session, msg.payload)
-                    elif msg.opcode == MERCHANT_SELL_OPCODE:
-                        sent += server.merchant_sell(session, msg.payload)
-                    elif msg.opcode == ASSIGN_HOTBAR_OPCODE:
-                        sent += server.assign_hotbar(session, msg.payload)
-                    elif msg.opcode == USE_ABILITY_OPCODE:
-                        sent += server.use_ability(session, msg.payload)
-                    elif msg.opcode == ATTACK_OPCODE:
-                        sent += server.attack(session, msg.payload)
-                    elif msg.opcode == LOOT_OPCODE:
-                        sent += server.loot(session, msg.payload)
-                    elif msg.opcode == LOOT_ITEM_OPCODE:
-                        sent += server.take_loot(session, msg.payload)
-                    elif msg.opcode == LOOT_CLOSE_OPCODE:
-                        server.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
+                    sent += server.handle_game_message(session, msg.opcode, msg.payload) or []
             update = next(
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
@@ -685,6 +666,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.mobs: dict[int, combat.Mob] = {}
         self.rng = random.Random()
         self.last_combat_tick = 0.0
+        # Client opcodes the server got in the world but doesn't handle: {opcode: {count, sample}}.
+        self.ignored_opcodes: dict[int, dict] = {}
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
         """Send one phase3 bundle (flags, arrival placeholder, messages) with the next bundle number."""
@@ -787,6 +770,34 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             )
             self.send_phase3(session, body, reliable_message=number)
         return number
+
+    def handle_game_message(self, session: GameSession, opcode: int | None, payload: bytes) -> list[str] | None:
+        """One reliable in-world message from the client. Returns log notes, or None when the
+        server doesn't handle the opcode (counted in ``ignored_opcodes`` for the self-test)."""
+        handlers = {
+            INTERACT_ITEM_OPCODE: self.interact_item,
+            MERCHANT_DIALOG_OPCODE: self.merchant_window,
+            MERCHANT_BUY_OPCODE: self.merchant_buy,
+            MERCHANT_SELL_OPCODE: self.merchant_sell,
+            ASSIGN_HOTBAR_OPCODE: self.assign_hotbar,
+            USE_ABILITY_OPCODE: self.use_ability,
+            ATTACK_OPCODE: self.attack,
+            LOOT_OPCODE: self.loot,
+            LOOT_ITEM_OPCODE: self.take_loot,
+        }
+        handler = handlers.get(opcode)
+        if handler is not None:
+            return handler(session, payload)
+        if opcode == LOOT_CLOSE_OPCODE:
+            self.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
+            return []
+        if opcode in QUIET_OPCODES:
+            return []
+        if opcode is not None:
+            seen = self.ignored_opcodes.setdefault(opcode, {"count": 0, "sample": ""})
+            seen["count"] += 1
+            seen["sample"] = bytes(payload[:32]).hex()
+        return None
 
     def merchant_window(self, session: GameSession, payload: bytes) -> list[str]:
         """MerchantDiag (0x4C: merchant object id) -> MerchantBox (0xB7), as EQOAGameServer:
@@ -1772,6 +1783,8 @@ LOOT_BOX_OPCODE = 0x0018
 LOOT_ITEM_OPCODE = 0x0019
 LOOT_OPTIONS_OPCODE = 0x0085  # byte: 1 being looted by someone else, 2 not lootable, 3 not your kill
 LOOT_NOT_YOURS = 3
+# Client messages that need nothing from the server (not counted as ignored).
+QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE}
 MAX_INVENTORY = 40  # EQOAReturnHome's inventory limit
 HIT_OPCODE = 0x00DB
 EXPERIENCE_OPCODE = 0x0020

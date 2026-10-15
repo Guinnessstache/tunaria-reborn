@@ -61,6 +61,29 @@ def _lands_on_caster(effect: dict, targeting_other: bool) -> bool:
     return scope in ("Self", "Group") or (scope == "Target" and not targeting_other)
 
 
+def handled(effect: dict) -> bool:
+    """Whether the server does anything with this effect (on the caster in ``apply``, on a
+    creature in GameUDPServer.ability_on_creature, or as a pet). For the self-test's list."""
+    kind, attribute = effect.get("type"), effect.get("attribute")
+    change, duration = int(effect.get("change", 0)), int(effect.get("duration", 0))
+    if effect.get("scope") == "Pet" and kind != "Summon Pet":
+        return False  # nothing is done to pets yet
+    if kind == "Summon Pet" or kind == "Modify Hate" or kind == "Backstab":
+        return True
+    if kind == "Dmg/Heal" and attribute == "HP":
+        return change > 0 or effect.get("scope") == "Target"
+    if kind == "Statistic Change":
+        if attribute == "DoT":
+            return change < 0 and duration > 0 and effect.get("scope") == "Target"
+        if attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES:
+            return duration > 0 and change > 0 and effect.get("scope") != "Pet"  # debuffs: not yet
+        if attribute in ("HoT", "PoT"):
+            return duration > 0 and change > 0 and effect.get("scope") != "Pet"
+        if attribute == "Power":
+            return duration == 0 and effect.get("scope") != "Pet"
+    return False
+
+
 def stat_values(character: Character, buffs: list[Buff]) -> list[int]:
     return [value + bonus(buffs, name) for value, name in zip(player_stats.base_stats(character), STAT_ATTRIBUTES)]
 
@@ -89,7 +112,7 @@ def apply(character: Character, row: dict, buffs: list[Buff], now: float, target
             before = character.hp
             character.hp = min(max_hp(character, buffs), character.hp + value)
             said.append(f"You are healed for {character.hp - before}.")
-        elif kind == "Statistic Change" and attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES and duration > 0:
+        elif kind == "Statistic Change" and attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES and duration > 0 and value > 0:
             buffs[:] = [b for b in buffs if not (b.spell == row["name"] and b.attribute == attribute)]
             buffs.append(Buff(row["name"], attribute, value, now + duration))
             said.append(f"{row['name']}: {value:+d} {attribute} for {_duration(duration)}.")

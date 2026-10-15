@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import items
+from .selftest import Runner as SelfTestRunner
 from .config import ServerConfig, save_settings
 from .netconfig import NetworkError, NetworkHelper, local_ipv4_addresses, validate_network_config, validate_public_host
 from .patch_tcp import MOTD_BODY_SIZE, default_motd_text
@@ -181,6 +182,16 @@ class AdminContext:
     network: NetworkHelper = field(default_factory=NetworkHelper)
     started_at: float = field(default_factory=time.time)
     exit_code: int = 0
+    selftest: SelfTestRunner | None = None
+
+    def self_test(self) -> SelfTestRunner:
+        if self.selftest is None:
+            self.selftest = SelfTestRunner(self.config.data_path.parent / "captures")
+        return self.selftest
+
+    def ignored_opcodes(self) -> dict:
+        game = self.services.game_server
+        return dict(game.ignored_opcodes) if game is not None else {}
 
     def request_restart(self) -> None:
         """Exit with RESTART_EXIT_CODE shortly, after the HTTP response has gone out."""
@@ -272,6 +283,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/accounts": self._accounts,
             "/api/settings": self._settings,
             "/api/update": self._update_status,
+            "/api/selftest": lambda: self.ctx.self_test().status(),
         }
         if url.path == "/api/network":
             self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
@@ -307,6 +319,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         # Browsers cannot attach a custom header cross-site without CORS, so this blocks CSRF.
         if self.headers.get(CSRF_HEADER) != "1":
             self._error(403, "missing admin header")
+            return
+        if url.path == "/api/selftest/capture":
+            self._upload_capture(parse_qs(url.query))
             return
         try:
             body = self._body()
@@ -463,6 +478,13 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"ok": ok})
         elif parts == ["settings"]:
             self._update_settings(body)
+        elif parts == ["selftest", "run"]:
+            started = ctx.self_test().start(bool(body.get("quick")), ctx.ignored_opcodes)
+            print(f"ADMIN self-test {'started' if started else 'already running'}")
+            self._json({"ok": started, **ctx.self_test().status()})
+        elif parts == ["selftest", "capture", "delete"]:
+            self._json({"ok": ctx.self_test().delete_capture(str(body.get("name", ""))),
+                        "captures": ctx.self_test().captures()})
         elif parts == ["shutdown"]:
             print("ADMIN shutdown requested from the admin panel")
             self._json({"ok": True})
@@ -471,6 +493,21 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._error(404, "not found")
 
     # -- actions ----------------------------------------------------------
+    def _upload_capture(self, query: dict) -> None:
+        """POST /api/selftest/capture?name=...: the raw pcap or pcapng file as the body."""
+        runner = self.ctx.self_test()
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > runner.MAX_CAPTURE:
+            self._error(413, "capture too big")
+            return
+        try:
+            name = runner.save_capture((query.get("name") or ["capture.pcapng"])[0], self.rfile.read(length))
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        print(f"ADMIN saved capture {name} for the self-test")
+        self._json({"ok": True, "name": name, "captures": runner.captures()})
+
     def _login(self) -> None:
         try:
             password = str(self._body().get("password", ""))

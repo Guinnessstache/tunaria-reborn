@@ -4,6 +4,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -90,6 +91,29 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request("/api/login", {"password": "nope"})[0], 401)
         self.login()
         self.assertEqual(self.request("/api/status")[0], 200)
+
+    def test_self_test_runs_and_takes_captures(self):
+        self.login()
+        capture = Path(__file__).resolve().parents[1] / "captures" / "from_sandstorm.pcapng"
+        req = urllib.request.Request(self.base + "/api/selftest/capture?name=sandstorm.pcapng", data=capture.read_bytes(),
+                                     headers={"Cookie": self.cookie, "X-EQOA-Admin": "1",
+                                              "Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            self.assertEqual(json.loads(response.read())["captures"][0]["name"], "sandstorm.pcapng")
+        self.game_server().ignored_opcodes[0x10] = {"count": 2, "sample": ""}
+        status, body = self.request("/api/selftest/run", {"quick": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["running"])
+        deadline = time.time() + 120
+        while body["running"] and time.time() < deadline:
+            time.sleep(0.5)
+            body = self.request("/api/selftest")[1]
+        self.assertIsNone(body["error"])
+        self.assertIn("1. [", body["report"]["text"])
+        self.assertTrue(any(f["area"] == "live play" for f in body["report"]["findings"]))
+
+    def game_server(self):
+        return self.services.game_server
 
     def test_post_without_admin_header_is_refused(self):
         self.login()

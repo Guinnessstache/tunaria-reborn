@@ -46,6 +46,19 @@ redirects to it.
   (`tools/make_local_pnach.py`) and internal DNS pointing at the server.
 - **Feedback:** the user sends screenshots and log lines from the panel's
   **Logs** tab.
+- **Self-test** (panel tab, or `python3 -m eqoa_server.selftest [--quick]`): a
+  bot plays through the server in a separate process with a fake clock and a
+  throwaway store (`selftest.py`): every starting class/race enters the world,
+  every class ability is cast at its level, each class fights creatures at 8
+  levels and loots them, every merchant is bought from, used and sold to. It
+  audits the data (ability effects not done, creatures without loot, NPCs off
+  the map...) and replays captures of an official-style server
+  (`data/captures/`, uploaded in the tab; local-server captures are skipped)
+  through `GameUDPServer.handle_game_message`, comparing replies by opcode.
+  The running server also counts client opcodes it ignores
+  (`ignored_opcodes`), shown as "live play" findings. "Copy as a list" gives a
+  numbered list the user pastes into the chat. It can't judge how the game
+  draws anything.
 
 **Ports:**
 
@@ -70,6 +83,7 @@ redirects to it.
 | `items.py` | Item and spell patterns and records. Starting kit (`STARTING_KIT_VERSION = 2`). Equip slots, armor and models (`model_for`, overrides in `data/item_models.json`), search and describe. |
 | `npcs.py` | NPC placements (`reference_data/npcs.json.gz`). Nearest-23 grid lookup and `build_npc_update` from the capture's channel-8 template. |
 | `merchants.py` | Merchant stock fitted from the guide's descriptions, and the price formula. |
+| `selftest.py`, `capture_reader.py` | The self-test bot and report; reliable game messages of both sides out of a pcap/pcapng. |
 | `combat.py`, `loot.py`, `pets.py` | Creature fights, corpse loot (creature parts + named drops), summoned pets. |
 | `storage.py` | `JsonStore`: accounts (salted sha256 game passwords) and characters. Inventory, spells, level, tunar, position. |
 | `admin.py`, `admin_ui.html` | Admin panel: services, players, accounts, give item, equip, level, tunar, reset password, model browser, settings, logs, updates. |

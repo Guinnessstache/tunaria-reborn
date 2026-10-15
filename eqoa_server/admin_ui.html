@@ -71,6 +71,12 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
 #log .t { color: var(--muted); }
 .log-tools { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
 .log-tools input { max-width: 320px; }
+.finding { border-top: 1px solid var(--line); padding: 10px 0; }
+.finding:first-of-type { border-top: 0; }
+.finding .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.finding .num { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.2em; }
+.finding ul { margin: 6px 0 0 2.6em; padding-left: 14px; color: var(--muted); font-size: 13px; }
+.sev-broken { color: var(--bad); } .sev-missing { color: var(--warn); } .sev-data, .sev-check { color: var(--muted); }
 .account { border-top: 1px solid var(--line); padding: 12px 0; }
 .account:first-of-type { border-top: 0; }
 .account-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -130,6 +136,7 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
       <button data-tab="settings">Settings</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="updates">Updates</button>
+      <button data-tab="selftest">Self-test</button>
     </nav>
     <span class="spacer"></span>
     <button class="btn" id="logout">Sign out</button>
@@ -308,6 +315,27 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         <div id="update-result" class="muted">No update has run yet.</div>
       </section>
     </div>
+    <div data-panel="selftest" hidden>
+      <section class="card">
+        <h2>Self-test <span class="actions">
+          <button class="btn" id="selftest-quick">Quick run</button>
+          <button class="btn primary" id="selftest-run">Run self-test</button>
+        </span></h2>
+        <p class="hint">A bot plays through the server: every class makes a character and enters the world, casts every ability, fights and loots creatures at several levels, and buys, uses and sells at every merchant. It also checks the data and compares the server with any captures of an official-style server below. It runs on a throwaway copy, so players aren't affected. It can't see how the game draws things, so it doesn't replace testing in game.</p>
+        <div id="selftest-state" class="muted">Not run yet.</div>
+        <p class="error" id="selftest-error"></p>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Captures to compare with</h2>
+        <p class="hint">Add a .pcap / .pcapng of the game talking to Sandstorm or another official-style server. Captures of this server are skipped.</p>
+        <div class="inline"><input type="file" id="capture-file" accept=".pcap,.pcapng"><button class="btn" id="capture-upload">Upload</button></div>
+        <div id="capture-list" style="margin-top:8px"></div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <h2>Findings <span class="actions"><button class="btn" id="selftest-copy" disabled>Copy as a list</button></span></h2>
+        <div id="selftest-findings" class="muted">Run the self-test to see findings.</div>
+      </section>
+    </div>
   </main>
 </div>
 <div id="toast"></div>
@@ -395,6 +423,7 @@ $("#tabs").addEventListener("click", (e) => {
   document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
   if (tab === "settings") { loadSettings(); loadNetwork(); }
   if (tab === "updates") loadUpdates();
+  if (tab === "selftest") loadSelfTest();
   if (tab === "accounts") loadModels().catch(() => {});
   refresh();
 });
@@ -887,6 +916,64 @@ $("#restart").onclick = async () => {
   if (!confirm("Restart the server? Players will be disconnected.")) return;
   try { await api("/api/restart", {}); await waitForRestart(); } catch (err) { if (err.message !== "login required") toast(err.message); }
 };
+
+// ---- self-test ----
+const SEVERITY = { broken: "Broken", missing: "Missing", data: "Data gap", check: "Worth a look" };
+let selftestText = "", selftestTimer = null;
+function renderSelfTest(st) {
+  const r = st.report;
+  $("#selftest-run").disabled = $("#selftest-quick").disabled = st.running;
+  $("#selftest-error").textContent = st.error || "";
+  $("#selftest-state").innerHTML = st.running
+    ? `Running… started ${esc(date(st.started))}. A full run takes a minute or two.`
+    : r ? `Last run ${esc(r.finished)}${r.quick ? " (quick)" : ""}: <strong>${r.findings.length}</strong> findings · ${Object.entries(r.stats || {}).map(([k, v]) => `${esc(k)} ${esc(v)}`).join(" · ")}`
+      + (r.notes && r.notes.length ? `<ul>${r.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "")
+    : "Not run yet.";
+  $("#capture-list").innerHTML = st.captures.length
+    ? st.captures.map((c) => `<div class="inline"><code>${esc(c.name)}</code> <span class="muted">${(c.size / 1048576).toFixed(1)} MB</span>
+        <button class="btn danger" data-capture="${esc(c.name)}">Remove</button></div>`).join("")
+    : `<span class="muted">No captures added. The repo's own capture is always used.</span>`;
+  selftestText = r ? r.text || "" : "";
+  $("#selftest-copy").disabled = !selftestText;
+  if (r) {
+    let n = 0;
+    $("#selftest-findings").innerHTML = r.findings.length ? r.findings.map((f) => `<div class="finding"><div class="head">
+        <span class="num">${++n}.</span><span class="pill sev-${esc(f.severity)}">${esc(SEVERITY[f.severity] || f.severity)}</span>
+        <span class="muted">${esc(f.area)}</span><strong>${esc(f.title)}</strong>${f.count > 1 ? `<span class="muted">(${f.count})</span>` : ""}</div>
+        ${f.examples.length ? `<ul>${f.examples.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`).join("")
+      : "Nothing found.";
+  }
+  clearTimeout(selftestTimer);
+  if (st.running && activeTab === "selftest") selftestTimer = setTimeout(loadSelfTest, 2000);
+}
+async function loadSelfTest() {
+  try { renderSelfTest(await api("/api/selftest")); }
+  catch (err) { if (err.message !== "login required") $("#selftest-error").textContent = err.message; }
+}
+async function startSelfTest(quick) {
+  try { renderSelfTest(await api("/api/selftest/run", { quick })); } catch (err) { if (err.message !== "login required") toast(err.message); }
+}
+$("#selftest-run").onclick = () => startSelfTest(false);
+$("#selftest-quick").onclick = () => startSelfTest(true);
+$("#selftest-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(selftestText); toast("Copied the findings"); }
+  catch { const w = window.open("", "_blank"); if (w) { w.document.body.innerText = selftestText; } }
+};
+$("#capture-upload").onclick = async () => {
+  const file = $("#capture-file").files[0];
+  if (!file) { toast("Choose a .pcap or .pcapng file first"); return; }
+  try {
+    const res = await fetch(`/api/selftest/capture?name=${encodeURIComponent(file.name)}`, { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/octet-stream", "X-EQOA-Admin": "1" }, body: file });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    toast(`Added ${data.name}`); $("#capture-file").value = ""; loadSelfTest();
+  } catch (err) { toast(err.message); }
+};
+$("#capture-list").addEventListener("click", async (e) => {
+  const name = e.target.dataset.capture; if (!name || !confirm(`Remove ${name}?`)) return;
+  try { await api("/api/selftest/capture/delete", { name }); loadSelfTest(); } catch (err) { toast(err.message); }
+});
 
 api("/api/session").then((s) => {
   applySession(s);
