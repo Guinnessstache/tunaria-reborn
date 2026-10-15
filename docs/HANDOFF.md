@@ -378,7 +378,7 @@ to learn them."
    attacker; kills give the owner XP). Creatures don't fight back at it.
    Recasting replaces it; it goes when the owner dies or logs out. How the real
    game showed pets (a pet window, ownership) isn't in any capture.
-7. Armor colors always default to 0. Weapon models are exact only where known.
+8. Armor colors always default to 0. Weapon models are exact only where known.
    Elsewhere the item gets a model of the same shape, or one set through the
    model browser.
 
