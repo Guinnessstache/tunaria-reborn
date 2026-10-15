@@ -441,6 +441,7 @@ def build_old_world_list(
     public_host: str,
     game_port: int,
     shard_name: str,
+    instance_id: int | None = None,
 ) -> bytes:
     """GameServers (0x07B3) list, laid out like Sandstorm's (one entry per language).
 
@@ -454,8 +455,8 @@ def build_old_world_list(
     ps2_endpoint = struct.pack("<H", client_endpoint)
     rest = (
         bytes([0x63])  # bundle flags
-        + ps2_endpoint
-        + bytes([0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00])
+        + struct.pack("<I", discovery_instance(client_endpoint) if instance_id is None else instance_id)  # session ack
+        + bytes([0x01, 0x00, 0x01, 0x00, 0x02, 0x00])  # bundle 1, acking client bundle 1 / message 2
         + bytes([0xFB, 0x06, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00])  # DiscVersion
         + list_message
     )
@@ -471,19 +472,24 @@ def build_discovery_bundle(client_endpoint: int, instance_id: int, bundle: int, 
     return packet + struct.pack("<I", rdp_crc(packet))
 
 
-def build_old_world_ack(client_endpoint: int, auth_byte: int = 0x01) -> bytes:
-    ps2_endpoint = struct.pack("<H", client_endpoint)
-    ack = bytearray(27)
-    ack[0:2] = b"\xb0\x73"
-    ack[2:4] = ps2_endpoint
-    ack[4:6] = bytes([0x8D, 0x60])
-    ack[6:8] = ps2_endpoint
-    ack[8] = auth_byte
-    ack[9:11] = bytes([0x00, 0x20])
-    ack[11] = 0x02
-    ack[12:23] = bytes([0x00, 0xFB, 0x06, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00])
-    ack[23:27] = struct.pack("<I", rdp_crc(bytes(ack[:23])))
-    return bytes(ack)
+def build_old_world_ack(client_endpoint: int, instance_id: int | None = None) -> bytes:
+    """Bundle 2 from the discovery endpoint: DiscVersion again, for the client's session.
+
+    The instance must be the client's own (0x0002xxxx, as Sandstorm sends it); with any
+    other value the client ignores the bundle, never acks it, and drops the server list.
+    """
+    if instance_id is None:
+        instance_id = discovery_instance(client_endpoint)
+    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", 2)
+    body += bytes([0xFB, 0x06, 0x01, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00])  # DiscVersion
+    packet = b"\xb0\x73" + struct.pack("<H", client_endpoint) + write_varuint(0x3000 + len(body))
+    packet += struct.pack("<I", instance_id) + body
+    return packet + struct.pack("<I", rdp_crc(packet))
+
+
+def discovery_instance(client_endpoint: int) -> int:
+    """The session id a client uses with the discovery endpoint when it doesn't send one."""
+    return 0x00020000 | client_endpoint
 
 
 def build_phase2_character_select_ack(client_endpoint: int, instance_id: int, character_list: bytes = b"\x00") -> bytes:

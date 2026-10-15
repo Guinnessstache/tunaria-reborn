@@ -24,6 +24,7 @@ from .protocol import (
     build_character_list_response,
     build_minimal_ack,
     build_old_world_ack,
+    discovery_instance,
     build_old_world_list,
     build_discovery_bundle,
     build_game_servers_message,
@@ -134,18 +135,18 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 if existing is not None:
                     existing.last_client_packet = time.monotonic()
             if any(msg.opcode == 0x0904 for msg in packet.messages):
+                instance_id = packet.instance_id or discovery_instance(packet.client_endpoint)
                 world_list = build_old_world_list(
                     packet.client_endpoint,
                     server.config.public_host,
                     server.config.game_port,
                     server.config.shard_name,
+                    instance_id,
                 )
                 sock.sendto(world_list, self.client_address)
-                sock.sendto(build_old_world_ack(packet.client_endpoint), self.client_address)
+                sock.sendto(build_old_world_ack(packet.client_endpoint, instance_id), self.client_address)
                 with server.lock:
-                    server.discovery[self.client_address] = DiscoverySession(
-                        packet.client_endpoint, packet.instance_id or (0x20000 | packet.client_endpoint)
-                    )
+                    server.discovery[self.client_address] = DiscoverySession(packet.client_endpoint, instance_id)
                 if server.log_packets:
                     print(
                         f"UDP world-list sent to {self.client_address[0]}:{self.client_address[1]} "
@@ -472,21 +473,23 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 )
             return True
 
-        # (B) 0x87 reliable-control (22 bytes) during server-list hover, addressed
-        # to the discovery endpoint 0x73B0. Pcap-verified: the server must ack it
-        # FROM that endpoint (not 0xFFFE) or the client's reliable layer times out
-        # and the server-select screen drops after a few seconds.
+        # (B) 0x87 reliable-control (22 bytes). To the discovery endpoint 0x73B0 it
+        # acks the server list and gets no reply, as on Sandstorm; elsewhere the
+        # server acks it from the endpoint the client addressed.
         reliable = parse_reliable_control(data)
         if reliable is not None and reliable.to_server:
             session = server.sessions.get(self.client_address)
             discovery = server.discovery.get(self.client_address)
             if reliable.dst_endpoint == DISCOVERY_ENDPOINT and discovery is not None:
-                # Continue the server-list bundle numbers (1 and 2 went out with the list);
-                # repeating 1 looks like an old bundle to the client.
+                # Sandstorm sends nothing back for these (captures/from_sandstorm.pcapng):
+                # the client is only acking the list (seq 2 acks bundle 1, seq 3 bundle 2).
                 discovery.last_client_packet = time.monotonic()
-                server_seq = discovery.next_bundle
-                discovery.next_bundle += 1
-                discovery.last_send = time.monotonic()
+                if server.log_packets:
+                    print(
+                        f"UDP server-list ack from {self.client_address[0]}:{self.client_address[1]} "
+                        f"seq={reliable.seq} acks_bundle={reliable.ack}"
+                    )
+                return True
             else:
                 server_seq = session.phase3_next_arrival if session is not None else 1
                 if session is not None:

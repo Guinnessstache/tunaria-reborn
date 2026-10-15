@@ -63,6 +63,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(packet[:2], b"\xb0\x73")
         self.assertEqual(packet[2:4], b"\x34\x12")
         self.assertEqual(struct.unpack_from("<I", packet, 23)[0], rdp_crc(packet[:23]))
+        # Byte for byte what Sandstorm sent (captures/from_sandstorm.pcapng), session 0x00020AD0.
+        sandstorm = bytes.fromhex("b073d00a8d60d00a0200200200fb060100000012000000be314688")
+        self.assertEqual(build_old_world_ack(0x0AD0), sandstorm)
+        self.assertEqual(build_old_world_ack(0x0AD0, 0x00020AD0), sandstorm)
 
     def test_phase2_character_select_ack_shape_and_crc(self):
         packet = build_phase2_character_select_ack(0x1234, 0x55667788)
