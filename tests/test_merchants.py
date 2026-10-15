@@ -439,6 +439,7 @@ class CombatTests(InWorldCase):
         self.assertEqual(xp_body[:1], b"\x08")
         self.assertEqual(self.character.experience, self.combat.xp_for(1, self.character.level))
         self.assertEqual(self.combat.update_bytes(mob)[26], 3)  # dead
+        self.assertEqual(self.combat.update_bytes(mob)[58], 14)  # lying down, as Sandstorm's corpses
         self.assertIsNone(self.session.attack_target)
         self.server.combat_tick(mob.died_at + self.combat.CORPSE_TIME)
         self.assertEqual(self.combat.update_bytes(mob)[0], 0)  # cleared away
@@ -483,3 +484,13 @@ class CombatTests(InWorldCase):
         self.assertIn(0xDB, [op for op, _ in self.sent])
         chat = [body for op, body in self.sent if op == 0x0A7A]
         self.assertFalse(any("hit ".encode("utf-16-le") in body for body in chat))  # log lines stay in the log
+
+    def test_no_regeneration_mid_fight(self):
+        mob = self.server.mob(self.npc.object_id)
+        mob.target = self.character.character_id
+        self.character.hp = 50
+        self.server.regenerate(self.session, 100.0)
+        self.assertEqual(self.character.hp, 50)
+        mob.target = None
+        self.server.regenerate(self.session, 200.0)
+        self.assertGreater(self.character.hp, 50)

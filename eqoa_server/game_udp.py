@@ -1160,13 +1160,20 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         session = self._session_of(mob.target)
         character = session.selected_character if session is not None else None
         if character is None or math.hypot(character.x - mob.npc.x, character.z - mob.npc.z) > combat.LEASH:
-            mob.target, mob.x, mob.z, mob.hp, mob.dots = None, mob.npc.x, mob.npc.z, mob.max_hp, []
+            mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None
             self.refresh_mob(mob)
             return notes + [f"{mob.npc.name} gives up"]
         if combat.step_toward(mob, character.x, character.z, seconds):
+            mob.animation = combat.RUN
             self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
-        elif now >= mob.next_swing:
+        elif mob.animation == combat.RUN:
+            mob.animation = combat.STAND
+            self.refresh_mob(mob)
+        if mob.animation != combat.RUN and now >= mob.next_swing:
             mob.next_swing = now + combat.MOB_DELAY
+            mob.animation = combat.ATTACK
+            self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
+            mob.animation = combat.STAND
             damage = combat.mob_swing(mob.npc.level, self.rng)
             self.send_reliable(session, CAST_EFFECT_OPCODE, struct.pack("<II", mob.object_id, PHASE3_SESSION_ID)
                                + b"\x00" + struct.pack("<iI", int(combat.MOB_DELAY * 1000), combat.MOB_ATTACK_EFFECT))
@@ -1188,7 +1195,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         character.hp, character.mana = character.max_hp, character.max_mana
         for mob in self.mobs.values():
             if mob.target == character.character_id:
-                mob.target, mob.x, mob.z, mob.hp, mob.dots = None, mob.npc.x, mob.npc.z, mob.max_hp, []
+                mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None
                 self.refresh_mob(mob)
         world, x, y, z, facing = bind_point(character)
         self.teleport(session, world, x, y, z, facing)
@@ -1239,6 +1246,9 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if character is None or not session.phase3_in_world or now - session.last_regen < REGEN_INTERVAL:
             return []
         session.last_regen = now
+        if session.attack_target is not None or any(
+                m.target == character.character_id and m.state == combat.ALIVE for m in self.mobs.values()):
+            return []  # no regenerating mid-fight (it hid the damage in game)
         before = (character.hp, character.mana)
         top_hp = ability_effects.max_hp(character, session.buffs)
         top_power = ability_effects.max_power(character, session.buffs)

@@ -36,6 +36,11 @@ MOB_ATTACK_EFFECT = 0xDA9BEA11
 
 ALIVE, CORPSE, GONE = "alive", "corpse", "gone"
 
+# Byte 58 of an object update is its animation (Sandstorm capture): 0 / 1 standing, 3
+# running, 4 a creature's attack, 11 the player's Kick, 14 lying dead (with byte 26 = 3).
+ANIMATION = 58
+STAND, RUN, ATTACK, DEAD = 1, 3, 4, 14
+
 
 @dataclass
 class Dot:
@@ -57,6 +62,8 @@ class Mob:
     target: int | None = None  # character id it's after
     next_swing: float = 0.0
     dots: list[Dot] = field(default_factory=list)
+    facing: int | None = None
+    animation: int = 0
 
     @property
     def object_id(self) -> int:
@@ -73,12 +80,15 @@ def new_mob(npc: npcs.Npc) -> Mob:
 
 
 def update_bytes(mob: Mob, facing: int | None = None) -> bytes:
-    """The creature's object update with its current place, HP and state."""
+    """The creature's object update with its current place, HP, animation and state."""
+    if facing is not None:
+        mob.facing = facing
     moved = npcs.Npc(**{**{f: getattr(mob.npc, f) for f in mob.npc.__dataclass_fields__},
-                        "x": mob.x, "z": mob.z, "facing": mob.npc.facing if facing is None else facing})
+                        "x": mob.x, "z": mob.z, "facing": mob.npc.facing if mob.facing is None else mob.facing})
     update = bytearray(npcs.build_npc_update(moved))
     update[npcs.HP] = max(0, min(255, round(255 * mob.hp / mob.max_hp))) if mob.state == ALIVE else 0
     update[npcs.HP_SHOWN] = 1 if mob.state == ALIVE else 3
+    update[ANIMATION] = DEAD if mob.state != ALIVE else mob.animation
     if mob.state == GONE:
         update[0] = 0
     return bytes(update)
