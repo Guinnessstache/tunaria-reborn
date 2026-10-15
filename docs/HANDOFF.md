@@ -70,6 +70,7 @@ redirects to it.
 | `items.py` | Item and spell patterns and records. Starting kit (`STARTING_KIT_VERSION = 2`). Equip slots, armor and models (`model_for`, overrides in `data/item_models.json`), search and describe. |
 | `npcs.py` | NPC placements (`reference_data/npcs.json.gz`). Nearest-23 grid lookup and `build_npc_update` from the capture's channel-8 template. |
 | `merchants.py` | Merchant stock fitted from the guide's descriptions, and the price formula. |
+| `combat.py`, `loot.py`, `pets.py` | Creature fights, corpse loot (creature parts + named drops), summoned pets. |
 | `storage.py` | `JsonStore`: accounts (salted sha256 game passwords) and characters. Inventory, spells, level, tunar, position. |
 | `admin.py`, `admin_ui.html` | Admin panel: services, players, accounts, give item, equip, level, tunar, reset password, model browser, settings, logs, updates. |
 | `config.py`, `main.py`, `services.py`, `updater.py`, `netconfig.py` | Plumbing. |
@@ -83,6 +84,7 @@ redirects to it.
 | `wiki_items.json.gz` | wiki.eqoa.live facts |
 | `sandstorm_items.json` | Items seen in the capture |
 | `item_models.json` | Model ids from ITEM.ESF |
+| `loot.json` | Named drops: (NPC name, item id) pairs from the fan spreadsheets and ReturnHome's npcitem |
 | `spell_effects.json` | The 238 spell effect ids in DATA2/SPELLFX.CSF, with particle counts and colours |
 
 Each one is built by a script in `tools/` (`import_*.py`).
@@ -99,6 +101,10 @@ Each one is built by a script in `tools/` (`import_*.py`).
 - The Prima guide PDF (via `pdftotext -layout`)
 - wiki.eqoa.live through its MediaWiki API
 - joukop/eqoa-server (Java) and joukop/ESF-file-format
+- EQOAReturnHome's 2023 server code (loot opcodes) and its `EQOA_Master.sql` npcitem table. Its
+  ~3,000 npcitem rows are mostly merchant stock (ReturnHome's lists for 250+ merchants; ours are fitted from the guide).
+- Peter Snyder's fan spreadsheets ("eqoa peter spreadsheets", Google Drive, 2021): quests,
+  gear, abilities incl. Class Masteries, mob profiles, loot tables. Not committed.
 
 eqoa.live has no public database. Only `/scp/status` (players online) is open to
 the public.
@@ -369,10 +375,24 @@ to learn them."
    auto attack (3 s swings); damage abilities and DoTs hit the target. The
    creature turns, chases (8 units/s), swings every 3 s (CastEffect + 0xDB),
    gives up past 120 units. On death: corpse (byte 26 = 3), XP (0x20, 0xD9,
-   chat line), gone after 7 s, back after 90 s. A dead player goes to the bind
+   chat line), gone after 7 s (180 s if it has loot, 3 s after it's emptied),
+   back 90 s after an empty corpse. A dead player goes to the bind
    point with full HP. HP, damage, XP and speeds are our formulas, fitted to
-   the one capture. Loot (0x15) answers "empty". No level-ups yet (XP only),
-   no quests.
+   the one capture. No level-ups yet (XP only), no quests.
+   **Loot (untested in game)**, `loot.py`: a kill rolls the corpse's items —
+   creature parts from the item table named after the creature ("cracked ant
+   pincer", 60% + 15% for a second; poor ones under level 15, good from 35;
+   181 of 533 creature names have parts) and named drops from
+   `reference_data/loot.json` (25% each; 61 drops for 50 NPC names, from the
+   fan spreadsheets and EQOAReturnHome's npcitem, `tools/import_loot.py`).
+   Only the killer can loot. The packets follow EQOAReturnHome's 2023 code,
+   not a capture: 0x15 (u32 corpse) → Loot 0x18 (zigzag count, int32 count,
+   item records); ClientLoot 0x19 from the client (int32 key, int32 qty) →
+   0x19 (byte position in the box, zigzag 1), no AddInvItem (ReturnHome
+   expected the client to move the item itself). The box's keys are the
+   looter's next inventory keys, so the item keeps its key. LootOptions 0x85
+   (byte 1 being looted, 2 not lootable, 3 not yours). If the item doesn't
+   show up in the inventory, try sending AddInvItem after 0x19.
 7. **Pets (untested in game)**, `pets.py`. The 78 "Summon Pet" abilities make a
    pet that looks like the NPC of the same name (most pets are in the NPC
    table, not marked as creatures: Earth Elementaling, Efreet, Kindred Spirit,

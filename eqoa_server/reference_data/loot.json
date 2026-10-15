@@ -1,0 +1,532 @@
+{
+ "named_drops": {
+  "ancient gharial": [
+   {
+    "item": 4112,
+    "name": "Torrent Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "ant": [
+   {
+    "item": 4866,
+    "name": "cracked ant pincer",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "avatar of fear": [
+   {
+    "item": 4934,
+    "name": "Cazil Dhom",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "aviak": [
+   {
+    "item": 3551,
+    "name": "Lucent Silver Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5152,
+    "name": "tempestfury shroud",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5278,
+    "name": "Bloodshade Orb",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "bandit": [
+   {
+    "item": 4065,
+    "name": "Wayfarer's Cloak",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 4971,
+    "name": "fireworn robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5103,
+    "name": "shroud of Karana",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "beetle": [
+   {
+    "item": 4861,
+    "name": "beetle carapace fragment",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "bloodfin brood mother": [
+   {
+    "item": 8339,
+    "name": "bloodfin brood mother tooth",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "boss boltug": [
+   {
+    "item": 5532,
+    "name": "Boltug's Blade",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "catamount": [
+   {
+    "item": 3567,
+    "name": "Great Sword of the Elddar",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "chichan eel": [
+   {
+    "item": 8332,
+    "name": "eel venom sac",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "cyclops": [
+   {
+    "item": 2143,
+    "name": "Enoob's Shield",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   },
+   {
+    "item": 4133,
+    "name": "Butterfly Winged Robe",
+    "source": [
+     "Gear.xlsx Robes",
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "darkwood goblin": [
+   {
+    "item": 3567,
+    "name": "Great Sword of the Elddar",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "davoh the dark": [
+   {
+    "item": 5473,
+    "name": "Davoh's dirk",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "desert madman": [
+   {
+    "item": 8341,
+    "name": "blood of the desert madman",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "elder flayer grrva": [
+   {
+    "item": 4932,
+    "name": "Calanin's vestments",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "froglok executioner": [
+   {
+    "item": 5620,
+    "name": "Executioner's Axe",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   },
+   {
+    "item": 6344,
+    "name": "Executioners Hood",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   }
+  ],
+  "froglok warden": [
+   {
+    "item": 5635,
+    "name": "Froglok Crossbow",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   }
+  ],
+  "fungusman": [
+   {
+    "item": 5124,
+    "name": "sporemesh robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "great worm": [
+   {
+    "item": 4528,
+    "name": "Robe of Awe",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "grundle": [
+   {
+    "item": 7149,
+    "name": "badland leggings",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "haliai high priestess": [
+   {
+    "item": 4964,
+    "name": "fathomdweller's mantle",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "hand of thule": [
+   {
+    "item": 4965,
+    "name": "fear tainted robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "highwayman": [
+   {
+    "item": 8321,
+    "name": "stolen goods",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "ice giant": [
+   {
+    "item": 4510,
+    "name": "Martial Band",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "jade hornfly": [
+   {
+    "item": 3616,
+    "name": "Staff of Maiming",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "lady vox": [
+   {
+    "item": 5080,
+    "name": "robe of wonders",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "lord nagafen": [
+   {
+    "item": 5017,
+    "name": "robe from the dragonhoard",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "maestro of rancor": [
+   {
+    "item": 4946,
+    "name": "darkfelt robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "mary crethley": [
+   {
+    "item": 4988,
+    "name": "Mary's robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "mayong mistmoore": [
+   {
+    "item": 5040,
+    "name": "robe of midnight mist",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "mystic higik": [
+   {
+    "item": 4917,
+    "name": "arctic robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "night wolf": [
+   {
+    "item": 4802,
+    "name": "Twisted Bone Haft",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "orc ransacker": [
+   {
+    "item": 8448,
+    "name": "orc ransacker's club",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "orim flamestone": [
+   {
+    "item": 4918,
+    "name": "ash robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "pike": [
+   {
+    "item": 8333,
+    "name": "tough pike scale",
+    "source": [
+     "EQOAReturnHome npcitem"
+    ]
+   }
+  ],
+  "rubbip": [
+   {
+    "item": 6335,
+    "name": "Death's Head",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   }
+  ],
+  "sarek the betrayer": [
+   {
+    "item": 4978,
+    "name": "heartsblood robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5033,
+    "name": "robe of geomancy",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5052,
+    "name": "robe of the chasm",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5126,
+    "name": "starless night robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "scaloz the verdant": [
+   {
+    "item": 4959,
+    "name": "emerald robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "scarab": [
+   {
+    "item": 5915,
+    "name": "Whirlwind Staff",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "siliskor": [
+   {
+    "item": 4986,
+    "name": "Lythrial's Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 5024,
+    "name": "Robe of Darkness",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "skahyir": [
+   {
+    "item": 4984,
+    "name": "Kormahl Dahl's shroud",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "stone crab": [
+   {
+    "item": 5089,
+    "name": "sharkskin robe",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "summoner buggup": [
+   {
+    "item": 8221,
+    "name": "Fungal Ring",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   }
+  ],
+  "tae ew hierophant": [
+   {
+    "item": 4933,
+    "name": "Cazicite Hierophant Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "tae ew witchdoctor": [
+   {
+    "item": 5149,
+    "name": "Tae Ew Witchdoctor Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "toxxulia": [
+   {
+    "item": 5000,
+    "name": "plagued robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   },
+   {
+    "item": 8133,
+    "name": "dark ring of wonder",
+    "source": [
+     "Info.xlsx Item Drop Location"
+    ]
+   }
+  ],
+  "trub": [
+   {
+    "item": 1046,
+    "name": "webbed tunic",
+    "source": [
+     "Gear.xlsx Guk"
+    ]
+   }
+  ],
+  "werebear": [
+   {
+    "item": 4136,
+    "name": "Omnipotent Robes",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "werehunter": [
+   {
+    "item": 5161,
+    "name": "Tserrina's Robe",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ],
+  "zin the desiccator": [
+   {
+    "item": 4954,
+    "name": "Drape of the Desiccator",
+    "source": [
+     "Gear.xlsx Robes"
+    ]
+   }
+  ]
+ }
+}

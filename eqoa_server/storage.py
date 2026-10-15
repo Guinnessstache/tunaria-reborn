@@ -227,14 +227,15 @@ class JsonStore:
         with self._lock:
             return self.characters.get(character_id)
 
-    def give_item(self, character_id: int, item_id: int, stack: int = 1, equip: bool = False) -> dict:
+    def give_item(self, character_id: int, item_id: int, stack: int = 1, equip: bool = False,
+                  key: int | None = None) -> dict:
         with self._lock:
             character = self._character_or_error(character_id)
             if item_id not in items.item_patterns():
                 raise InventoryError(f"no item with id {item_id}")
             stack = max(1, min(int(stack), items.describe_item(item_id)["max_stack"]))
             entry = {"item": item_id, "stack": stack, "equip": items.NOT_EQUIPPED,
-                     "key": items.next_item_key(character.inventory)}
+                     "key": items.next_item_key(character.inventory) if key is None else key}
             character.inventory.append(entry)
             if equip:
                 self._equip(character, len(character.inventory) - 1)

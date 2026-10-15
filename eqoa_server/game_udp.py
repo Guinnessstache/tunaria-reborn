@@ -15,7 +15,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import ability_effects, combat, game_data, items, merchants, npcs, pets, player_stats, spell_effects
+from . import ability_effects, combat, game_data, items, loot, merchants, npcs, pets, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -465,6 +465,8 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         sent += server.attack(session, msg.payload)
                     elif msg.opcode == LOOT_OPCODE:
                         sent += server.loot(session, msg.payload)
+                    elif msg.opcode == LOOT_ITEM_OPCODE:
+                        sent += server.take_loot(session, msg.payload)
                     elif msg.opcode == LOOT_CLOSE_OPCODE:
                         server.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
             update = next(
@@ -1048,10 +1050,51 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         return [f"auto attack on {mob.npc.name}"]
 
     def loot(self, session: GameSession, payload: bytes) -> list[str]:
-        """0x15 (u32 corpse): Sandstorm answered 0x16 and 0x18 (00 00000000: nothing to take)."""
-        self.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
-        self.send_reliable(session, LOOT_OPCODE + 3, b"\x00" + bytes(4))
-        return ["loot: empty"]
+        """0x15 (u32 corpse). A corpse with loot: LootBox 0x18 (zigzag count, int32 count,
+        item records, as EQOAReturnHome's ServerLootBox). Nothing on it: 0x16 and an empty
+        0x18 (00 00000000), as Sandstorm answered. Someone else's kill: LootOptions 0x85 3."""
+        character = session.selected_character
+        if character is None or len(payload) < 4:
+            return []
+        mob = self.mobs.get(struct.unpack_from("<I", payload, 0)[0])
+        if mob is None or mob.state != combat.CORPSE or not mob.loot:
+            self.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
+            self.send_reliable(session, LOOT_BOX_OPCODE, b"\x00" + bytes(4))
+            return ["loot: empty"]
+        if mob.killer not in (None, character.character_id):
+            self.send_reliable(session, LOOT_OPTIONS_OPCODE, bytes([LOOT_NOT_YOURS]))
+            return [f"loot {mob.npc.name}: not their kill"]
+        # Keys the items will keep in the looter's inventory (the client moves the record).
+        first = items.next_item_key(character.inventory)
+        for offset, entry in enumerate(mob.loot):
+            entry["key"] = first + offset
+        self.send_reliable(session, LOOT_BOX_OPCODE, items.inventory_section(mob.loot))
+        names = ", ".join(items.describe_item(entry["item"])["name"] for entry in mob.loot)
+        return [f"loot {mob.npc.name}: {names}"]
+
+    def take_loot(self, session: GameSession, payload: bytes) -> list[str]:
+        """0x19 (int32 item key, int32 quantity) with the corpse targeted. The item goes into
+        the inventory under the same key and the server answers 0x19 (byte position in the
+        loot list, zigzag 1); EQOAReturnHome sent no AddInvItem for looted items."""
+        character = session.selected_character
+        if character is None or len(payload) < 4:
+            return []
+        key = struct.unpack_from("<i", payload, 0)[0]
+        mob = next((mob for mob in self.mobs.values() if mob.state == combat.CORPSE
+                    and mob.killer in (None, character.character_id)
+                    and any(entry.get("key") == key for entry in mob.loot)), None)
+        if mob is None:
+            return [f"take loot: no item with key {key}"]
+        index = next(i for i, entry in enumerate(mob.loot) if entry.get("key") == key)
+        if len(character.inventory or ()) >= MAX_INVENTORY:
+            self.send_client_message(session, "Your inventory is full.")
+            return ["take loot: inventory full"]
+        entry = mob.loot.pop(index)
+        self.store.give_item(character.character_id, entry["item"], entry.get("stack", 1), key=key)
+        self.send_reliable(session, LOOT_ITEM_OPCODE, bytes([index]) + _write_zigzag(1))
+        if not mob.loot:
+            mob.corpse_until = min(mob.corpse_until, time.monotonic() + combat.EMPTIED_CORPSE_TIME)
+        return [f"looted {items.describe_item(entry['item'])['name']} from {mob.npc.name}"]
 
     def _weapon_damage(self, character: Character) -> int:
         for entry in character.inventory or ():
@@ -1079,6 +1122,9 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
     def kill(self, session: GameSession, mob: combat.Mob) -> list[str]:
         character = session.selected_character
         mob.hp, mob.state, mob.died_at, mob.target, mob.dots = 0, combat.CORPSE, time.monotonic(), None, []
+        mob.killer = character.character_id
+        mob.loot = loot.roll(mob.npc, self.rng)
+        mob.corpse_until = mob.died_at + (combat.LOOT_CORPSE_TIME if mob.loot else combat.CORPSE_TIME)
         self.refresh_mob(mob)
         for other in self.sessions.values():
             if other.attack_target == mob.object_id:
@@ -1089,7 +1135,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.send_reliable(session, EXPERIENCE_OPCODE, b"\x08" + _write_zigzag(character.experience))
         self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
         self.send_client_message(session, f"You receive {xp} XP.")
-        return [f"killed {mob.npc.name}: {xp} XP (total {character.experience})"]
+        dropped = ", ".join(items.describe_item(entry["item"])["name"] for entry in mob.loot) or "no loot"
+        return [f"killed {mob.npc.name}: {xp} XP (total {character.experience}); {dropped}"]
 
     def ability_on_creature(self, session: GameSession, spell: dict, row: dict, target: int) -> list[str]:
         """An ability's harmful effects on a targeted creature: damage and damage over time."""
@@ -1155,12 +1202,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
 
     def _mob_tick(self, mob: combat.Mob, now: float, seconds: float) -> list[str]:
         if mob.state == combat.CORPSE:
-            if now - mob.died_at >= combat.CORPSE_TIME:
-                mob.state = combat.GONE
+            if now >= mob.corpse_until:
+                mob.state, mob.loot = combat.GONE, []
                 self.refresh_mob(mob)
             return []
         if mob.state == combat.GONE:
-            if now - mob.died_at >= combat.RESPAWN:
+            if now - mob.corpse_until >= combat.RESPAWN - combat.CORPSE_TIME:
                 fresh = combat.new_mob(mob.npc)
                 self.mobs[mob.object_id] = fresh
             return []
@@ -1721,6 +1768,11 @@ CAST_EFFECT_OPCODE = 0x00B1
 ATTACK_OPCODE = 0x000F
 LOOT_OPCODE = 0x0015
 LOOT_CLOSE_OPCODE = 0x0016
+LOOT_BOX_OPCODE = 0x0018
+LOOT_ITEM_OPCODE = 0x0019
+LOOT_OPTIONS_OPCODE = 0x0085  # byte: 1 being looted by someone else, 2 not lootable, 3 not your kill
+LOOT_NOT_YOURS = 3
+MAX_INVENTORY = 40  # EQOAReturnHome's inventory limit
 HIT_OPCODE = 0x00DB
 EXPERIENCE_OPCODE = 0x0020
 TARGET_DIED_OPCODE = 0x00D9

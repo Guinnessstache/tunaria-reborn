@@ -28,7 +28,9 @@ LEASH = 120.0  # a creature gives up when its target gets this far from where it
 PLAYER_DELAY = 3.0
 MOB_DELAY = 3.0
 MOB_SPEED = 8.0  # world units per second
-CORPSE_TIME = 7.0  # Sandstorm cleared the corpse 7 s after the kill
+CORPSE_TIME = 7.0  # Sandstorm cleared the corpse 7 s after the kill (it had nothing on it)
+LOOT_CORPSE_TIME = 180.0  # a corpse with loot on it stays this long
+EMPTIED_CORPSE_TIME = 3.0  # and goes this long after its last item is taken
 RESPAWN = 90.0
 FIRST_SWING = 0.7  # Sandstorm's first hit came 0.7 s after Attack
 DOT_TICK = 6.0
@@ -70,6 +72,9 @@ class Mob:
     facing: int | None = None
     animation: int = 0
     velocity: tuple[float, float] = (0.0, 0.0)  # units/s along x and z
+    loot: list[dict] = field(default_factory=list)  # items on the corpse ({"item", "stack", "key"})
+    killer: int | None = None  # character id: only they can loot it
+    corpse_until: float = 0.0  # when the corpse goes
 
     @property
     def object_id(self) -> int:

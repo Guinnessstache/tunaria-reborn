@@ -418,6 +418,88 @@ class CombatCase(InWorldCase):
         return self.server.attack(self.session, struct.pack("<I", self.npc.object_id))
 
 
+class LootTests(CombatCase):
+    """Drops, the loot box (EQOAReturnHome's Loot 0x18 / ClientLoot 0x19) and taking items."""
+
+    def setUp(self):
+        super().setUp()
+        from eqoa_server import items, loot
+
+        self.items, self.loot = items, loot
+
+    def kill_with_loot(self, drops):
+        self.attack()
+        mob = self.server.mob(self.npc.object_id)
+        mob.hp = 1
+        with mock.patch.object(self.loot, "roll", return_value=[dict(d) for d in drops]):
+            self.server.combat_tick(self.session.next_swing)
+        self.sent.clear()
+        return mob
+
+    def open_box(self, mob):
+        return self.server.loot(self.session, struct.pack("<I", mob.object_id))
+
+    def test_creature_parts_fit_the_creature(self):
+        names = lambda creature: [self.items.describe_item(i)["name"] for i in self.loot.body_parts(creature)]
+        self.assertIn("cracked ant pincer", names("worker ant"))
+        self.assertIn("chipped buzzard talon", names("buzzard"))
+        self.assertTrue(all("rat" in name for name in names("large rat")))
+        self.assertEqual(self.loot.body_parts("faerie druid"), ())
+
+    def test_low_creatures_drop_poor_parts(self):
+        from eqoa_server import npcs
+
+        rat = next(n for n in npcs.all_npcs() if n.creature and self.loot.name_key(n.name) == "large rat" and n.level < 15)
+        rng = __import__("random").Random(1)
+        drops = [d["item"] for _ in range(200) for d in self.loot.roll(rat, rng)]
+        self.assertGreater(len(drops), 60)  # most kills leave something
+        poor = [i for i in drops if self.loot._grade(i) == "poor"]
+        self.assertEqual(len(poor), len(drops))
+
+    def test_named_drops_come_from_the_table(self):
+        self.assertIn(self.items.item_patterns()[self.loot.named_drops()["davoh the dark"][0]]["name"], ("Davoh's dirk",))
+
+    def test_loot_box_lists_the_items_with_keys_after_the_inventory(self):
+        part = self.loot.body_parts("worker ant")[0]
+        mob = self.kill_with_loot([{"item": part, "stack": 1}])
+        self.open_box(mob)
+        (op, body), = self.sent
+        self.assertEqual(op, 0x18)
+        self.assertEqual(body[:5], b"\x02" + struct.pack("<i", 1))  # zigzag 1, int32 1
+        key = self.items.next_item_key(self.character.inventory)
+        self.assertEqual(body[5:], self.items.item_record(mob.loot[0], key))
+        self.assertGreater(mob.corpse_until - mob.died_at, self.combat.CORPSE_TIME)  # stays for looting
+
+    def test_taking_an_item_moves_it_to_the_inventory(self):
+        part = self.loot.body_parts("worker ant")[0]
+        mob = self.kill_with_loot([{"item": part, "stack": 1}, {"item": part, "stack": 1}])
+        self.open_box(mob)
+        key = mob.loot[1]["key"]
+        self.sent.clear()
+        before = len(self.character.inventory)
+        self.server.take_loot(self.session, struct.pack("<ii", key, 1))
+        self.assertEqual(self.sent, [(0x19, b"\x01\x02")])  # position 1, zigzag 1
+        self.assertEqual(len(self.character.inventory), before + 1)
+        self.assertEqual(self.character.inventory[-1]["key"], key)
+        self.assertEqual(len(mob.loot), 1)
+        self.server.take_loot(self.session, struct.pack("<ii", mob.loot[0]["key"], 1))
+        self.assertEqual(mob.loot, [])
+        self.assertLessEqual(mob.corpse_until, __import__("time").monotonic() + self.combat.EMPTIED_CORPSE_TIME)
+
+    def test_empty_corpse_answers_like_sandstorm(self):
+        mob = self.kill_with_loot([])
+        self.open_box(mob)
+        self.assertEqual(self.sent, [(0x16, b""), (0x18, b"\x00" + bytes(4))])
+        self.assertAlmostEqual(mob.corpse_until - mob.died_at, self.combat.CORPSE_TIME)
+
+    def test_someone_elses_kill(self):
+        part = self.loot.body_parts("worker ant")[0]
+        mob = self.kill_with_loot([{"item": part, "stack": 1}])
+        mob.killer = 999999
+        self.open_box(mob)
+        self.assertEqual(self.sent, [(0x85, b"\x03")])
+
+
 class CombatTests(CombatCase):
     """Fighting a creature, in the message shapes of the Sandstorm capture."""
 
@@ -445,9 +527,10 @@ class CombatTests(CombatCase):
         self.assertEqual(self.combat.update_bytes(mob)[26], 3)  # dead
         self.assertEqual(self.combat.update_bytes(mob)[58], 14)  # lying down, as Sandstorm's corpses
         self.assertIsNone(self.session.attack_target)
-        self.server.combat_tick(mob.died_at + self.combat.CORPSE_TIME + 0.01)  # float-safe
+        gone = mob.corpse_until
+        self.server.combat_tick(gone + 0.01)  # float-safe
         self.assertEqual(self.combat.update_bytes(mob)[0], 0)  # cleared away
-        self.server.combat_tick(mob.died_at + self.combat.RESPAWN + 0.01)
+        self.server.combat_tick(gone + self.combat.RESPAWN - self.combat.CORPSE_TIME + 0.01)
         self.assertEqual(self.server.mobs[self.npc.object_id].state, self.combat.ALIVE)
 
     def test_creature_chases_hits_and_can_kill(self):
