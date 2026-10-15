@@ -27,6 +27,9 @@ class NpcDataTests(unittest.TestCase):
         for expected in ("Merchant Strongroot", "Banker Golder", "Guard Bodum", "Smithy Dillard"):
             self.assertIn(expected, names)
 
+    def test_names_have_no_marker(self):
+        self.assertFalse([n.name for n in npcs.all_npcs() if "$" in n.name])
+
     def test_types(self):
         self.assertTrue(npc_named("Merchant Strongroot").is_merchant)
         self.assertFalse(npc_named("Banker Golder").is_merchant)
