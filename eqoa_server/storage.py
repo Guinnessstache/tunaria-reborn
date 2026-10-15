@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import time
 
-from . import game_data
+from . import game_data, items
 
 
 TOKEN_HASH_PREFIX = "sha256:"
@@ -58,6 +58,10 @@ class Character:
     human_type: int = 0
     training_points: list[int] = field(default_factory=lambda: [0] * 7)
     tunar: int = 0
+    # [{"item": pattern id, "stack": n, "equip": equip slot or -1}] and [{"spell": id, "hotbar": slot or -1}];
+    # None until the character has been given its starting kit.
+    inventory: list[dict] | None = None
+    spells: list[dict] | None = None
 
     @property
     def model_id(self) -> int:
@@ -92,6 +96,8 @@ class JsonStore:
                 int(row["character_id"]): Character(**{k: v for k, v in row.items() if k in Character.__dataclass_fields__})
                 for row in payload.get("characters", [])
             }
+            for character in self.characters.values():
+                _give_starting_kit(character)
             self._next_account_id = payload.get("next_account_id", 1)
             self._next_character_id = payload.get("next_character_id", 1)
 
@@ -270,10 +276,19 @@ class JsonStore:
                 training_points=list(training_points or [0] * 7),
                 tunar=tunar,
             )
+            _give_starting_kit(character)
             self._next_character_id += 1
             self.characters[character.character_id] = character
             self.save()
             return character
+
+
+def _give_starting_kit(character: Character) -> None:
+    """Starting weapon and abilities for characters that have none yet (also older saves)."""
+    if character.inventory is None:
+        character.inventory = items.starting_inventory(character.klass)
+    if character.spells is None:
+        character.spells = items.starting_spells(character.klass)
 
 
 def _starting_vitals(race: int, klass: int) -> tuple[int, int]:

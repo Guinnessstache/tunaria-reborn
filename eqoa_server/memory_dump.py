@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import struct
 
+from . import items
 from .storage import Character
 
 
@@ -171,15 +172,16 @@ def build_object_update(character: Character, object_id: int) -> bytes:
     update[LEVEL_OFFSET] = max(1, min(character.level, 60))
     update[RACE_OFFSET] = character.race & 0xFF
     update[CLASS_OFFSET] = character.klass & 0xFF
-    # Appearance: this character's model and hair / face; no weapons or armor yet
-    # (the template's are the captured character's).
+    # Appearance: this character's model, hair / face and equipped gear (the template's
+    # are the captured character's).
     _write_u32(update, MODEL_OFFSET, character.model_id)
-    update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = bytes(12)
-    update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = bytes(12)
+    worn = items.gear(character.inventory)
+    update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = struct.pack("<iii", worn.primary, worn.secondary, worn.shield)
+    update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = worn.armor + worn.colors
     update[HAIR_OFFSET : HAIR_OFFSET + 4] = bytes(
         value & 0xFF for value in (character.hair_color, character.hair_length, character.hair_style, character.face)
     )
-    update[ROBE_OFFSET] = 0xFF
+    update[ROBE_OFFSET] = worn.robe & 0xFF
     return bytes(update)
 
 

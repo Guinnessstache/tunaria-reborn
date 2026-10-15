@@ -209,10 +209,19 @@ def _skip_spell(payload: bytes, offset: int) -> int:
     return _skip_string(payload, _skip_string(payload, offset)) + 1
 
 
-def memory_dump_without_belongings(payload: bytes, core_length: int) -> bytes:
+EMPTY_ITEM_LIST = b"\x00" + bytes(4)  # zigzag count 0, int32 count 0
+
+
+def memory_dump_without_belongings(
+    payload: bytes,
+    core_length: int,
+    inventory: bytes = EMPTY_ITEM_LIST,
+    spells: bytes = b"\x00",
+) -> bytes:
     """A captured MemoryDump after its core, with the captured character's quests,
-    inventory, bank and spells removed. Hotkeys (the default emote / chat set) and
-    the trailing stat block are kept. Layout as in ReturnHome's ServerMemoryDump.
+    inventory, bank and spells replaced (by ``inventory`` and ``spells``, already
+    encoded; empty by default). Hotkeys (the default emote / chat set) and the
+    trailing stat block are kept. Layout as in ReturnHome's ServerMemoryDump.
     """
     offset = core_length
     hotkeys, offset = _read_zigzag(payload, offset)
@@ -233,18 +242,17 @@ def memory_dump_without_belongings(payload: bytes, core_length: int) -> bytes:
             offset = _skip_item(payload, offset)
     auctions = payload[offset : offset + 4]  # end of bank, buying and selling auction counts
     offset += 4
-    spells, offset = _read_zigzag(payload, offset)
-    for _ in range(spells):
+    captured_spells, offset = _read_zigzag(payload, offset)
+    for _ in range(captured_spells):
         offset = _skip_spell(payload, offset)
     if offset > len(payload):
         raise ValueError("MemoryDump template is shorter than its layout")
-    empty_list = b"\x00" + bytes(4)  # zigzag count 0, int32 count 0
     return (
         payload[core_length:hotkeys_end]
         + bytes(12)  # two unknown int32, no quests
-        + empty_list  # inventory
-        + empty_list  # bank
+        + inventory
+        + EMPTY_ITEM_LIST  # bank
         + auctions
-        + b"\x00"  # no spells
+        + spells
         + payload[offset:]
     )

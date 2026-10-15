@@ -821,6 +821,8 @@ def build_character_list_payload(characters) -> bytes:
     (int32), three stance bytes, six armor models (chest, bracer, gloves, legs, boots,
     helm) and their six colors.
     """
+    from . import items  # items builds on this module's encoders
+
     out = bytearray(_write_zigzag(len(characters)))
     for character in characters:
         name = character.name.encode("ascii", "replace")
@@ -830,10 +832,11 @@ def build_character_list_payload(characters) -> bytes:
             character.level, character.hair_color, character.hair_length, character.hair_style, character.face,
         ):
             out += _write_zigzag(value)
-        out += struct.pack("<i", -1) + b"\x00"  # robe, robe color
-        out += struct.pack("<iii", 0, 0, 0)  # primary, secondary, shield
+        worn = items.gear(getattr(character, "inventory", None))
+        out += struct.pack("<i", worn.robe) + b"\x00"  # robe, robe color
+        out += struct.pack("<iii", worn.primary, worn.secondary, worn.shield)
         out += b"\x01\x00\x00"  # stance
-        out += bytes(6) + bytes(6)  # armor models, armor colors
+        out += worn.armor + worn.colors
     return bytes(out)
 
 

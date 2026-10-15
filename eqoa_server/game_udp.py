@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data
+from . import game_data, items
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -722,7 +722,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 return packets
             try:
                 # The captured character's quests, items and spells are not ours.
-                template_body = memory_dump_without_belongings(captured_payload, core_length)
+                template_body = memory_dump_without_belongings(
+                    captured_payload,
+                    core_length,
+                    items.inventory_section(character.inventory),
+                    items.spells_section(character.spells),
+                )
             except (ValueError, struct.error, IndexError):
                 template_body = captured_payload[core_length:]
             memory_payload = build_memory_dump_core(character, server_id=character.character_id) + template_body
