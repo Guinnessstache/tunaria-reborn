@@ -57,7 +57,7 @@ from .protocol import (
     read_varuint,
     write_varuint as _write_varuint,
 )
-from .storage import Character, JsonStore, bind_point
+from .storage import Character, JsonStore, bind_point, level_vitals
 
 # Pcap-verified phase3 control handling (see docs/PROTOCOL.md, captures/).
 from eqoa_protocol import (
@@ -360,6 +360,12 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         session.phase3_self_update = build_object_update(
                             session.selected_character, PHASE3_SESSION_ID
                         )
+                        character = session.selected_character
+                        # Max HP and power follow the level (characters made before this had 100).
+                        old_hp, old_power = character.max_hp, character.max_mana
+                        character.max_hp, character.max_mana = level_vitals(character.klass, character.level)
+                        character.hp = max(1, min(character.max_hp, character.hp + max(0, character.max_hp - old_hp)))
+                        character.mana = max(0, min(character.max_mana, character.mana + max(0, character.max_mana - old_power)))
                         server.update_player_channels(session)
                     sent_phase3 = True
                     for response in session.phase3_packets:

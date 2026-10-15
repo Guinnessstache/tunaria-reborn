@@ -259,6 +259,8 @@ class JsonStore:
         with self._lock:
             character = self._character_or_error(character_id)
             character.level = level
+            character.max_hp, character.max_mana = level_vitals(character.klass, level)
+            character.hp, character.mana = character.max_hp, character.max_mana
             learned = []
             if learn_abilities:
                 known = {entry["spell"] for entry in character.spells}
@@ -399,6 +401,27 @@ def _starting_vitals(race: int, klass: int) -> tuple[int, int]:
     if klass in {7, 8, 9, 10, 11, 12, 13, 14}:
         return (100, 100)
     return (100, 50)
+
+
+TANK_CLASSES = {0, 2, 3}  # Warrior, Paladin, Shadowknight
+CASTER_CLASSES = {7, 8, 9, 10, 11, 12, 13, 14}
+
+
+def level_vitals(klass: int, level: int) -> tuple[int, int]:
+    """(max HP, max power) for a class at a level: 100 + 6 per level and a little more each
+    level (more for tanks; a level 4 warrior had 124 HP on Sandstorm); power at least three
+    times the dearest ability the class has by then (Sandstorm: 159 at level 4, Kick 23)."""
+    level = max(MIN_LEVEL, min(level, MAX_LEVEL))
+    growth = 0.5 if klass in TANK_CLASSES else 0.25 if klass in CASTER_CLASSES else 0.35
+    hp = round(100 + level * (6 + growth * level))
+    return hp, max(100 + 15 * level, 3 * _dearest_ability(klass, level))
+
+
+def _dearest_ability(klass: int, level: int) -> int:
+    if not 0 <= klass < len(items.CLASS_NAMES):
+        return 0
+    return max((a["power"] for a in items.class_abilities().get(items.CLASS_NAMES[klass], ()) if a["level"] <= level),
+               default=0)
 
 
 def bind_point(character: Character) -> tuple[int, float, float, float, float]:

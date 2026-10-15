@@ -550,3 +550,22 @@ class PetTests(CombatCase):
         self.server.player_died(self.session, self.server.mob(self.npc.object_id))
         self.assertIsNone(self.session.pet)
         self.assertEqual(second.state, self.combat.GONE)
+
+
+class VitalsTests(unittest.TestCase):
+    def test_power_covers_the_dearest_ability(self):
+        from eqoa_server.storage import level_vitals
+
+        for klass, name in enumerate(items.CLASS_NAMES):
+            for level in (1, 10, 30, 46, 60):
+                dearest = max((a["power"] for a in items.class_abilities()[name] if a["level"] <= level), default=0)
+                self.assertGreaterEqual(level_vitals(klass, level)[1], dearest, (name, level))
+        self.assertEqual(level_vitals(0, 4)[1], 160)  # a level 4 warrior had 159 on Sandstorm
+
+    def test_set_level_fills_hp_and_power(self):
+        store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")
+        account = store.create_account("lv", "x")
+        mage = store.create_character(account.account_id, "Mage", klass=items.CLASS_NAMES.index("Magician"))
+        store.set_level(mage.character_id, 60, learn_abilities=False)
+        self.assertGreater(mage.max_mana, 1943)  # Summon Djinn-level costs fit
+        self.assertEqual(mage.mana, mage.max_mana)
