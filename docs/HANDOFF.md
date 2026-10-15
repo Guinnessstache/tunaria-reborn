@@ -2,8 +2,8 @@
 
 Give this file to a new assistant session so it can pick up the work. It sums up
 the project, the setup, what has been confirmed in game, the protocol facts we
-have verified, and what is still open. Last updated after the merchants commit
-(`5a85678`).
+have verified, and what is still open. Last updated after merchants were confirmed in game
+(`e54b177`).
 
 ## The project
 
@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 125 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 126 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -174,7 +174,7 @@ Fields, in order:
 
 1. zz stack, zz durability, zz charges, zz equip slot
 2. byte 1, int32 key
-3. zz id, uvarint cost
+3. zz id, zz cost (the item's value; every cost in the capture is even)
 4. zz fields: unk1, icon, unk2, slot, unk3, trade, rent, unk4, atk, dmg, unk5,
    lvl, maxstack, maxhp, dur, class mask, race mask, proc, lore, unk6, craft
 5. UTF-16 name and description, then the stats list
@@ -235,7 +235,7 @@ Fields, in order:
 | Opcode | Name | Payload |
 | --- | --- | --- |
 | 0x4C | MerchantDiag | u32 npc |
-| 0xB7 | MerchantBox | u32 npc, zz 200, zz 200, zz count, i32 count, records (segmented) |
+| 0xB7 | MerchantBox | u32 npc, zz sell %, zz buy %, zz count, i32 count, records (segmented). The client shows cost × % / 100, rounded. We send 25 and 100. |
 | 0x4A | MerchantBuy | zz slot, zz qty, u32 npc |
 | 0x4B | MerchantSell | i32 index, zz qty, u32 npc |
 
@@ -251,19 +251,10 @@ Fields, in order:
     unequip work in game.
   - Setting a character's level.
   - The model browser changes the look of an item live.
+- Merchants: the shop window opens, buying and selling move tunar, and the
+  prices shown match what the server charges and pays.
 - NPCs, merchants and mobs appear around the player. The "$" has been removed
   from mob names; the user has not confirmed the fix yet.
-
-## Just shipped, not yet tested in game
-
-**Merchants** (`5a85678`). Clicking a merchant should open a shop window. Buying
-costs tunar and selling earns it. Give a character tunar from the panel first:
-**Accounts**, then **Tunar**, then **Set**.
-
-If the window doesn't open, look at:
-- The log line `merchant <name>: N items`.
-- Whether the client sent 0x4C at all.
-- Whether the 0xB7 layout matches EQOAGameServer's `MerchantBox`.
 
 ## Open issues and ideas, roughly by priority
 
@@ -273,7 +264,10 @@ If the window doesn't open, look at:
    - The auth log prints the token and stored fingerprints, so compare those
      across two logins.
    - The user has turned checking off for now (Settings).
-2. **Merchants are untested** (see above). Prices are our own formula:
+2. **Spell merchants are nearly empty.** Their stock comes from item records
+   named after the class's spells, and almost none exist (Enchanter 16-29: 2
+   of 34). We don't know yet whether the real game sold spells as items or
+   taught them directly. Prices are our own formula:
    - Consumables cost 5 + 5·level.
    - Everything else costs 100 + 120·level.
    - Merchants buy back at a quarter of that.
