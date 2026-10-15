@@ -481,3 +481,5 @@ class CombatTests(InWorldCase):
         mob = self.server.mobs[self.npc.object_id]
         self.assertLess(mob.hp, mob.max_hp)
         self.assertIn(0xDB, [op for op, _ in self.sent])
+        chat = [body for op, body in self.sent if op == 0x0A7A]
+        self.assertFalse(any("hit ".encode("utf-16-le") in body for body in chat))  # log lines stay in the log

@@ -990,12 +990,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             return [f"cast {spell['name']} (no guide data)"]
         targeting_other = target not in (0, 0xFFFFFFFF, PHASE3_SESSION_ID)
         said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
-        if targeting_other:
-            said += self.ability_on_creature(session, spell, row, target)
-        for line in said:
+        for line in said:  # chat lines for the player
             self.send_client_message(session, line)
+        notes = self.ability_on_creature(session, spell, row, target) if targeting_other else []  # log only
         self.update_player_channels(session)
-        return [f"cast {spell['name']}: " + (" ".join(said) if said else "nothing on you (needs combat)")]
+        done = said + notes
+        return [f"cast {spell['name']}: " + (" ".join(done) if done else "nothing on you (needs combat)")]
 
     # ---- combat (combat.py has the rules and the capture notes) ----
 
