@@ -436,6 +436,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             print(f"ADMIN set character {character_id} to level {level}"
                   f"{f', learned {len(learned)} abilities' if learned else ''}")
             self._json({"ok": True, "learned": len(learned)})
+        elif len(parts) == 3 and parts[:1] == ["characters"] and parts[2] == "tunar":
+            character_id, tunar = int(parts[1]), int(body["tunar"])
+            ctx.store.set_tunar(character_id, tunar)
+            print(f"ADMIN set character {character_id} tunar to {tunar}")
+            self._json({"ok": True})
         elif len(parts) == 5 and parts[0] == "characters" and parts[2] == "items":
             character_id, index, action = int(parts[1]), int(parts[3]), parts[4]
             if action in ("equip", "unequip"):
@@ -700,6 +705,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                                 "id": c.character_id,
                                 "name": c.name,
                                 "level": c.level,
+                                "tunar": c.tunar,
                                 "race": c.race,
                                 "class": c.klass,
                                 "zone": c.zone_id,

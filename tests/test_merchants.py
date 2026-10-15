@@ -1,0 +1,114 @@
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from eqoa_server import items, merchants, npcs
+from eqoa_server.config import ServerConfig
+from eqoa_server.game_udp import GameSession, GameUDPServer
+from eqoa_server.storage import JsonStore
+
+
+def zigzag(value):
+    value = (value << 1) ^ (value >> 31)
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+class StockTests(unittest.TestCase):
+    def test_armor_merchant_sells_that_material_in_range(self):
+        goods = merchants.stock("Armorer Acvin")  # "Chainmail Level 20-30"
+        self.assertTrue(goods)
+        for item_id in goods:
+            item = items.item_patterns()[item_id]
+            self.assertIn("chain", item["name"].lower())
+            self.assertTrue(20 <= item["level"] <= 30, item)
+
+    def test_spell_merchant_sells_class_spells(self):
+        goods = merchants.stock("Merchant Conner")  # "Rogue Spells Level 1-20"
+        self.assertTrue(goods)
+        rogue = {a["name"].lower() for a in items.class_abilities()["Rogue"]}
+        for item_id in goods:
+            self.assertIn(items.item_patterns()[item_id]["name"].lower(), rogue)
+
+    def test_unknown_merchant_sells_food_and_drink(self):
+        goods = merchants.stock("Nobody We Know")
+        self.assertTrue(goods)
+        self.assertTrue(all(items.item_patterns()[i]["slot"] == -1 for i in goods))
+
+    def test_stock_is_capped_and_unique(self):
+        for name in list(merchants.descriptions())[:60]:
+            goods = merchants.stock(name)
+            self.assertLessEqual(len(goods), merchants.MAX_STOCK)
+            names = [items.item_patterns()[i]["name"].lower() for i in goods]
+            self.assertEqual(len(names), len(set(names)), name)
+
+    def test_prices(self):
+        item_id = merchants.stock("Armorer Acvin")[0]
+        self.assertGreater(merchants.price(item_id), merchants.sell_price(item_id))
+        self.assertGreaterEqual(merchants.sell_price(item_id), 1)
+
+
+class MerchantHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")
+        account = self.store.create_account("tester", "secret")
+        self.character = self.store.create_character(account.account_id, "Chanty", race=0, klass=0)
+        self.server = GameUDPServer(("127.0.0.1", 0), ServerConfig(), self.store, log_packets=False)
+        self.addCleanup(self.server.server_close)
+        self.session = GameSession(0x0AD0, 0x20AD1, phase3_started=True, phase3_in_world=True,
+                                   selected_character=self.character)
+        self.sent = []
+        patcher = mock.patch.object(self.server, "send_reliable",
+                                    side_effect=lambda s, op, body: self.sent.append((op, body)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.merchant = next(n for n in npcs.all_npcs() if n.is_merchant and n.name == "Armorer Acvin")
+
+    def test_window_lists_the_stock(self):
+        notes = self.server.merchant_window(self.session, struct.pack("<I", self.merchant.object_id))
+        self.assertEqual(len(self.sent), 1)
+        opcode, body = self.sent[0]
+        self.assertEqual(opcode, 0xB7)
+        self.assertEqual(struct.unpack_from("<I", body)[0], self.merchant.object_id)
+        count = len(merchants.stock(self.merchant.name))
+        self.assertIn(f"{count} items", notes[0])
+
+    def test_window_ignores_non_merchants(self):
+        guard = next(n for n in npcs.all_npcs() if not n.is_merchant)
+        self.assertEqual(self.server.merchant_window(self.session, struct.pack("<I", guard.object_id)), [])
+        self.assertEqual(self.sent, [])
+
+    def test_buy_and_sell(self):
+        item_id = merchants.stock(self.merchant.name)[0]
+        cost = merchants.price(item_id)
+        self.character.tunar = cost + 7
+        before = len(self.character.inventory)
+        self.server.merchant_buy(self.session, zigzag(0) + zigzag(1) + struct.pack("<I", self.merchant.object_id))
+        self.assertEqual(self.character.tunar, 7)
+        self.assertEqual(len(self.character.inventory), before + 1)
+        self.assertEqual([op for op, _ in self.sent], [0x52, 0x3B])
+
+        self.sent.clear()
+        index = len(self.character.inventory) - 1
+        self.server.merchant_sell(self.session, struct.pack("<i", index) + zigzag(1) + struct.pack("<I", self.merchant.object_id))
+        self.assertEqual(self.character.tunar, 7 + merchants.sell_price(item_id))
+        self.assertEqual(len(self.character.inventory), before)
+        self.assertEqual([op for op, _ in self.sent], [0x52, 0x3C])
+
+    def test_buy_without_money(self):
+        self.character.tunar = 0
+        before = len(self.character.inventory)
+        notes = self.server.merchant_buy(self.session, zigzag(0) + zigzag(1) + struct.pack("<I", self.merchant.object_id))
+        self.assertIn("can't afford", notes[0])
+        self.assertEqual(len(self.character.inventory), before)
+
+
+if __name__ == "__main__":
+    unittest.main()

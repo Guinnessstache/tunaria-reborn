@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data, items, npcs
+from . import game_data, items, merchants, npcs
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -45,6 +45,8 @@ from .protocol import (
     MessageType,
     PacketBundleFlags,
     _rle_zero_encode,
+    _read_zigzag,
+    _write_zigzag,
     _write_size,
     parse_messages,
     parse_phase3_client_packet,
@@ -424,6 +426,12 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     session.phase3_handled_message = msg.message_number
                     if msg.opcode == INTERACT_ITEM_OPCODE:
                         sent += server.interact_item(session, msg.payload)
+                    elif msg.opcode == MERCHANT_DIALOG_OPCODE:
+                        sent += server.merchant_window(session, msg.payload)
+                    elif msg.opcode == MERCHANT_BUY_OPCODE:
+                        sent += server.merchant_buy(session, msg.payload)
+                    elif msg.opcode == MERCHANT_SELL_OPCODE:
+                        sent += server.merchant_sell(session, msg.payload)
             update = next(
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
@@ -714,16 +722,88 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         session.entity_channels[channel] = EntityChannel(object_id, update, sequence)
 
     def send_reliable(self, session: GameSession, opcode: int, payload: bytes) -> int:
-        """One reliable message (resent until the client acks it); returns its number."""
-        number = session.phase3_next_message
-        session.phase3_next_message += 1
+        """One reliable message (resent until the client acks it); large ones go out as
+        segments (0xFA) ending with a reliable (0xFB), as the MemoryDump does. Returns the
+        last message number."""
         data = struct.pack("<H", opcode) + payload
-        body = (
-            bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00"
-            + bytes([MessageType.RELIABLE]) + _write_size(len(data)) + struct.pack("<H", number) + data
-        )
-        self.send_phase3(session, body, reliable_message=number)
+        chunks = [data[i : i + RELIABLE_SEGMENT_BYTES] for i in range(0, len(data), RELIABLE_SEGMENT_BYTES)] or [data]
+        number = 0
+        for index, chunk in enumerate(chunks):
+            number = session.phase3_next_message
+            session.phase3_next_message += 1
+            kind = MessageType.RELIABLE if index == len(chunks) - 1 else MessageType.SEGMENT_RELIABLE
+            body = (
+                bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00"
+                + bytes([kind]) + _write_size(len(chunk)) + struct.pack("<H", number) + chunk
+            )
+            self.send_phase3(session, body, reliable_message=number)
         return number
+
+    def merchant_window(self, session: GameSession, payload: bytes) -> list[str]:
+        """MerchantDiag (0x4C: merchant object id) -> MerchantBox (0xB7), as EQOAGameServer:
+        u32 merchant, zigzag 200, zigzag 200, item count (zigzag and int32), item records."""
+        npc = npcs.by_object_id(struct.unpack_from("<I", payload, 0)[0]) if len(payload) >= 4 else None
+        if npc is None or not npc.is_merchant:
+            return []
+        goods = merchants.stock(npc.name)
+        body = struct.pack("<I", npc.object_id) + _write_zigzag(200) + _write_zigzag(200)
+        body += _write_zigzag(len(goods)) + struct.pack("<i", len(goods))
+        body += b"".join(
+            items.item_record({"item": item_id, "stack": 1, "equip": items.NOT_EQUIPPED}, key, merchants.price(item_id))
+            for key, item_id in enumerate(goods)
+        )
+        self.send_reliable(session, MERCHANT_BOX_OPCODE, body)
+        return [f"merchant {npc.name}: {len(goods)} items"]
+
+    def merchant_buy(self, session: GameSession, payload: bytes) -> list[str]:
+        """MerchantBuy (0x4A): zigzag list slot, zigzag quantity, u32 merchant."""
+        character = session.selected_character
+        try:
+            slot, offset = _read_zigzag(payload, 0)
+            quantity, offset = _read_zigzag(payload, offset)
+            npc = npcs.by_object_id(struct.unpack_from("<I", payload, offset)[0])
+        except (IndexError, struct.error):
+            return []
+        if character is None or npc is None:
+            return []
+        goods = merchants.stock(npc.name)
+        if not 0 <= slot < len(goods):
+            return [f"buy: no slot {slot}"]
+        item_id = goods[slot]
+        quantity = max(1, min(quantity, items.describe_item(item_id)["max_stack"]))
+        cost = merchants.price(item_id) * quantity
+        name = items.describe_item(item_id)["name"]
+        if character.tunar < cost:
+            self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
+            return [f"buy {name}: can't afford {cost} (has {character.tunar})"]
+        character.tunar -= cost
+        entry = self.store.give_item(character.character_id, item_id, quantity)
+        self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
+        self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, len(character.inventory) - 1))
+        return [f"bought {quantity} x {name} for {cost}"]
+
+    def merchant_sell(self, session: GameSession, payload: bytes) -> list[str]:
+        """MerchantSell (0x4B): int32 inventory position, zigzag quantity, u32 merchant."""
+        character = session.selected_character
+        try:
+            index = struct.unpack_from("<i", payload, 0)[0]
+            quantity, _ = _read_zigzag(payload, 4)
+        except (IndexError, struct.error):
+            return []
+        if character is None or not 0 <= index < len(character.inventory or ()):
+            return []
+        entry = character.inventory[index]
+        quantity = max(1, min(quantity, entry.get("stack", 1)))
+        earned = merchants.sell_price(entry["item"]) * quantity
+        character.tunar += earned
+        if quantity >= entry.get("stack", 1):
+            self.store.remove_item(character.character_id, index)
+        else:
+            entry["stack"] -= quantity
+            self.store.save()
+        self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
+        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([index & 0xFF, 1]) + _write_zigzag(quantity))
+        return [f"sold {quantity} x {items.describe_item(entry['item'])['name']} for {earned}"]
 
     def interact_item(self, session: GameSession, payload: bytes) -> list[str]:
         """The client used an item in its inventory (InteractItem, as in EQOAGameServer):
@@ -1072,6 +1152,15 @@ ENTITY_BUNDLE_BYTES = 1000
 def _sequence_reached(acked: int, sent: int) -> bool:
     return ((acked - sent) & 0xFFFF) < 0x8000
 INTERACT_ITEM_OPCODE = 0x003E
+# Merchants and inventory (EQOAGameServer opcodes).
+MERCHANT_DIALOG_OPCODE = 0x004C
+MERCHANT_BUY_OPCODE = 0x004A
+MERCHANT_SELL_OPCODE = 0x004B
+MERCHANT_BOX_OPCODE = 0x00B7
+ADD_INVENTORY_ITEM_OPCODE = 0x003B
+REMOVE_INVENTORY_ITEM_OPCODE = 0x003C
+PLAYER_TUNAR_OPCODE = 0x0052
+RELIABLE_SEGMENT_BYTES = 0x0484
 EQUIP_ITEM_OPCODE = 0x003F
 UNEQUIP_ITEM_OPCODE = 0x0040
 PHASE3_PING_INTERVAL = 2.0

@@ -403,7 +403,7 @@ async function refresh() {
   try {
     if (activeTab === "dashboard" || activeTab === "players") renderStatus(await api("/api/status"));
     // Don't redraw the accounts list under someone typing in a give-item box.
-    const giving = [...document.querySelectorAll(".give-search, .level-input")].some(
+    const giving = [...document.querySelectorAll(".give-search, .level-input, .tunar-input")].some(
       (i) => i === document.activeElement || (i.classList.contains("give-search") && i.value));
     if (activeTab === "accounts" && !giving) renderAccounts(await api("/api/accounts"));
     if (activeTab === "logs") await pollLogs();
@@ -537,10 +537,15 @@ document.addEventListener("input", (e) => {
   }, 250);
 });
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest && e.target.closest("button[data-give-item], button[data-inv-action], button[data-level-set]");
+  const t = e.target.closest && e.target.closest("button[data-give-item], button[data-inv-action], button[data-level-set], button[data-tunar-set]");
   if (!t) return;
   try {
-    if (t.dataset.levelSet) {
+    if (t.dataset.tunarSet) {
+      const character = t.dataset.tunarSet;
+      const tunar = Number(document.querySelector(`.tunar-input[data-tunar-char="${character}"]`).value);
+      await api(`/api/characters/${character}/tunar`, { tunar });
+      toast(`${t.dataset.name} has ${tunar} tunar. Shows the next time they enter the world.`);
+    } else if (t.dataset.levelSet) {
       const character = t.dataset.levelSet;
       const level = Number(document.querySelector(`.level-input[data-level-char="${character}"]`).value);
       const learn = $("#learn-abilities").checked;
@@ -671,10 +676,11 @@ function renderAccounts(data) {
         </div>
       </div>
       ${a.characters.length ? `<div class="table-wrap chars"><table>
-        <thead><tr><th>Character</th><th>Level</th><th>Race / class</th><th>Zone</th><th>Position</th><th></th></tr></thead>
+        <thead><tr><th>Character</th><th>Level</th><th>Tunar</th><th>Race / class</th><th>Zone</th><th>Position</th><th></th></tr></thead>
         <tbody>${a.characters.map((c) => `<tr>
           <td><strong>${esc(c.name)}</strong> <span class="muted">#${c.id}</span></td>
           <td class="num"><span class="level-edit"><input type="number" min="1" max="60" value="${c.level}" class="level-input" data-level-char="${c.id}"><button class="btn" data-level-set="${c.id}" data-name="${esc(c.name)}">Set</button></span></td>
+          <td class="num"><span class="level-edit"><input type="number" min="0" value="${c.tunar}" class="tunar-input" data-tunar-char="${c.id}"><button class="btn" data-tunar-set="${c.id}" data-name="${esc(c.name)}">Set</button></span></td>
           <td>${esc(RACES[c.race] ?? "?")} <span class="muted">(${c.race})</span> / ${esc(CLASSES[c.class] ?? "?")} <span class="muted">(${c.class})</span></td>
           <td class="num">${c.zone}</td>
           <td class="num">${c.position.join(", ")}</td>
@@ -682,7 +688,7 @@ function renderAccounts(data) {
             <button class="btn" data-character="${c.id}" data-name="${esc(c.name)}" data-action="reset-position">Reset position</button>
             <button class="btn danger" data-character="${c.id}" data-name="${esc(c.name)}" data-action="delete">Delete</button>
           </div></td></tr>
-          <tr class="inv-row"><td colspan="6">
+          <tr class="inv-row"><td colspan="7">
             <div class="inv">${c.inventory.length ? c.inventory.map((it) => `
               <span class="item ${it.equipped ? "equipped" : ""}" title="#${it.id} · level ${it.level}${it.slot ? " · " + esc(it.slot) : ""}${it.equippable && !it.visible ? " · no model, won't show on the character" : ""}">
                 ${esc(it.name)}${it.stack > 1 ? ` ×${it.stack}` : ""}${it.equipped ? " <span class=\"muted\">(equipped)</span>" : ""}

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from .protocol import _write_zigzag
+from .protocol import _write_zigzag, write_varuint as _write_varuint
 
 DATA = Path(__file__).resolve().parent / "reference_data"
 
@@ -540,7 +540,7 @@ def _string(text: str) -> bytes:
     return struct.pack("<i", len(text)) + text.encode("utf-16-le")
 
 
-def item_record(entry: dict, key: int) -> bytes:
+def item_record(entry: dict, key: int, cost: int = 0) -> bytes:
     """One inventory item, in the field order the Sandstorm server used."""
     item = item_patterns()[entry["item"]]
     durability = item["max_hp"] if item["max_hp"] > 0 else DEFAULT_DURABILITY
@@ -549,7 +549,7 @@ def item_record(entry: dict, key: int) -> bytes:
     out = bytearray()
     out += z(entry.get("stack", 1)) + z(durability) + z(0) + z(entry.get("equip", NOT_EQUIPPED))
     out += bytes([INVENTORY]) + struct.pack("<i", key)
-    out += z(item["id"]) + bytes([0])  # item id, cost (unsigned varint 0)
+    out += z(item["id"]) + _write_varuint(cost)  # item id, cost (unsigned)
     for value in (
         0, item["icon"], 0, item["slot"], 0, item["trade"], item["rent"], 0, item["attack_type"],
         item["damage"], 0, item["level"], max(1, item["max_stack"]), durability, duration,

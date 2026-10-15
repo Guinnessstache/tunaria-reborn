@@ -195,6 +195,16 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request(base, {"level": 61})[0], 409)
         self.assertEqual(self.request(base, {"level": 30, "learn_abilities": False})[1]["learned"], 0)
 
+    def test_set_tunar(self):
+        account = self.store.create_account("rich", "x")
+        character = self.store.create_character(account.account_id, "Midas")
+        self.login()
+        base = f"/api/characters/{character.character_id}/tunar"
+        self.assertEqual(self.request(base, {"tunar": 5000})[0], 200)
+        self.assertEqual(self.store.get_character(character.character_id).tunar, 5000)
+        self.assertEqual(self.request("/api/accounts")[1]["accounts"][0]["characters"][0]["tunar"], 5000)
+        self.assertEqual(self.request(base, {"tunar": -1})[0], 409)
+
     def test_model_browser_previews_live_and_saves_item_models(self):
         from eqoa_server import items
         from eqoa_server.game_udp import GameSession

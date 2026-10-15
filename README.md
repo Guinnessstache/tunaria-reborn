@@ -31,12 +31,16 @@ Early but playable to the point of logging in and walking around.
   ability tables). Equipped weapons, shields and armor show on the character,
   and items can be equipped and unequipped in game.
 - Characters log back in where they left off.
+- NPCs stand where they belong (the 23 nearest are drawn, as on Sandstorm).
+  Merchants open a shop window and buy and sell for tunar. What each merchant
+  sells is fitted from the Prima guide's merchant tables ("Chainmail Level
+  20-30", "Rogue Spells Level 1-20", ...); undescribed merchants sell food and
+  drink. Prices are our own formula.
 - A web **admin panel**: start / stop / restart services, players online,
   accounts, MOTD, live log, and one-click updates from GitHub.
 
 **Not yet**
 
-- Game account passwords are not checked (any password logs in).
 - Abilities can't be cast yet, and only Warrior, Shadowknight and Return Home
   records are copies of real server data; the others are built from the guide's
   numbers, with icons of the same kind of ability. Stats come from a captured
@@ -45,8 +49,7 @@ Early but playable to the point of logging in and walking around.
   the same shape. Armor shows as cloth / leather / chain / plate by the item's
   name or classes (values checked in game: 1 cloth, 2 leather, 3 chain, 4 plate,
   5 and 6 heavier plate looks).
-- NPCs stand where they belong (the 23 nearest are drawn, as on Sandstorm) but
-  don't move, talk or fight yet. No other players, combat or quests yet.
+- NPCs don't move, talk or fight yet. No other players, combat or quests yet.
 
 ## Quick start
 
@@ -101,7 +104,7 @@ Forgot it? Stop the server and delete `data/admin.json`.)
   shut down.
 - **Players**: live game sessions and their stage; kick a session.
 - **Accounts**: accounts and their characters; delete, reset a password or a
-  stuck character's position. Set a character's level (optionally learning
+  stuck character's position. Set a character's level and tunar (optionally learning
   the class's abilities up to it), give it any item (search by name or id),
   equip, unequip or remove items; changes show the next time the character
   enters the world. The **model browser** tries weapon and shield models on a

@@ -266,6 +266,13 @@ class JsonStore:
             self.save()
             return learned
 
+    def set_tunar(self, character_id: int, tunar: int) -> None:
+        if not 0 <= tunar <= 2_000_000_000:
+            raise InventoryError("tunar must be 0 to 2000000000")
+        with self._lock:
+            self._character_or_error(character_id).tunar = tunar
+            self.save()
+
     def remove_item(self, character_id: int, index: int) -> None:
         with self._lock:
             character = self._character_or_error(character_id)

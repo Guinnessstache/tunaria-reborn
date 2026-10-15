@@ -80,7 +80,7 @@ def build_memory_dump_core(character: Character, server_id: int | None = None) -
     writer.write_7bit_int64(character.experience)
     writer.write_7bit_int64(0)
     writer.write_byte(127)
-    writer.write_7bit_int64(0)
+    writer.write_7bit_int64(character.tunar)  # tunar carried
     writer.write_7bit_int64(0)
     writer.write_7bit_int64(0)
     writer.write_7bit_int64(700)
