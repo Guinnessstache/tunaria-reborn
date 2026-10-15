@@ -194,6 +194,7 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.store.get_character(warrior.character_id).level, 5)
         self.assertEqual(self.request(base, {"level": 61})[0], 409)
         self.assertEqual(self.request(base, {"level": 30, "learn_abilities": False})[1]["learned"], 0)
+        self.assertEqual(self.request(base, {"level": 40})[1]["learned"], 0)  # off unless asked
 
     def test_set_tunar(self):
         account = self.store.create_account("rich", "x")

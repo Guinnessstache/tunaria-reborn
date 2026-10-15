@@ -850,6 +850,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if spell_id is None:
             self.send_client_message(session, f"You can't scribe {scroll}.")
             return [f"scribe {scroll}: not a {items.CLASS_NAMES[character.klass]} spell"]
+        needed = items.item_patterns()[entry["item"]]["level"]
+        if character.level < needed:
+            self.send_client_message(session, f"You must be level {needed} to scribe {scroll}.")
+            return [f"scribe {scroll}: needs level {needed} (is {character.level})"]
         if any(known["spell"] == spell_id for known in character.spells or ()):
             self.send_client_message(session, f"You already know {scroll}.")
             return [f"scribe {scroll}: already known"]

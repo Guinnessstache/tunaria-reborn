@@ -271,7 +271,10 @@ Fields, in order:
    Using a scroll (InteractItem) learns the spell, removes the scroll and sends
    a ClientMessage (0x0A7A, int32 length + UTF-16). The opcode that adds a spell
    to the open spell book is unknown, so the spell appears on the next world
-   entry. Prices are our own formula:
+   entry. Scribing works in game (the chat line shows in white).
+   Merchants don't sell level 1 scrolls (every character starts with those),
+   scribing needs the scroll's level, and the panel's **Set level** only
+   teaches abilities when its checkbox is ticked (off by default). Prices are our own formula:
    - Consumables cost 5 + 5·level.
    - Everything else, scrolls included, costs 100 + 120·level.
    - Merchants buy back at a quarter of that.

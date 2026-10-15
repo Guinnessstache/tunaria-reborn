@@ -40,6 +40,7 @@ class StockTests(unittest.TestCase):
     def test_spell_merchant_sells_a_scroll_per_spell(self):
         goods = merchants.stock("Merchant Mianda")  # "Enchanter Spells Level 16-29": 34 spells
         enchanter = [a for a in items.class_abilities()["Enchanter"] if 16 <= a["level"] <= 29 and a["power"]]
+        self.assertFalse(any(items.item_patterns()[i]["level"] < 2 for i in merchants.stock("Merchant Aggenbon")))
         self.assertEqual(len(goods), len(enchanter))
         for item_id in goods:
             self.assertTrue(items.is_scroll(item_id))
@@ -107,6 +108,13 @@ class MerchantHandlerTests(unittest.TestCase):
                                  if a["level"] > 1 and a["power"])
         scroll = items.scroll_for(warrior, position)
         self.store.give_item(self.character.character_id, scroll)
+        self.character.level = 1
+        index = len(self.character.inventory) - 1
+        self.server.interact_item(self.session, struct.pack("<II", index, 0) + zigzag(0))
+        self.assertEqual(len(self.character.inventory), index + 1)  # too low: kept
+        self.assertIn(b"l\x00e\x00v\x00e\x00l\x00", self.sent[-1][1])
+        self.sent.clear()
+        self.character.level = ability["level"]
         index = len(self.character.inventory) - 1
         notes = self.server.interact_item(self.session, struct.pack("<II", index, 0) + zigzag(0))
         spell_id = items.class_spell_id(warrior, position)

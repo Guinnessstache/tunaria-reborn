@@ -432,7 +432,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "item": items.describe_item(item_id)})
         elif len(parts) == 3 and parts[:1] == ["characters"] and parts[2] == "level":
             character_id, level = int(parts[1]), int(body["level"])
-            learned = ctx.store.set_level(character_id, level, bool(body.get("learn_abilities", True)))
+            learned = ctx.store.set_level(character_id, level, bool(body.get("learn_abilities", False)))
             print(f"ADMIN set character {character_id} to level {level}"
                   f"{f', learned {len(learned)} abilities' if learned else ''}")
             self._json({"ok": True, "learned": len(learned)})
