@@ -287,6 +287,24 @@ ITEM_SLOT_NAMES = {
 
 _overrides_path: Path | None = None
 _overrides: dict[int, int] = {}
+_color_overrides: dict[int, int] = {}
+
+# Armor: one small value per body part (which texture set the character model draws) and a
+# colour byte. Sandstorm's characters use values 0-6. Which value is which material is a
+# guess to be checked with the model browser: cloth 1, leather 2, chain 3, plate 4 (the
+# Sandstorm Shadowknight's plate set is 4).
+ARMOR_VALUES = {"cloth": 1, "leather": 2, "chain": 3, "plate": 4}
+ARMOR_KIND_ORDER = ("cloth", "leather", "chain", "plate")
+CLASS_ARMOR = ("plate", "chain", "plate", "plate", "leather", "chain", "leather", "leather", "chain", "plate",
+               "cloth", "cloth", "cloth", "cloth", "cloth")  # heaviest armor per class, class index order
+ARMOR_WORDS = (
+    (("plate", "platemail", "breastplate", "greaves", "plated"), "plate"),
+    (("chain", "chainmail", "mail", "ringmail", "scale", "scaled"), "chain"),
+    (("leather", "hide", "studded", "skin", "fur"), "leather"),
+    (("cloth", "silk", "linen", "wool", "woolen", "cotton", "silken", "velvet", "padded", "sash"), "cloth"),
+)
+ARMOR_ITEM_SLOTS = (1, 5, 7, 10, 11, 19)  # head, chest, bracers, legs, feet, hands (item slot types)
+ARMOR_PARTS = ("chest", "bracers", "hands", "legs", "feet", "head")  # in ARMOR_ORDER
 
 WEAPON_WORDS = (
     (("dagger", "knife", "dirk", "stiletto", "kris", "shiv", "ripper"), "flat_short"),
@@ -346,9 +364,18 @@ def configure_overrides(path: Path) -> None:
     global _overrides_path, _overrides
     _overrides_path = path
     try:
-        _overrides = {int(k): int(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+        saved = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        _overrides = {}
+        saved = {}
+    _color_overrides.clear()
+    _overrides = {}
+    for key, value in saved.items():
+        if isinstance(value, dict):
+            _overrides[int(key)] = int(value["model"])
+            if value.get("color") is not None:
+                _color_overrides[int(key)] = int(value["color"])
+        else:
+            _overrides[int(key)] = int(value)
 
 
 def _signed(model_id: int) -> int:
@@ -356,17 +383,22 @@ def _signed(model_id: int) -> int:
     return model_id - (1 << 32) if model_id >= 1 << 31 else model_id
 
 
-def set_model_override(item_id: int, model_id: int | None) -> None:
-    if model_id is not None:
-        model_id = _signed(model_id)
+def set_model_override(item_id: int, model_id: int | None, color: int | None = None) -> None:
+    """Save (or with None forget) the model an item is drawn with; armor also takes a colour."""
+    _color_overrides.pop(item_id, None)
     if model_id is None:
         _overrides.pop(item_id, None)
     else:
-        _overrides[item_id] = model_id
+        _overrides[item_id] = _signed(model_id)
+        if color is not None:
+            _color_overrides[item_id] = color & 0xFF
     if _overrides_path is not None:
+        saved = {
+            str(item): ({"model": model, "color": _color_overrides[item]} if item in _color_overrides else model)
+            for item, model in sorted(_overrides.items())
+        }
         _overrides_path.parent.mkdir(parents=True, exist_ok=True)
-        _overrides_path.write_text(json.dumps({str(k): v for k, v in sorted(_overrides.items())}, indent=1),
-                                   encoding="utf-8")
+        _overrides_path.write_text(json.dumps(saved, indent=1), encoding="utf-8")
 
 
 def model_source(item_id: int) -> str:
@@ -398,7 +430,32 @@ def model_for(item_id: int) -> int:
     return _similar_model(item_id)
 
 
+def armor_kind(item_id: int) -> str | None:
+    """cloth / leather / chain / plate for an armor piece: from its name, else the lightest
+    armor any class allowed to wear it uses."""
+    item = item_patterns().get(item_id)
+    if item is None or item["slot"] not in ARMOR_ITEM_SLOTS:
+        return None
+    words = set(item["name"].lower().replace("-", " ").replace("'s", "").split())
+    for keys, kind in ARMOR_WORDS:
+        if words & set(keys):
+            return kind
+    mask = item.get("class_mask", ALL_CLASSES)
+    kinds = [CLASS_ARMOR[bit] for bit in range(len(CLASS_ARMOR)) if mask >> bit & 1]
+    return min(kinds, key=ARMOR_KIND_ORDER.index) if kinds else "cloth"
+
+
+def color_for(item_id: int) -> int:
+    if item_id in _color_overrides:
+        return _color_overrides[item_id]
+    item = item_patterns().get(item_id)
+    return _color_byte(item["color"]) if item is not None else 0
+
+
 def _similar_model(item_id: int) -> int:
+    kind = armor_kind(item_id)
+    if kind is not None:
+        return ARMOR_VALUES[kind]
     category = item_category(item_id)
     groups = _models_by_category()
     choices = groups.get(category) or groups.get(CATEGORY_FALLBACK.get(category, ""), [])
@@ -438,6 +495,7 @@ def describe_item(item_id: int) -> dict:
         "visible": bool(model_for(item_id)), "max_stack": max(1, item["max_stack"]),
         "model": model_for(item_id), "model_source": model_source(item_id),
         "classes": class_names(item.get("class_mask", ALL_CLASSES)),
+        "armor": armor_kind(item_id), "color": color_for(item_id),
     }
 
 
@@ -467,7 +525,7 @@ def gear(inventory: list[dict] | None) -> Gear:
     model = lambda slot: model_for(worn[slot]["id"]) if slot in worn else 0
     primary = next((model(slot) for slot in PRIMARY_SLOTS if model(slot)), 0)
     armor = bytes(model(slot) & 0xFF if 0 < model(slot) < 256 else 0 for slot in ARMOR_ORDER)
-    colors = bytes(_color_byte(worn[slot]["color"]) if slot in worn else 0 for slot in ARMOR_ORDER)
+    colors = bytes(color_for(worn[slot]["id"]) if slot in worn else 0 for slot in ARMOR_ORDER)
     robe = model(EQUIP_ROBE) if 0 < model(EQUIP_ROBE) < 256 else -1
     return Gear(primary, model(EQUIP_SECONDARY), model(EQUIP_SHIELD), armor, colors, robe)
 

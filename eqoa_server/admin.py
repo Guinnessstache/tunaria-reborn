@@ -418,13 +418,15 @@ class AdminHandler(BaseHTTPRequestHandler):
                   f"{' (equipped)' if entry['equip'] != items.NOT_EQUIPPED else ''}")
             self._json({"ok": True})
         elif parts == ["preview"]:
-            self._json(self._preview(int(body["character"]), str(body["slot"]), body.get("model")))
+            self._json(self._preview(int(body["character"]), str(body["slot"]), body.get("model"), body.get("color")))
         elif parts == ["item-models"]:
             item_id = int(body["item"])
             if item_id not in items.item_patterns():
                 raise InventoryError(f"no item with id {item_id}")
-            model = body.get("model")
-            items.set_model_override(item_id, None if model in (None, "") else int(model))
+            model, color = body.get("model"), body.get("color")
+            items.set_model_override(
+                item_id, None if model in (None, "") else int(model), None if color in (None, "") else int(color)
+            )
             print(f"ADMIN model for item {item_id} ({items.describe_item(item_id)['name']}): "
                   f"{'automatic' if model in (None, '') else hex(int(model) & 0xFFFFFFFF)}")
             self._json({"ok": True, "item": items.describe_item(item_id)})
@@ -604,10 +606,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                     if session.phase3_in_world and not session.phase3_closed and character is not None:
                         in_world.append({"id": character.character_id, "name": character.name,
                                          "preview": session.appearance_preview or {}})
-        return {"categories": {k: sorted(v) for k, v in sorted(grouped.items())}, "in_world": in_world}
+        return {"categories": {k: sorted(v) for k, v in sorted(grouped.items())}, "in_world": in_world,
+                "armor_values": items.ARMOR_VALUES}
 
-    def _preview(self, character_id: int, slot: str, model) -> dict:
-        if slot not in ("primary", "secondary", "shield"):
+    def _preview(self, character_id: int, slot: str, model, color=None) -> dict:
+        if slot not in ("primary", "secondary", "shield", *items.ARMOR_PARTS):
             raise ValueError(f"unknown slot {slot}")
         game = self.ctx.services.game_server
         session = game.session_in_world(character_id) if game is not None else None
@@ -617,8 +620,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             preview = dict(session.appearance_preview or {})
             if model in (None, ""):
                 preview.pop(slot, None)
+                preview.pop(f"{slot}_color", None)
             else:
                 preview[slot] = int(model)
+                if color not in (None, "") and slot in items.ARMOR_PARTS:
+                    preview[f"{slot}_color"] = int(color)
             session.appearance_preview = preview or None
             game.refresh_appearance(session)
         return {"ok": True, "preview": preview}

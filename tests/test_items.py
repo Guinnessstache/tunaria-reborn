@@ -63,6 +63,20 @@ class StartingKitTests(unittest.TestCase):
         store.save()
         self.assertEqual(len(JsonStore(path).get_character(1).inventory), 2)  # kept from now on
 
+    def test_armor_defaults_and_saved_choices(self):
+        import tempfile as _tempfile
+
+        self.assertEqual(items.armor_kind(4614), "plate")  # Brutal Chestguard: WAR / PAL / SK only
+        self.assertEqual(items.armor_kind(3732), "cloth")  # Apprentice Gloves (casters)
+        self.assertEqual(items.model_for(4614), items.ARMOR_VALUES["plate"])
+        self.assertEqual((items.model_for(7323), items.color_for(7323)), (6, 13))  # Sandstorm's Legplates
+        path = Path(_tempfile.mkdtemp()) / "item_models.json"
+        items.configure_overrides(path)
+        self.addCleanup(items.configure_overrides, Path(_tempfile.mkdtemp()) / "none.json")
+        items.set_model_override(4614, 5, 2)
+        items.configure_overrides(path)  # read back from disk
+        self.assertEqual((items.model_for(4614), items.color_for(4614), items.model_source(4614)), (5, 2, "chosen"))
+
     def test_gear_shows_on_the_character(self):
         character = Character(character_id=1, account_id=1, name="Chanty", klass=ENCHANTER,
                               inventory=[{"item": items.APPRENTICE_STAFF, "stack": 1, "equip": items.EQUIP_TWO_HAND}])

@@ -176,11 +176,18 @@ def build_object_update(character: Character, object_id: int, preview: dict[str,
     # are the captured character's).
     _write_u32(update, MODEL_OFFSET, character.model_id)
     worn = items.gear(character.inventory)
-    weapons = {"primary": worn.primary, "secondary": worn.secondary, "shield": worn.shield, **(preview or {})}
+    weapons = {"primary": worn.primary, "secondary": worn.secondary, "shield": worn.shield}
+    weapons.update({slot: model for slot, model in (preview or {}).items() if slot in weapons})
     update[WEAPONS_OFFSET : WEAPONS_OFFSET + 12] = struct.pack(
         "<iii", *(items._signed(weapons[slot]) for slot in ("primary", "secondary", "shield"))
     )
-    update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = worn.armor + worn.colors
+    armor, colors = bytearray(worn.armor), bytearray(worn.colors)
+    for index, part in enumerate(items.ARMOR_PARTS):
+        if part in (preview or {}):
+            armor[index] = preview[part] & 0xFF
+        if f"{part}_color" in (preview or {}):
+            colors[index] = preview[f"{part}_color"] & 0xFF
+    update[ARMOR_OFFSET : ARMOR_OFFSET + 12] = bytes(armor) + bytes(colors)
     update[HAIR_OFFSET : HAIR_OFFSET + 4] = bytes(
         value & 0xFF for value in (character.hair_color, character.hair_length, character.hair_style, character.face)
     )

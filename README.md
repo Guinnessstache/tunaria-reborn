@@ -42,7 +42,8 @@ Early but playable to the point of logging in and walking around.
   numbers, with icons of the same kind of ability. Stats come from a captured
   template. Weapon and shield models are exact only where known (the Sandstorm
   capture, or picked in the model browser); other weapons get a game model of
-  the same shape. Armor appearance needs model data most items don't have.
+  the same shape. Armor shows as cloth / leather / chain / plate by the item's
+  name or classes, with guessed values until checked in the model browser.
 - No other players, NPCs, combat or quests in the world yet.
 
 ## Quick start
@@ -102,8 +103,8 @@ Forgot it? Stop the server and delete `data/admin.json`.)
   the class's abilities up to it), give it any item (search by name or id),
   equip, unequip or remove items; changes show the next time the character
   enters the world. The **model browser** tries weapon and shield models on a
-  character in the world, live, and saves the right one for an item
-  (`data/item_models.json`).
+  character in the world, live, (armor too: value and colour per body part)
+  and saves the right one for an item (`data/item_models.json`).
 - **Settings**: shard name, message of the day, admin password.
 - **Logs**: the live server log with a filter.
 - **Updates**: see new commits on GitHub, then **Update & restart**. The update

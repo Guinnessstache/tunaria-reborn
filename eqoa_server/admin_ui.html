@@ -196,10 +196,12 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         <p class="hint">Try weapon and shield models on a character that is in the world: each step redraws it in game straight away. When a model fits an item, save it for that item; everyone then sees the item with it. Items without a saved or known model use one of the same shape.</p>
         <div class="inline">
           <select id="mb-char"></select>
-          <select id="mb-slot"><option value="primary">Main hand</option><option value="secondary">Off hand</option><option value="shield">Shield</option></select>
+          <select id="mb-slot"><option value="primary">Main hand</option><option value="secondary">Off hand</option><option value="shield">Shield</option>
+            <option value="chest">Chest armor</option><option value="bracers">Bracers</option><option value="hands">Gloves</option><option value="legs">Legs</option><option value="feet">Boots</option><option value="head">Helm</option></select>
           <select id="mb-cat"></select>
           <button class="btn" id="mb-prev">◀</button>
           <button class="btn" id="mb-next">▶</button>
+          <span id="mb-color-controls" hidden><span class="muted">colour</span> <button class="btn" id="mb-cprev">◀</button><button class="btn" id="mb-cnext">▶</button></span>
           <button class="btn" id="mb-clear">Clear preview</button>
           <button class="btn" id="mb-reload">Refresh</button>
         </div>
@@ -561,7 +563,9 @@ document.addEventListener("click", async (e) => {
   } catch (err) { if (err.message !== "login required") toast(err.message); }
 });
 
-const mb = { categories: {}, index: 0, shown: null };
+const mb = { categories: {}, index: 0, shown: null, color: 0 };
+const ARMOR_PARTS = ["chest", "bracers", "hands", "legs", "feet", "head"];
+const isArmor = () => ARMOR_PARTS.includes($("#mb-slot").value);
 async function loadModels() {
   const data = await api("/api/models");
   mb.categories = data.categories;
@@ -578,28 +582,48 @@ async function loadModels() {
 function currentModels() { return mb.categories[$("#mb-cat").value] || []; }
 function hex(id) { return "0x" + (id >>> 0).toString(16).toUpperCase().padStart(8, "0"); }
 function showModelLabel() {
+  $("#mb-cat").hidden = isArmor();
+  $("#mb-color-controls").hidden = !isArmor();
+  if (isArmor()) {
+    $("#mb-current").textContent = mb.shown === null
+      ? "Armor: ◀ ▶ step the value (0 = none; we guess cloth 1, leather 2, chain 3, plate 4), the colour arrows the colour."
+      : `Showing ${$("#mb-slot").selectedOptions[0].text.toLowerCase()} value ${mb.shown}, colour ${mb.color}.`;
+    return;
+  }
   const list = currentModels();
   $("#mb-current").textContent = mb.shown === null
     ? `${list.length} models in this group. Use ◀ ▶ to try them.`
     : `Showing model ${hex(mb.shown)} (${mb.index + 1} of ${list.length}, ${$("#mb-cat").value.replace("_", " ")}) in the ${$("#mb-slot").selectedOptions[0].text.toLowerCase()}.`;
 }
 async function showModel(step) {
-  const list = currentModels();
-  if (!list.length || !$("#mb-char").value) { toast("Log in with a character, then press Refresh."); return; }
-  mb.index = mb.shown === null ? 0 : (mb.index + step + list.length) % list.length;
-  mb.shown = list[mb.index];
-  try { await api("/api/preview", { character: Number($("#mb-char").value), slot: $("#mb-slot").value, model: mb.shown }); }
+  if (!$("#mb-char").value) { toast("Log in with a character, then press Refresh."); return; }
+  if (isArmor()) {
+    mb.shown = mb.shown === null ? 1 : (mb.shown + step + 16) % 16;
+  } else {
+    const list = currentModels();
+    if (!list.length) return;
+    mb.index = mb.shown === null ? 0 : (mb.index + step + list.length) % list.length;
+    mb.shown = list[mb.index];
+  }
+  try {
+    await api("/api/preview", { character: Number($("#mb-char").value), slot: $("#mb-slot").value, model: mb.shown,
+                                color: isArmor() ? mb.color : null });
+  }
   catch (err) { if (err.message !== "login required") toast(err.message); }
   showModelLabel();
 }
 $("#mb-next").onclick = () => showModel(1);
 $("#mb-prev").onclick = () => showModel(-1);
 $("#mb-cat").onchange = () => { mb.shown = null; showModelLabel(); };
+$("#mb-slot").onchange = () => { mb.shown = null; mb.color = 0; showModelLabel(); };
+const stepColor = (step) => { mb.color = (mb.color + step + 32) % 32; if (mb.shown === null) mb.shown = 1; showModel(0); };
+$("#mb-cprev").onclick = () => stepColor(-1);
+$("#mb-cnext").onclick = () => stepColor(1);
 $("#mb-reload").onclick = () => loadModels().catch((err) => toast(err.message));
 $("#mb-clear").onclick = async () => {
   if (!$("#mb-char").value) return;
   try {
-    for (const slot of ["primary", "secondary", "shield"]) await api("/api/preview", { character: Number($("#mb-char").value), slot, model: null });
+    for (const slot of ["primary", "secondary", "shield", ...ARMOR_PARTS]) await api("/api/preview", { character: Number($("#mb-char").value), slot, model: null });
     mb.shown = null; showModelLabel(); toast("Preview cleared");
   } catch (err) { if (err.message !== "login required") toast(err.message); }
 };
@@ -613,7 +637,7 @@ $("#mb-item").addEventListener("input", (e) => {
     out.innerHTML = items.filter((it) => it.equippable).map((it) => `<div>
       <button class="btn primary" data-mb-item="${it.id}" data-mb-name="${esc(it.name)}">Use for this item</button>
       ${it.model_source === "chosen" ? `<button class="btn" data-mb-reset="${it.id}" data-mb-name="${esc(it.name)}">Back to automatic</button>` : ""}
-      <span>${esc(it.name)}</span><span class="muted">#${it.id} · ${esc(it.slot)} · model ${it.model ? hex(it.model) : "none"} (${it.model_source})</span></div>`).join("")
+      <span>${esc(it.name)}</span><span class="muted">#${it.id} · ${esc(it.slot)} · ${it.armor ? `${it.armor} armor, value ${it.model}, colour ${it.color}` : `model ${it.model ? hex(it.model) : "none"}`} (${it.model_source})</span></div>`).join("")
       || '<div class="muted">No equippable items match.</div>';
   }, 250);
 });
@@ -622,8 +646,8 @@ $("#mb-results").addEventListener("click", async (e) => {
   const item = Number(t.dataset.mbItem || t.dataset.mbReset);
   if (t.dataset.mbItem && mb.shown === null) { toast("Show a model with ◀ ▶ first."); return; }
   try {
-    await api("/api/item-models", { item, model: t.dataset.mbItem ? mb.shown : null });
-    toast(t.dataset.mbItem ? `${t.dataset.mbName} now uses ${hex(mb.shown)}` : `${t.dataset.mbName} is back to its automatic model`);
+    await api("/api/item-models", { item, model: t.dataset.mbItem ? mb.shown : null, color: t.dataset.mbItem && isArmor() ? mb.color : null });
+    toast(t.dataset.mbItem ? `${t.dataset.mbName} now uses ${isArmor() ? `value ${mb.shown}, colour ${mb.color}` : hex(mb.shown)}` : `${t.dataset.mbName} is back to its automatic model`);
     $("#mb-item").dispatchEvent(new Event("input"));
   } catch (err) { if (err.message !== "login required") toast(err.message); }
 });

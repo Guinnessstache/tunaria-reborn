@@ -215,6 +215,15 @@ class AdminPanelTests(unittest.TestCase):
         self.assertFalse(session.phase3_self_update_acked)
         self.assertEqual(self.request("/api/preview", {"character": 999, "slot": "shield", "model": shield})[0], 409)
 
+        from eqoa_server.memory_dump import ARMOR_OFFSET
+
+        status, _ = self.request("/api/preview", {"character": character.character_id, "slot": "legs", "model": 6, "color": 13})
+        self.assertEqual(status, 200)
+        self.assertEqual((session.phase3_self_update[ARMOR_OFFSET + 3], session.phase3_self_update[ARMOR_OFFSET + 9]), (6, 13))
+        self.addCleanup(items.set_model_override, 3701, None)  # Apprentice Cap
+        self.request("/api/item-models", {"item": 3701, "model": 3, "color": 5})
+        self.assertEqual((items.model_for(3701), items.color_for(3701)), (3, 5))
+
         self.addCleanup(items.set_model_override, items.APPRENTICE_STAFF, None)
         self.request("/api/item-models", {"item": items.APPRENTICE_STAFF, "model": shield})
         self.assertEqual(items.model_for(items.APPRENTICE_STAFF) & 0xFFFFFFFF, shield)
