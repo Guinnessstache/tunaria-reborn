@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 134 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 137 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -278,6 +278,14 @@ to learn them."
 - Kick killed mobs. The server's replies were 0xDB (u32 attacker, byte, u32
   target; combat animations or hits), stat channel 0x42 updates, 0x20 (3
   bytes), 0xD9 (u32 0) and a ClientMessage "You receive 138 XP". Not decoded.
+- **Stat channel 0x42** (unreliable, like the entity channels): 58 int32 and
+  a closing 0xFF byte, 233 bytes. Fields 0-6 stats (STR STA AGI DEX WIS INT
+  CHA), 7/8 HP and max HP, 9/10 power and max power, 29-35 base stats, 37 base
+  max HP, 39 base max power; several fields hold their own index. Sent on world
+  entry and on every HP or power change (about every 6 s while regenerating).
+  Channel 0x43 got 4 zero bytes on world entry. **Without 0x42 the client has
+  no power and won't cast** (Return Home didn't start; the fists glow blue
+  while it casts). `player_stats.py` builds both; they're resent until acked.
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
 
@@ -325,7 +333,8 @@ to learn them."
    no banker window yet; the banker NPC type is 0x82. Scale and race bytes come
    from a template.
 4. **Only Return Home does anything when cast** (hotbar assignment works).
-   Everything else is logged as "no effect yet". Power isn't spent.
+   Everything else is logged as "no effect yet". Return Home spends power;
+   HP and power regenerate a twentieth every 6 s (our guess).
    Only the records for Warrior, Shadowknight and Return Home are real data. The others are built from the guide.
 5. **No other players are visible.** The game needs to share entity channels
    between sessions.

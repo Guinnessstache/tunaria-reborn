@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data, items, merchants, npcs
+from . import game_data, items, merchants, npcs, player_stats
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -103,6 +103,9 @@ class GameSession:
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int] | None = None
+    # The player's own channels 0x42 (stats) and 0x43: {channel: PlayerChannel}.
+    player_channels: dict[int, "PlayerChannel"] = field(default_factory=dict)
+    last_regen: float = 0.0
     phase3_self_update_acked: bool = False
     phase3_last_self_update: float = 0.0
     phase3_address: tuple[str, int] | None = None
@@ -347,6 +350,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         session.phase3_self_update = build_object_update(
                             session.selected_character, PHASE3_SESSION_ID
                         )
+                        server.update_player_channels(session)
                     sent_phase3 = True
                     for response in session.phase3_packets:
                         sock.sendto(response, self.client_address)
@@ -405,6 +409,9 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     entity.acked = True
             if packet.channel_acks.get(SELF_CHANNEL, 0) >= session.phase3_self_update_sequence:
                 session.phase3_self_update_acked = True
+            for channel, player in session.player_channels.items():
+                if channel in packet.channel_acks and _sequence_reached(packet.channel_acks[channel], player.sequence):
+                    player.acked = True
 
             client_messages = [
                 msg.message_number
@@ -466,6 +473,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 and session.phase3_in_world
             ):
                 sent += server.send_self_update(session)
+            sent += server.send_player_channels(session)
             sent += server.service_entities(session)
             sent += server.service_phase3(session, idle_only=False)
 
@@ -920,9 +928,57 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 # 15 times in 7 s).
                 left = session.pending_cast[0] - time.monotonic()
                 return [f"{spell['name']} already casting, {max(0, left):.0f} s left"]
+            if character.mana < spell["power"]:
+                self.send_client_message(session, "You don't have enough power.")
+                return [f"{spell['name']}: needs {spell['power']} power, has {character.mana}"]
+            character.mana -= spell["power"]
+            self.update_player_channels(session)
             session.pending_cast = (time.monotonic() + spell["cast_time"], entry["spell"])
-            return [f"casting {spell['name']} ({spell['cast_time']} s)"]
+            return [f"casting {spell['name']} ({spell['cast_time']} s, {spell['power']} power)"]
         return [f"cast {spell['name']} (no effect yet)"]
+
+    def update_player_channels(self, session: GameSession) -> None:
+        """Queue the player's stat block (0x42) and buffs (0x43) if they changed; they're
+        resent until the client acks them."""
+        character = session.selected_character
+        if character is None:
+            return
+        for channel, build in ((player_stats.STATS_CHANNEL, player_stats.stat_block),
+                               (player_stats.BUFFS_CHANNEL, player_stats.buffs_block)):
+            data = build(character)
+            player = session.player_channels.setdefault(channel, PlayerChannel())
+            if data != player.data:
+                player.data, player.sequence, player.acked, player.last_send = data, player.sequence + 1, False, 0.0
+
+    def send_player_channels(self, session: GameSession) -> list[str]:
+        if not session.phase3_in_world or session.phase3_closed or session.phase3_address is None:
+            return []
+        now, sent = time.monotonic(), []
+        for channel, player in session.player_channels.items():
+            if player.acked or now - player.last_send < PHASE3_RESEND_INTERVAL:
+                continue
+            player.last_send = now
+            message = (
+                bytes([channel]) + _write_size(len(player.data)) + struct.pack("<H", player.sequence & 0xFFFF)
+                + b"\x00" + _rle_zero_encode(player.data)
+            )
+            self.send_phase3(session, bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00" + message)
+            sent.append(f"stats-0x{channel:02X}#{player.sequence}")
+        return sent
+
+    def regenerate(self, session: GameSession, now: float) -> list[str]:
+        """HP and power come back a twentieth of the maximum every 6 s (Sandstorm sent stat
+        updates about every 6 s)."""
+        character = session.selected_character
+        if character is None or not session.phase3_in_world or now - session.last_regen < REGEN_INTERVAL:
+            return []
+        session.last_regen = now
+        before = (character.hp, character.mana)
+        character.hp = min(character.max_hp, character.hp + max(1, character.max_hp // 20))
+        character.mana = min(character.max_mana, character.mana + max(1, character.max_mana // 20))
+        if (character.hp, character.mana) != before:
+            self.update_player_channels(session)
+        return []
 
     def finish_cast(self, session: GameSession, now: float) -> list[str]:
         if session.pending_cast is None or now < session.pending_cast[0]:
@@ -1082,6 +1138,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         self.send_phase2_ping(session)
                     continue
                 sent = self.service_entities(session)
+                sent += self.regenerate(session, now)
+                sent += self.send_player_channels(session)
                 sent += self.finish_cast(session, now)
                 sent += self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
@@ -1263,6 +1321,17 @@ ENTITY_CHANNELS = 0x17  # client object channels 1-0x17; 0 is the player's own c
 ENTITY_RANGE = 200.0
 ENTITY_REFRESH_INTERVAL = 1.0
 ENTITY_BUNDLE_BYTES = 1000
+
+
+@dataclass
+class PlayerChannel:
+    data: bytes = b""
+    sequence: int = 0
+    acked: bool = True
+    last_send: float = 0.0
+
+
+REGEN_INTERVAL = 6.0
 
 
 def _sequence_reached(acked: int, sent: int) -> bool:

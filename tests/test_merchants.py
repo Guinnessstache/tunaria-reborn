@@ -198,9 +198,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AbilityTests(unittest.TestCase):
-    """Hotbar and casting, as the Sandstorm server answered them in a capture of a level 4
-    warrior using Kick and Return Home."""
+class InWorldCase(unittest.TestCase):
+    """A character in the world, with what the server sends recorded."""
 
     def setUp(self):
         self.store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")
@@ -218,6 +217,11 @@ class AbilityTests(unittest.TestCase):
 
     def book_order(self, spell_id):
         return next(i for i, e in enumerate(self.server._spell_book(self.character)) if e["spell"] == spell_id)
+
+
+class AbilityTests(InWorldCase):
+    """Hotbar and casting, as the Sandstorm server answered them in a capture of a level 4
+    warrior using Kick and Return Home."""
 
     def test_assign_hotbar_is_echoed(self):
         order = self.book_order(items.RETURN_HOME)
@@ -251,3 +255,50 @@ class AbilityTests(unittest.TestCase):
         notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([9]) + struct.pack("<I", 0))
         self.assertIn("nothing", notes[0])
         self.assertIsNone(self.session.pending_cast)
+
+
+class PlayerStatsTests(InWorldCase):
+    def test_stat_block_layout(self):
+        from eqoa_server import player_stats
+
+        self.character.hp, self.character.max_hp, self.character.mana, self.character.max_mana = 90, 124, 30, 159
+        block = player_stats.stat_block(self.character)
+        self.assertEqual(len(block), 233)  # as Sandstorm's channel 0x42
+        fields = struct.unpack_from("<58i", block)
+        self.assertEqual(fields[7:11], (90, 124, 30, 159))
+        self.assertEqual((fields[37], fields[39]), (124, 159))
+        self.assertEqual(fields[0:7], fields[29:36])
+        self.assertEqual((fields[11], fields[44], block[-1]), (11, 44, 0xFF))
+
+    def test_stats_are_sent_until_acked(self):
+        from eqoa_server.protocol import rle_zero_decode
+
+        sent = []
+        self.session.phase3_address = ("127.0.0.1", 1)
+        with mock.patch.object(self.server, "send_phase3", side_effect=lambda s, body, **k: sent.append(body)):
+            self.server.update_player_channels(self.session)
+            self.server.send_player_channels(self.session)
+            channels = {body[3]: body for body in sent}
+            self.assertEqual(set(channels), {0x42, 0x43})
+            stats = channels[0x42]
+            self.assertEqual((stats[4], stats[5:7], stats[7]), (233, b"\x01\x00", 0))  # size, seq 1, full
+            from eqoa_server import player_stats
+            self.assertEqual(rle_zero_decode(stats[8:]), player_stats.stat_block(self.character))
+            for player in self.session.player_channels.values():
+                player.acked = True
+            sent.clear()
+            self.server.send_player_channels(self.session)
+            self.assertEqual(sent, [])
+
+    def test_return_home_costs_power(self):
+        order = self.book_order(items.RETURN_HOME)
+        self.server.assign_hotbar(self.session, struct.pack("<i", 0) + bytes([order, 6]))
+        cost = items.spell_patterns()[items.RETURN_HOME]["power"]
+        self.character.mana = cost - 1
+        notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
+        self.assertIn("needs", notes[0])
+        self.assertIsNone(self.session.pending_cast)
+        self.character.mana = cost + 5
+        self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
+        self.assertEqual(self.character.mana, 5)
+        self.assertFalse(self.session.player_channels[0x42].acked)  # the new power goes out
