@@ -42,6 +42,7 @@ from .protocol import (
     MessageType,
     PacketBundleFlags,
     _rle_zero_encode,
+    _write_size,
     parse_messages,
     parse_phase3_client_packet,
     parse_create_character,
@@ -82,6 +83,10 @@ class GameSession:
     phase3_last_ping: float = 0.0
     # Own-character object update (channel 0), resent until the client acks the channel.
     phase3_self_update: bytes | None = None
+    # Sequence of the latest own-character update; it goes up when the update changes (gear).
+    phase3_self_update_sequence: int = 1
+    # Highest client reliable message already acted on (the client resends until acked).
+    phase3_handled_message: int = 0
     phase3_self_update_acked: bool = False
     phase3_last_self_update: float = 0.0
     phase3_address: tuple[str, int] | None = None
@@ -366,7 +371,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
 
             if packet.client_message_ack is not None:
                 session.phase3_acked_message = max(session.phase3_acked_message, packet.client_message_ack)
-            if packet.channel_acks.get(SELF_CHANNEL, 0) >= SELF_UPDATE_SEQUENCE:
+            if packet.channel_acks.get(SELF_CHANNEL, 0) >= session.phase3_self_update_sequence:
                 session.phase3_self_update_acked = True
 
             client_messages = [
@@ -379,6 +384,13 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 session.phase3_client_message = max(session.phase3_client_message, *client_messages)
             if any(msg.opcode == DISCONNECT_CLIENT_OPCODE for msg in packet.messages):
                 session.phase3_closed = True
+            for msg in packet.messages:
+                if msg.message_number is None or msg.message_number <= session.phase3_handled_message:
+                    continue
+                if msg.message_type in (MessageType.RELIABLE, MessageType.SEGMENT_RELIABLE):
+                    session.phase3_handled_message = msg.message_number
+                    if msg.opcode == INTERACT_ITEM_OPCODE:
+                        sent += server.interact_item(session, msg.payload)
             update = next(
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
@@ -605,6 +617,53 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if session.phase3_address is not None:
             self.socket.sendto(packet, session.phase3_address)
 
+    def send_reliable(self, session: GameSession, opcode: int, payload: bytes) -> int:
+        """One reliable message (resent until the client acks it); returns its number."""
+        number = session.phase3_next_message
+        session.phase3_next_message += 1
+        data = struct.pack("<H", opcode) + payload
+        body = (
+            bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00"
+            + bytes([MessageType.RELIABLE]) + _write_size(len(data)) + struct.pack("<H", number) + data
+        )
+        self.send_phase3(session, body, reliable_message=number)
+        return number
+
+    def interact_item(self, session: GameSession, payload: bytes) -> list[str]:
+        """The client used an item in its inventory (InteractItem, as in EQOAGameServer):
+        u32 inventory position, u32 target, zigzag action (0 = use / equip / unequip)."""
+        character = session.selected_character
+        if character is None or len(payload) < 8:
+            return []
+        index = struct.unpack_from("<I", payload, 0)[0]
+        inventory = character.inventory or []
+        if index >= len(inventory):
+            return [f"interact item {index}: no such item"]
+        entry = inventory[index]
+        name = items.describe_item(entry["item"])["name"] if entry["item"] in items.item_patterns() else entry["item"]
+        if entry.get("equip", items.NOT_EQUIPPED) != items.NOT_EQUIPPED:
+            slot = entry["equip"]
+            self.store.set_item_equipped(character.character_id, index, False)
+            self.send_reliable(session, UNEQUIP_ITEM_OPCODE, struct.pack("<B", slot & 0xFF))
+            result = f"unequipped {name}"
+        elif items.equip_slot_for(entry["item"]) != items.NOT_EQUIPPED:
+            before = {i: e.get("equip") for i, e in enumerate(inventory)}
+            self.store.set_item_equipped(character.character_id, index, True)
+            for other, old_slot in before.items():
+                # Items it pushed out of their slots (a two-handed weapon clears both hands).
+                if other != index and old_slot != items.NOT_EQUIPPED and inventory[other]["equip"] == items.NOT_EQUIPPED:
+                    self.send_reliable(session, UNEQUIP_ITEM_OPCODE, struct.pack("<B", old_slot & 0xFF))
+            self.send_reliable(session, EQUIP_ITEM_OPCODE, struct.pack("<Bb", index & 0xFF, entry["equip"]))
+            result = f"equipped {name}"
+        else:
+            return [f"used {name} (not handled yet)"]
+        # Redraw the character with its new gear.
+        session.phase3_self_update = build_object_update(character, PHASE3_SESSION_ID)
+        session.phase3_self_update_sequence += 1
+        session.phase3_self_update_acked = False
+        session.phase3_last_self_update = 0.0
+        return [result]
+
     def send_self_update(self, session: GameSession) -> list[str]:
         now = time.monotonic()
         if now - session.phase3_last_self_update < PHASE3_RESEND_INTERVAL:
@@ -613,7 +672,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         message = (
             bytes([SELF_CHANNEL])
             + bytes([len(session.phase3_self_update)])
-            + struct.pack("<H", SELF_UPDATE_SEQUENCE)
+            + struct.pack("<H", session.phase3_self_update_sequence)
             + b"\x00"
             + _rle_zero_encode(session.phase3_self_update)
         )
@@ -863,7 +922,9 @@ DISCONNECT_CLIENT_OPCODE = 0x09B0
 # Sandstorm uses the phase3 session id as the player's own object id on channel 0.
 PHASE3_SESSION_ID = read_varuint(b"\xB8" + PHASE3_MAGIC, 0)[0]
 SELF_CHANNEL = 0
-SELF_UPDATE_SEQUENCE = 1
+INTERACT_ITEM_OPCODE = 0x003E
+EQUIP_ITEM_OPCODE = 0x003F
+UNEQUIP_ITEM_OPCODE = 0x0040
 PHASE3_PING_INTERVAL = 2.0
 # EQOAGameServer pings sessions outside the world after a quiet spell; the client drops
 # character select if the server says nothing for too long.

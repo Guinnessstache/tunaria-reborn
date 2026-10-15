@@ -77,6 +77,16 @@ class StartingKitTests(unittest.TestCase):
 
 @unittest.skipUnless(SANDSTORM_CAPTURE.is_file(), "Sandstorm capture not present")
 class SandstormLayoutTests(unittest.TestCase):
+    def test_kerbz_gear_draws_like_sandstorm(self):
+        from eqoa_server.memory_dump import ARMOR_OFFSET, SELF_OBJECT_UPDATE_TEMPLATE
+
+        kerbz_set = (13415, 6165, 7323, 6393, 7565, 7897, 6947, 6659)
+        inventory = [{"item": i, "stack": 1, "equip": items.equip_slot_for(i)} for i in kerbz_set]
+        character = Character(character_id=1, account_id=1, name="Kerbz", inventory=inventory)
+        update = build_object_update(character, 1)
+        for start, end in ((WEAPONS_OFFSET, WEAPONS_OFFSET + 12), (ARMOR_OFFSET, ARMOR_OFFSET + 12)):
+            self.assertEqual(update[start:end], SELF_OBJECT_UPDATE_TEMPLATE[start:end])
+
     def test_spell_records_match_sandstorm_bytes(self):
         payload = sandstorm_memory_dump_payload()
         self.assertIn(items.spell_record({"spell": 1421, "hotbar": -1}, 0), payload)  # Hatred

@@ -97,6 +97,34 @@ class Phase3SessionTests(unittest.TestCase):
         self.assertTrue(self.server.sessions[self.client.getsockname()].phase3_self_update_acked)
         self.assertFalse([r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20])
 
+    def test_equip_and_unequip_from_the_game(self):
+        from eqoa_server import items
+
+        session = self.server.sessions[self.client.getsockname()]
+        store = self.server.store
+        character = store.create_character(1, "Chanty", klass=12)
+        store.give_item(character.character_id, items.APPRENTICE_SWORD, equip=True)
+        store.give_item(character.character_id, items.APPRENTICE_STAFF)
+        session.selected_character = character
+        self.exchange(client_packet(0x03, 1, (30, 8)))
+
+        def interact(bundle, message, index):
+            payload = struct.pack("<HII", 0x003E, index, 0) + b"\x00"
+            return client_packet(0x20, bundle, None, b"\xFB" + bytes([len(payload)]) + struct.pack("<H", message) + payload)
+
+        replies = self.exchange(interact(2, 1, 2))  # equip the staff: the sword (slot 14) comes off
+        sent = [(m.opcode, m.payload) for r in replies for m in r.messages if m.opcode in (0x3F, 0x40)]
+        self.assertEqual(sent, [(0x40, bytes([items.EQUIP_PRIMARY])), (0x3F, bytes([2, items.EQUIP_TWO_HAND]))])
+        self.assertEqual([e["equip"] for e in character.inventory], [-1, -1, items.EQUIP_TWO_HAND])
+        self.assertEqual(session.phase3_self_update_sequence, 2)
+
+        replies = self.exchange(interact(3, 1, 2))  # the same message again: already handled
+        self.assertFalse([m for r in replies for m in r.messages if m.opcode in (0x3F, 0x40)])
+        replies = self.exchange(interact(4, 2, 2))  # unequip it
+        sent = [(m.opcode, m.payload) for r in replies for m in r.messages if m.opcode in (0x3F, 0x40)]
+        self.assertEqual(sent, [(0x40, bytes([items.EQUIP_TWO_HAND]))])
+        self.assertEqual(store.get_character(character.character_id).inventory[2]["equip"], -1)
+
     def test_idle_session_gets_keepalive_pings(self):
         self.exchange(client_packet(0x03, 1, (30, 8)))
         with mock.patch.object(game_udp, "PHASE3_KEEPALIVE_INTERVAL", 0.2):

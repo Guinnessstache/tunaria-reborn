@@ -27,7 +27,8 @@ EQUIP_TWO_HAND, EQUIP_SHIELD, EQUIP_THROWN, EQUIP_HELD, EQUIP_ROBE = 16, 17, 18,
 # The item's slot type (EQOAGameServer ItemSlot) -> where it is worn (EquippedGear).
 ITEM_SLOT_TO_EQUIP = {
     1: EQUIP_HEAD, 2: EQUIP_ROBE, 3: 3, 4: 4, 5: EQUIP_CHEST, 6: 6, 7: EQUIP_BRACERS, 8: 10, 9: 11,
-    10: EQUIP_LEG, 11: EQUIP_FEET, 12: EQUIP_PRIMARY, 13: EQUIP_SHIELD, 14: EQUIP_SECONDARY,
+    # 14 ("secondary": can go in either hand) sat in the main hand on the Sandstorm character.
+    10: EQUIP_LEG, 11: EQUIP_FEET, 12: EQUIP_PRIMARY, 13: EQUIP_SHIELD, 14: EQUIP_PRIMARY,
     15: EQUIP_TWO_HAND, 16: EQUIP_THROWN, 17: EQUIP_THROWN, 18: EQUIP_HELD, 19: EQUIP_HAND,
 }
 # Armor pieces in the order the client lists them (object update and character select).
@@ -44,7 +45,12 @@ INVENTORY = 1  # item location byte in the inventory list
 @lru_cache(maxsize=1)
 def item_patterns() -> dict[int, dict]:
     with gzip.open(DATA / "items.json.gz", "rt", encoding="utf-8") as handle:
-        return {item["id"]: item for item in json.load(handle)}
+        patterns = {item["id"]: item for item in json.load(handle)}
+    # Items from the Sandstorm capture, with the models it drew them with
+    # (tools/import_sandstorm_items.py); EQOAGameServer's table lacks most models.
+    for item in json.loads((DATA / "sandstorm_items.json").read_text(encoding="utf-8")):
+        patterns[item["id"]] = item
+    return patterns
 
 
 @lru_cache(maxsize=1)
