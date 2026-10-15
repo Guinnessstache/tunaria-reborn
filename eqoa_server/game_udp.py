@@ -15,7 +15,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import ability_effects, combat, game_data, items, merchants, npcs, player_stats, spell_effects
+from . import ability_effects, combat, game_data, items, merchants, npcs, pets, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -107,6 +107,7 @@ class GameSession:
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
     attack_target: int | None = None  # object id auto attack is swinging at
+    pet: "combat.Mob | None" = None  # a summoned pet (pets.py)
     next_swing: float = 0.0
     # Spell book order -> monotonic time the ability is ready again.
     cooldowns: dict[int, float] = field(default_factory=dict)
@@ -726,8 +727,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         return notes
 
     def _assign_entity_channels(self, session: GameSession, character: Character) -> list[str]:
-        wanted = [npc for npc in npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS + 8, ENTITY_RANGE)
-                  if self.mobs.get(npc.object_id) is None or self.mobs[npc.object_id].state != combat.GONE][:ENTITY_CHANNELS]
+        pets_near = [s.pet.npc for s in self.sessions.values()
+                     if s.pet is not None and s.pet.state == combat.ALIVE and not s.phase3_closed
+                     and combat.distance(character.x, character.z, s.pet) <= ENTITY_RANGE]
+        wanted = (pets_near + [npc for npc in npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS + 8, ENTITY_RANGE)
+                               if self.mobs.get(npc.object_id) is None or self.mobs[npc.object_id].state != combat.GONE]
+                  )[:ENTITY_CHANNELS]
         wanted_ids = {npc.object_id: npc for npc in wanted}
         current = {entity.object_id: channel for channel, entity in session.entity_channels.items() if entity.update[0]}
         free = [channel for channel in range(1, ENTITY_CHANNELS + 1) if channel not in current.values()]
@@ -740,7 +745,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             if npc.object_id in current:
                 continue
             channel = free.pop(0)
-            mob = self.mobs.get(npc.object_id)
+            mob = self.mobs.get(npc.object_id) or self._pet_by_id(npc.object_id)
             update = combat.update_bytes(mob) if mob is not None else npcs.build_npc_update(npc)
             self._set_channel(session, channel, npc.object_id, update)
             added += 1
@@ -988,6 +993,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         row = ability_effects.guide_row(character, spell["name"])
         if row is None:
             return [f"cast {spell['name']} (no guide data)"]
+        if any(effect.get("type") == "Summon Pet" for effect in row.get("effects", ())):
+            return self.summon_pet(session, spell["name"], row["level"])
         targeting_other = target not in (0, 0xFFFFFFFF, PHASE3_SESSION_ID)
         said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
         for line in said:  # chat lines for the player
@@ -1048,9 +1055,11 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     return pattern.get("damage", 0)
         return 0
 
-    def hit_mob(self, session: GameSession, mob: combat.Mob, damage: int) -> list[str]:
-        """The player deals ``damage`` to the creature (0xDB), which turns on them."""
-        self.send_reliable(session, HIT_OPCODE, struct.pack("<I", PHASE3_SESSION_ID) + _write_varuint(damage)
+    def hit_mob(self, session: GameSession, mob: combat.Mob, damage: int, attacker: int | None = None) -> list[str]:
+        """The player (or their pet) deals ``damage`` to the creature (0xDB); it turns on
+        the player."""
+        attacker = PHASE3_SESSION_ID if attacker is None else attacker
+        self.send_reliable(session, HIT_OPCODE, struct.pack("<I", attacker) + _write_varuint(damage)
                            + struct.pack("<I", mob.object_id))
         mob.hp -= damage
         if mob.target is None:
@@ -1132,6 +1141,9 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     character.level, strength, self._weapon_damage(character), self.rng))
         for mob in list(self.mobs.values()):
             notes += self._mob_tick(mob, now, seconds)
+        for session in list(self.sessions.values()):
+            if session.pet is not None:
+                notes += self._pet_tick(session, now, seconds)
         if notes and self.log_packets:
             print("COMBAT " + "; ".join(notes))
 
@@ -1187,11 +1199,67 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             notes.append(f"{mob.npc.name} hits {character.name} for {damage}")
         return notes
 
+    # ---- pets (pets.py) ----
+
+    def _pet_by_id(self, object_id: int) -> combat.Mob | None:
+        return next((s.pet for s in self.sessions.values() if s.pet is not None and s.pet.object_id == object_id), None)
+
+    def summon_pet(self, session: GameSession, spell_name: str, level: int) -> list[str]:
+        """A new pet beside the caster; it replaces any pet they had."""
+        character = session.selected_character
+        self.dismiss_pet(session)
+        pet = pets.summon(spell_name, level, character.character_id, character.x, character.y, character.z)
+        if pet is None:
+            return [f"cast {spell_name}: no creature to look like"]
+        session.pet = pet
+        session.last_entity_refresh = 0.0  # put it on a channel now
+        self.send_client_message(session, f"{spell_name} answers your call.")
+        return [f"summoned {spell_name} (level {level}, {pet.max_hp} HP, looks like {pets.look_for(spell_name).name})"]
+
+    def dismiss_pet(self, session: GameSession) -> None:
+        pet, session.pet = session.pet, None
+        if pet is not None:
+            pet.state = combat.GONE
+            self.refresh_mob(pet)
+
+    def _pet_tick(self, session: GameSession, now: float, seconds: float) -> list[str]:
+        """Fight what the owner fights (their attack target, or whatever is after them),
+        otherwise follow them."""
+        pet, character = session.pet, session.selected_character
+        if session.phase3_closed or character is None:
+            self.dismiss_pet(session)
+            return []
+        foe = self.mobs.get(session.attack_target) if session.attack_target is not None else None
+        if foe is None or foe.state != combat.ALIVE:
+            foe = next((m for m in self.mobs.values()
+                        if m.state == combat.ALIVE and m.target == character.character_id), None)
+        if foe is not None:
+            if combat.step_toward(pet, foe.x, foe.z, seconds):
+                pet.animation = combat.RUN
+                self.refresh_mob(pet, combat.facing_toward(pet, foe.x, foe.z))
+                return []
+            if now >= pet.next_swing:
+                pet.next_swing = now + pets.PET_DELAY
+                pet.animation = combat.ATTACK
+                self.refresh_mob(pet, combat.facing_toward(pet, foe.x, foe.z))
+                pet.animation = combat.STAND
+                return self.hit_mob(session, foe, pets.swing(pet.npc.level, self.rng), attacker=pet.object_id)
+            return []
+        if combat.distance(character.x, character.z, pet) > pets.FOLLOW_DISTANCE and combat.step_toward(
+                pet, character.x, character.z, seconds * 1.5):
+            pet.animation = combat.RUN
+            self.refresh_mob(pet, combat.facing_toward(pet, character.x, character.z))
+        elif pet.animation == combat.RUN:
+            pet.animation = combat.STAND
+            self.refresh_mob(pet)
+        return []
+
     def player_died(self, session: GameSession, killer: combat.Mob) -> list[str]:
         """Back to the bind point with full HP and power; creatures after them give up."""
         character = session.selected_character
         self.send_client_message(session, f"You have been slain by {killer.npc.name}!")
         session.attack_target, session.pending_cast, session.buffs = None, None, []
+        self.dismiss_pet(session)
         character.hp, character.mana = character.max_hp, character.max_mana
         for mob in self.mobs.values():
             if mob.target == character.character_id:
@@ -1416,6 +1484,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     session.phase3_closed
                     or now - session.phase3_last_client_packet > PHASE3_SESSION_TIMEOUT
                 ) and session.phase3_last_client_packet:
+                    self.dismiss_pet(session)
                     del self.sessions[address]
                     continue
                 if not session.phase3_started and session.phase2_address is not None:

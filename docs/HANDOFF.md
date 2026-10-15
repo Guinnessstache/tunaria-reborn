@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 150 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 154 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -370,6 +370,14 @@ to learn them."
    point with full HP. HP, damage, XP and speeds are our formulas, fitted to
    the one capture. Loot (0x15) answers "empty". No level-ups yet (XP only),
    no quests.
+7. **Pets (untested in game)**, `pets.py`. The 78 "Summon Pet" abilities make a
+   pet that looks like a creature from the NPC table named like the spell
+   (fire elementalkin, skeleton, companion spirit, clay golem...), named after
+   the spell. It's an ordinary object on an entity channel: follows its owner,
+   fights the owner's target or whatever is after them (0xDB with the pet as
+   attacker; kills give the owner XP). Creatures don't fight back at it.
+   Recasting replaces it; it goes when the owner dies or logs out. How the real
+   game showed pets (a pet window, ownership) isn't in any capture.
 7. Armor colors always default to 0. Weapon models are exact only where known.
    Elsewhere the item gets a model of the same shape, or one set through the
    model browser.

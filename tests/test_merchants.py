@@ -400,8 +400,8 @@ class AbilityEffectTests(InWorldCase):
         self.assertIn("needs combat", notes[0])
 
 
-class CombatTests(InWorldCase):
-    """Fighting a creature, in the message shapes of the Sandstorm capture."""
+class CombatCase(InWorldCase):
+    """A character standing next to a level 1 creature."""
 
     def setUp(self):
         super().setUp()
@@ -416,6 +416,10 @@ class CombatTests(InWorldCase):
 
     def attack(self):
         return self.server.attack(self.session, struct.pack("<I", self.npc.object_id))
+
+
+class CombatTests(CombatCase):
+    """Fighting a creature, in the message shapes of the Sandstorm capture."""
 
     def test_auto_attack_hits_and_the_creature_turns(self):
         self.attack()
@@ -441,9 +445,9 @@ class CombatTests(InWorldCase):
         self.assertEqual(self.combat.update_bytes(mob)[26], 3)  # dead
         self.assertEqual(self.combat.update_bytes(mob)[58], 14)  # lying down, as Sandstorm's corpses
         self.assertIsNone(self.session.attack_target)
-        self.server.combat_tick(mob.died_at + self.combat.CORPSE_TIME)
+        self.server.combat_tick(mob.died_at + self.combat.CORPSE_TIME + 0.01)  # float-safe
         self.assertEqual(self.combat.update_bytes(mob)[0], 0)  # cleared away
-        self.server.combat_tick(mob.died_at + self.combat.RESPAWN)
+        self.server.combat_tick(mob.died_at + self.combat.RESPAWN + 0.01)
         self.assertEqual(self.server.mobs[self.npc.object_id].state, self.combat.ALIVE)
 
     def test_creature_chases_hits_and_can_kill(self):
@@ -494,3 +498,55 @@ class CombatTests(InWorldCase):
         mob.target = None
         self.server.regenerate(self.session, 200.0)
         self.assertGreater(self.character.hp, 50)
+
+
+class PetTests(CombatCase):
+    """Summoned pets: shown on a channel, following, fighting the owner's target."""
+
+    def summon(self):
+        self.character.klass = items.CLASS_NAMES.index("Magician")
+        row = next(i for i, a in enumerate(items.class_abilities()["Magician"]) if a["name"] == "Earth Elementaling")
+        self.character.spells.append({"spell": items.class_spell_id(self.character.klass, row), "hotbar": 7})
+        self.character.mana = 500
+        self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([7]) + struct.pack("<I", 0xFFFFFFFF))
+        if self.session.pending_cast:
+            self.server.finish_cast(self.session, self.session.pending_cast[0])
+        return self.session.pet
+
+    def test_summon_shows_the_pet(self):
+        pet = self.summon()
+        self.assertIsNotNone(pet)
+        self.assertEqual(pet.npc.name, "Earth Elementaling")
+        chat = [body for op, body in self.sent if op == 0x0A7A]
+        self.assertTrue(any("answers your call".encode("utf-16-le") in body for body in chat))
+        self.session.phase3_address = ("127.0.0.1", 1)
+        self.server._assign_entity_channels(self.session, self.character)
+        shown = {entity.object_id for entity in self.session.entity_channels.values() if entity.update[0]}
+        self.assertIn(pet.object_id, shown)
+
+    def test_pet_follows(self):
+        pet = self.summon()
+        self.character.x += 40
+        self.server.combat_tick(10.0)
+        before = pet.x
+        self.server.combat_tick(10.5)
+        self.assertGreater(pet.x, before)
+
+    def test_pet_fights_the_owners_target(self):
+        pet = self.summon()
+        self.attack()
+        mob = self.server.mobs[self.npc.object_id]
+        pet.x, pet.z = mob.x + 1, mob.z
+        self.server.combat_tick(10.0)
+        hits = [body for op, body in self.sent if op == 0xDB and struct.unpack_from("<I", body, 0)[0] == pet.object_id]
+        self.assertEqual(len(hits), 1)
+        self.assertLess(mob.hp, mob.max_hp)
+
+    def test_new_summon_replaces_and_death_dismisses(self):
+        first = self.summon()
+        self.session.cooldowns.clear()
+        second = self.summon()
+        self.assertEqual(first.state, self.combat.GONE)
+        self.server.player_died(self.session, self.server.mob(self.npc.object_id))
+        self.assertIsNone(self.session.pet)
+        self.assertEqual(second.state, self.combat.GONE)
