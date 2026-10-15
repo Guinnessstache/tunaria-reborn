@@ -9,6 +9,7 @@ from eqoa_server.capture_template import (
     _memory_dump_segments,
     _phase3_inner,
     memory_dump_core_length,
+    memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
 from eqoa_server.config import ServerConfig
@@ -45,12 +46,25 @@ class CaptureTemplateTests(unittest.TestCase):
         segments = [
             segment for packet in packets[1:] for segment in _memory_dump_segments(_phase3_inner(packet))
         ]
-        self.assertEqual([message for _type, message, _data in segments], list(range(5, 21)))
+        self.assertEqual([message for _type, message, _data in segments], list(range(5, 9)))
         self.assertEqual(segments[0][2][:2], struct.pack("<H", 0x000D))
         payload = segments[0][2][2:] + b"".join(data for _type, _message, data in segments[1:])
         template = sandstorm_memory_dump_payload()
         core = build_memory_dump_core(character, server_id=character.character_id)
-        self.assertEqual(payload, core + template[memory_dump_core_length(template) :])
+        self.assertEqual(payload, core + memory_dump_without_belongings(template, memory_dump_core_length(template)))
+
+
+
+@unittest.skipUnless(SANDSTORM_CAPTURE.is_file(), "Sandstorm capture not present")
+class MemoryDumpBelongingsTests(unittest.TestCase):
+    def test_captured_items_spells_and_quests_are_removed(self):
+        payload = sandstorm_memory_dump_payload()
+        body = memory_dump_without_belongings(payload, memory_dump_core_length(payload))
+        for text in ("Grimblade", "Protective Coif", "Hatred", "Return Home", "Picklaw"):
+            self.assertIn(text.encode("utf-16-le"), payload)
+            self.assertNotIn(text.encode("utf-16-le"), body, text)
+        self.assertIn("Wave".encode("utf-16-le"), body)  # default hotkeys stay
+        self.assertTrue(payload.endswith(body[-191:]))  # trailing stat block kept
 
 
 if __name__ == "__main__":

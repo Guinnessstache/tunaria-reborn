@@ -30,10 +30,10 @@ Early but playable to the point of logging in and walking around.
 **Not yet**
 
 - Game account passwords are not checked (any password logs in).
-- Inventory, stats and spells still come from a captured template character,
-  and no armor or weapons are shown yet.
+- Characters start with an empty inventory and spell list (no starting gear or
+  spells yet), stats still come from a captured template, and no armor or
+  weapons are shown.
 - No other players, NPCs, combat or quests in the world yet.
-- The server list drops you if you wait on it too long.
 
 ## Quick start
 

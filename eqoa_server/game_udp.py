@@ -7,7 +7,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .capture_template import SANDSTORM_CAPTURE, memory_dump_core_length, sandstorm_memory_dump_payload
+from .capture_template import (
+    SANDSTORM_CAPTURE,
+    memory_dump_core_length,
+    memory_dump_without_belongings,
+    sandstorm_memory_dump_payload,
+)
 from . import game_data
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
@@ -27,6 +32,7 @@ from .protocol import (
     build_phase3_object_update_packet,
     build_phase3_server_ping,
     build_phase3_world_entry,
+    build_phase2_best_effort_ping,
     build_phase2_character_select_ack,
     build_phase2_character_select_resend,
     build_phase2_guaranteed_ack,
@@ -80,6 +86,10 @@ class GameSession:
     phase3_closed: bool = False
     phase3_last_send: float = 0.0
     phase3_last_client_packet: float = 0.0
+    # Character select (phase2, world endpoint) keepalive.
+    phase2_address: tuple[str, int] | None = None
+    phase2_last_send: float = 0.0
+    last_client_packet: float = field(default_factory=time.monotonic)
 
 
 class GameUDPHandler(socketserver.BaseRequestHandler):
@@ -105,6 +115,9 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                             f"UDP {self.client_address[0]}:{self.client_address[1]} "
                             f"{msg.opcode_name} payload={_masked_handshake(msg.payload)}"
                         )
+            existing = server.sessions.get(self.client_address)
+            if existing is not None:
+                existing.last_client_packet = time.monotonic()
             if any(msg.opcode == 0x0904 for msg in packet.messages):
                 world_list = build_old_world_list(
                     packet.client_endpoint,
@@ -132,6 +145,8 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 resend = build_phase2_character_select_resend(packet.client_endpoint, instance_id, character_list=character_list)
                 sock.sendto(ack, self.client_address)
                 sock.sendto(resend, self.client_address)
+                session.phase2_address = self.client_address
+                session.phase2_last_send = time.monotonic()
                 if server.log_packets:
                     print(
                         f"UDP phase2 char-list sent to {self.client_address[0]}:{self.client_address[1]} "
@@ -182,6 +197,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 session.next_message += 1
                 sock.sendto(ack, self.client_address)
                 sock.sendto(response, self.client_address)
+                session.phase2_last_send = time.monotonic()
                 if server.log_packets:
                     print(
                         f"UDP create-char {self.client_address[0]}:{self.client_address[1]} "
@@ -563,6 +579,13 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.send_phase3(session, body, reliable_message=message)
         return [f"ping=#{message}"]
 
+    def send_phase2_ping(self, session: GameSession) -> None:
+        """Character select goes quiet while the player decides; ping so the client keeps the session."""
+        packet = build_phase2_best_effort_ping(session.client_endpoint, session.instance_id, session.next_arrival)
+        session.next_arrival += 1
+        session.phase2_last_send = time.monotonic()
+        self.socket.sendto(packet, session.phase2_address)
+
     def service_actions(self) -> None:
         """Called by serve_forever between requests: keep idle phase3 sessions alive."""
         super().service_actions()
@@ -574,6 +597,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     or now - session.phase3_last_client_packet > PHASE3_SESSION_TIMEOUT
                 ) and session.phase3_last_client_packet:
                     del self.sessions[address]
+                    continue
+                if not session.phase3_started and session.phase2_address is not None:
+                    if now - session.last_client_packet > PHASE2_SESSION_TIMEOUT:
+                        del self.sessions[address]
+                    elif now - session.phase2_last_send >= PHASE2_PING_INTERVAL:
+                        self.send_phase2_ping(session)
                     continue
                 sent = self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
@@ -605,7 +634,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         f"{phase3_root} and no {SANDSTORM_CAPTURE.name}) - sending world-entry only."
                     )
                 return packets
-            memory_payload = build_memory_dump_core(character, server_id=character.character_id) + captured_payload[core_length:]
+            try:
+                # The captured character's quests, items and spells are not ours.
+                template_body = memory_dump_without_belongings(captured_payload, core_length)
+            except (ValueError, struct.error, IndexError):
+                template_body = captured_payload[core_length:]
+            memory_payload = build_memory_dump_core(character, server_id=character.character_id) + template_body
             memory_packets, next_arrival, next_message = build_phase3_memory_dump_packets(
                 client_endpoint,
                 instance_id,
@@ -740,6 +774,10 @@ PHASE3_SESSION_ID = read_varuint(b"\xB8" + PHASE3_MAGIC, 0)[0]
 SELF_CHANNEL = 0
 SELF_UPDATE_SEQUENCE = 1
 PHASE3_PING_INTERVAL = 2.0
+# EQOAGameServer pings sessions outside the world after a quiet spell; the client drops
+# character select if the server says nothing for too long.
+PHASE2_PING_INTERVAL = 5.0
+PHASE2_SESSION_TIMEOUT = 600.0
 
 
 def _next_phase3_arrival(session: GameSession) -> int:

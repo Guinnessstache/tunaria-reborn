@@ -68,23 +68,24 @@ class Phase3SessionTests(unittest.TestCase):
             replies.append(parse_udp_packet(data))
 
     def test_retransmits_unacked_then_pings_and_acks_client_pings(self):
-        replies = self.exchange(client_packet(0x63, 1, (7, 10)))
-        self.assertEqual([r.messages[0].message_number for r in replies], list(range(11, 21)))
+        # World entry: messages 4..8 (world entry, then the MemoryDump in segments 5..8).
+        replies = self.exchange(client_packet(0x63, 1, (7, 5)))
+        self.assertEqual([r.messages[0].message_number for r in replies], list(range(6, 9)))
         bundles = [r.client_bundle_number for r in replies]
-        self.assertEqual(bundles, list(range(bundles[0], bundles[0] + 10)))
+        self.assertEqual(bundles, list(range(bundles[0], bundles[0] + 3)))
 
-        replies = self.exchange(client_packet(0x03, 2, (30, 20)))
+        replies = self.exchange(client_packet(0x03, 2, (30, 8)))
         self.assertEqual(len(replies), 1)
         self.assertEqual(replies[0].messages[0].message_type, 0xF9)
-        self.assertEqual(replies[0].messages[0].message_number, 21)
+        self.assertEqual(replies[0].messages[0].message_number, 9)
 
-        replies = self.exchange(client_packet(0x23, 3, (31, 21), b"\xF9\x01\x01\x00\x12"))
+        replies = self.exchange(client_packet(0x23, 3, (31, 9), b"\xF9\x01\x01\x00\x12"))
         self.assertEqual(len(replies), 1)
         self.assertEqual(int(replies[0].bundle_flags), 0x23)
         self.assertEqual((replies[0].client_bundle_ack, replies[0].client_message_ack), (3, 1))
 
     def test_self_object_update_sent_once_in_world_until_channel_acked(self):
-        self.exchange(client_packet(0x03, 1, (30, 20)))
+        self.exchange(client_packet(0x03, 1, (30, 8)))
         update = b"\x40\x04\x01\x00\x00\x00"
         replies = self.exchange(client_packet(0x00, 2, None, update))
         channel_zero = [r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20]
@@ -97,7 +98,7 @@ class Phase3SessionTests(unittest.TestCase):
         self.assertFalse([r for r in replies if r.messages == [] and int(r.bundle_flags) == 0x20])
 
     def test_idle_session_gets_keepalive_pings(self):
-        self.exchange(client_packet(0x03, 1, (30, 20)))
+        self.exchange(client_packet(0x03, 1, (30, 8)))
         with mock.patch.object(game_udp, "PHASE3_KEEPALIVE_INTERVAL", 0.2):
             self.client.settimeout(1.5)
             data, _ = self.client.recvfrom(4096)

@@ -13,7 +13,7 @@ import struct
 from functools import lru_cache
 from pathlib import Path
 
-from .protocol import MessageType, read_varuint
+from .protocol import MessageType, _read_zigzag, read_varuint
 
 SANDSTORM_CAPTURE = Path(__file__).resolve().parents[1] / "captures" / "from_sandstorm.pcapng"
 GAME_PORT = 10070
@@ -181,3 +181,70 @@ def memory_dump_core_length(payload: bytes) -> int:
     for _ in range(5):
         _, offset = read_varuint(payload, offset)
     return offset + 6 * 4
+
+
+def _skip_string(payload: bytes, offset: int, char_size: int = 2) -> int:
+    return offset + 4 + char_size * struct.unpack_from("<i", payload, offset)[0]
+
+
+def _skip_item(payload: bytes, offset: int) -> int:
+    for _ in range(4):  # stack, remaining HP, charges, equip location
+        _, offset = _read_zigzag(payload, offset)
+    offset += 1 + 4  # location, server key
+    for _ in range(23):  # item id, cost, ... craft
+        _, offset = read_varuint(payload, offset)
+    offset = _skip_string(payload, _skip_string(payload, offset))  # name, description
+    stats, offset = _read_zigzag(payload, offset)
+    for _ in range(2 * stats):
+        _, offset = read_varuint(payload, offset)
+    return offset
+
+
+def _skip_spell(payload: bytes, offset: int) -> int:
+    for _ in range(9):
+        _, offset = read_varuint(payload, offset)
+    offset += 2  # range (half float)
+    for _ in range(7):
+        _, offset = read_varuint(payload, offset)
+    return _skip_string(payload, _skip_string(payload, offset)) + 1
+
+
+def memory_dump_without_belongings(payload: bytes, core_length: int) -> bytes:
+    """A captured MemoryDump after its core, with the captured character's quests,
+    inventory, bank and spells removed. Hotkeys (the default emote / chat set) and
+    the trailing stat block are kept. Layout as in ReturnHome's ServerMemoryDump.
+    """
+    offset = core_length
+    hotkeys, offset = _read_zigzag(payload, offset)
+    for _ in range(hotkeys):
+        _, offset = read_varuint(payload, offset)  # direction
+        for _ in range(4):
+            offset = _skip_string(payload, _skip_string(payload, offset + 1))  # index, label, message
+    hotkeys_end = offset
+    offset += 4 + 4  # two unknown int32
+    quests = struct.unpack_from("<i", payload, offset)[0]
+    offset += 4
+    for _ in range(quests):
+        offset = _skip_string(payload, offset)
+    for _ in range(2):  # inventory, then bank
+        count, offset = _read_zigzag(payload, offset)
+        offset += 4
+        for _ in range(count):
+            offset = _skip_item(payload, offset)
+    auctions = payload[offset : offset + 4]  # end of bank, buying and selling auction counts
+    offset += 4
+    spells, offset = _read_zigzag(payload, offset)
+    for _ in range(spells):
+        offset = _skip_spell(payload, offset)
+    if offset > len(payload):
+        raise ValueError("MemoryDump template is shorter than its layout")
+    empty_list = b"\x00" + bytes(4)  # zigzag count 0, int32 count 0
+    return (
+        payload[core_length:hotkeys_end]
+        + bytes(12)  # two unknown int32, no quests
+        + empty_list  # inventory
+        + empty_list  # bank
+        + auctions
+        + b"\x00"  # no spells
+        + payload[offset:]
+    )

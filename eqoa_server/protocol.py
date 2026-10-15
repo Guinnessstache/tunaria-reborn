@@ -818,6 +818,21 @@ def build_character_list_response(
     return packet + struct.pack("<I", rdp_crc(packet))
 
 
+BEST_EFFORT_PING_OPCODE = 0x07D0
+
+
+def build_phase2_best_effort_ping(client_endpoint: int, instance_id: int, arrival: int) -> bytes:
+    """Unreliable BestEffortPing (0x07D0) from the world endpoint, keeping character select alive.
+
+    EQOAGameServer queues one of these whenever a session has been quiet (Sessions.TickOutbound).
+    """
+    message = bytes([MessageType.UNRELIABLE]) + _write_size(2) + struct.pack("<H", BEST_EFFORT_PING_OPCODE)
+    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", arrival & 0xFFFF) + message
+    header = struct.pack("<HH", OLD_WORLD_SERVER_ENDPOINT, client_endpoint)
+    packet = header + write_varuint(0x3000 + len(body)) + struct.pack("<I", instance_id) + body
+    return packet + struct.pack("<I", rdp_crc(packet))
+
+
 def _entity_id(character_id: int | None, name: bytes) -> bytes:
     if character_id is not None:
         return struct.pack("<I", character_id) + b"\x01\x00\x00"
