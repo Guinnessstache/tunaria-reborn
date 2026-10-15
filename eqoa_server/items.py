@@ -49,9 +49,78 @@ def item_patterns() -> dict[int, dict]:
 
 @lru_cache(maxsize=1)
 def spell_patterns() -> dict[int, dict]:
-    spells = {spell["id"]: spell for spell in json.loads((DATA / "spells.json").read_text(encoding="utf-8"))}
+    spells = {}
+    for klass, name in enumerate(CLASS_NAMES):
+        for position, ability in enumerate(class_abilities().get(name, ())):
+            spell = _guide_spell(ability)
+            spell["id"] = GUIDE_SPELL_ID_BASE + klass * 1000 + position
+            spells[spell["id"]] = spell
+    spells.update({spell["id"]: spell for spell in json.loads((DATA / "spells.json").read_text(encoding="utf-8"))})
     spells.update({spell["id"]: spell for spell in SANDSTORM_SPELLS})
     return spells
+
+
+SCOPES = {"Self": 0, "Target": 1, "Group": 2}
+ICON_COLOR_SELF, ICON_COLOR_HOSTILE, ICON_COLOR_FRIENDLY = -1809115846, 486870879, 593297002
+# Icons the Sandstorm server / EQOAGameServer use for these kinds of ability.
+ICON_ATTACK, ICON_BUFF, ICON_ARMOR, ICON_DEBUFF, ICON_DOT = -1265863830, -630227479, 1920746744, 667007739, -818129029
+ICON_TELEPORT, ICON_HATE, ICON_SPEED, ICON_PET, ICON_DRAIN = 2072956978, -49534593, 638503769, -862007142, 1028836133
+ICON_ILLUSION, ICON_REMOVE = 1507275072, -466420384
+
+
+def _guide_spell(ability: dict) -> dict:
+    """A spell pattern from a guide row: its numbers, an icon of the same kind of ability."""
+    effect = ability["effects"][0]
+    kind, attribute, change = effect["type"], effect["attribute"], effect["change"]
+    harmful = (kind in ("Dmg/Heal", "Drain", "Modify Hate", "Lull") or effect["scope"] == "Target" and change < 0)
+    icon = {
+        "Teleport to Bind Point": ICON_TELEPORT, "Modify Hate": ICON_HATE, "Increase Speed": ICON_SPEED,
+        "Summon Pet": ICON_PET, "Drain": ICON_DRAIN, "Alter Appearance": ICON_ILLUSION,
+        "Faction Change": ICON_ILLUSION, "Remove Ability": ICON_REMOVE,
+        "Defensive Proc": ICON_ATTACK, "Offensive Proc": ICON_ATTACK,
+    }.get(kind)
+    if icon is None:
+        if kind == "Dmg/Heal":
+            icon = ICON_ATTACK if change < 0 else ICON_BUFF
+        elif attribute == "DoT":
+            icon = ICON_DOT
+        elif attribute == "AC" and change > 0:
+            icon = ICON_ARMOR
+        elif kind == "Statistic Change" and change < 0 and effect["scope"] == "Target":
+            icon = ICON_DEBUFF
+        else:
+            icon = ICON_BUFF
+    if effect["scope"] == "Self":
+        icon_color = ICON_COLOR_SELF
+    else:
+        icon_color = ICON_COLOR_HOSTILE if harmful and change <= 0 else ICON_COLOR_FRIENDLY
+    melee = kind == "Dmg/Heal" and not ability["cast"] and effect["scope"] == "Target"
+    return {
+        "ability_level": ability["level"],
+        "range_raw": 0x4090 if effect["scope"] == "Self" else (0x40A0 if melee else 0x41F0),
+        "cast_time": int(ability["cast"]), "power": int(ability["power"]),
+        "icon_color": icon_color, "icon": icon, "scope": SCOPES.get(effect["scope"], 1),
+        "recast": int(ability["recast"]), "equip_requirement": -1, "name": ability["name"],
+        "description": _describe(ability),
+    }
+
+
+def _describe(ability: dict) -> str:
+    parts = []
+    for effect in ability["effects"][:3]:
+        if effect["type"] in ("Statistic Change", "Statistic Absolute") and effect["change"]:
+            text = f"{effect['attribute']} {effect['change']:+}"
+        elif effect["type"] == "Dmg/Heal" and effect["change"]:
+            text = f"{'heals' if effect['change'] > 0 else 'deals'} {abs(effect['change'])}"
+        else:
+            text = effect["type"].lower()
+        if effect["duration"]:
+            text += f" for {effect['duration']} s"
+        if effect["scope"] != "Self":
+            text += f" ({effect['scope'].lower()})"
+        if text not in parts:
+            parts.append(text)
+    return "; ".join(parts).capitalize() + "."
 
 
 # Shadowknight level 1 abilities as the Sandstorm server sent them (not in EQOAGameServer's table).
@@ -65,40 +134,76 @@ SANDSTORM_SPELLS = (
 )
 
 RETURN_HOME = 1542
-# Level 1 abilities per class (index into game_data.CLASSES). Only classes with a known list
-# are filled in: Warrior from EQOAGameServer's table, Shadowknight from the Sandstorm capture.
-STARTING_SPELLS: dict[int, tuple[int, ...]] = {
-    0: (178, 686),  # Warrior: Quick Strike, Fortitude
-    3: (1421, 1420),  # Shadowknight: Hatred, Chilling Aura
+# 1: training weapon + Warrior / Shadowknight abilities. 2: rations + every class's level 1 abilities.
+STARTING_KIT_VERSION = 2
+CLASS_NAMES = (
+    "Warrior", "Ranger", "Paladin", "Shadowknight", "Monk", "Bard", "Rogue", "Druid", "Shaman", "Cleric",
+    "Magician", "Necromancer", "Enchanter", "Wizard", "Alchemist",
+)
+# Abilities whose real records we have: EQOAGameServer's table (Warrior, Return Home) and
+# the Sandstorm capture (Shadowknight). Other abilities are built from the Prima guide.
+KNOWN_SPELL_IDS = {
+    ("Warrior", "Quick Strike"): 178, ("Warrior", "Fortitude"): 686,
+    ("Shadowknight", "Hatred"): 1421, ("Shadowknight", "Chilling Aura"): 1420,
 }
+GUIDE_SPELL_ID_BASE = 60000  # ids for guide-built abilities: base + class * 1000 + table position
+HOTBAR_SLOTS = 10
 
+# "Each character begins with a stack of food" (Prima guide). EQOAGameServer's item table has
+# one simple ration per home region; the guide shows Neriak selling travel cuisine and
+# Klick'Anon gnomish rations, the rest follow their names.
+RATIONS_BY_RACE = {
+    0: 8395,  # Human: plains rations
+    1: 8397,  # Elf (Fayspires): thicket rations
+    2: 8392,  # Dark Elf (Neriak): travel cuisine
+    3: 8396,  # Gnome (Klick'Anon): gnomish ration
+    4: 8393,  # Dwarf (Moradhim): mine rations
+    5: 8399,  # Troll (Grobb): jungle rations
+    6: 8391,  # Barbarian (Halas): tundra rations
+    7: 8398,  # Halfling: field rations
+    8: 8390,  # Erudite (Hazinak): desert rations
+    9: 8394,  # Ogre: trail rations
+}
 APPRENTICE_SWORD, APPRENTICE_DAGGER, APPRENTICE_CLUB, APPRENTICE_STAFF = 1297, 5487, 5488, 5489
-# Starting weapon per class: the level 1 "apprentice" training weapons in EQOAGameServer's
-# item table. Which class got which is a best guess until checked against a guide.
-STARTING_WEAPON = {
-    0: APPRENTICE_SWORD, 1: APPRENTICE_SWORD, 2: APPRENTICE_SWORD, 3: APPRENTICE_SWORD,  # War, Ran, Pal, SK
-    4: APPRENTICE_STAFF, 5: APPRENTICE_DAGGER, 6: APPRENTICE_DAGGER,  # Monk, Bard, Rogue
-    7: APPRENTICE_CLUB, 8: APPRENTICE_CLUB, 9: APPRENTICE_CLUB,  # Druid, Shaman, Cleric
-    10: APPRENTICE_STAFF, 11: APPRENTICE_STAFF, 12: APPRENTICE_STAFF, 13: APPRENTICE_STAFF, 14: APPRENTICE_STAFF,
-}
 
 
-def starting_inventory(klass: int) -> list[dict]:
-    weapon = STARTING_WEAPON.get(klass)
-    if weapon is None or weapon not in item_patterns():
+@lru_cache(maxsize=1)
+def class_abilities() -> dict[str, list[dict]]:
+    """Every ability per class, from the Prima guide (tools/import_prima_abilities.py)."""
+    return json.loads((DATA / "class_abilities.json").read_text(encoding="utf-8"))
+
+
+def starting_inventory(race: int) -> list[dict]:
+    ration = RATIONS_BY_RACE.get(race)
+    if ration is None or ration not in item_patterns():
         return []
-    return [{"item": weapon, "stack": 1, "equip": equip_slot_for(weapon)}]
+    return [{"item": ration, "stack": item_patterns()[ration]["max_stack"], "equip": NOT_EQUIPPED}]
 
 
 def starting_spells(klass: int) -> list[dict]:
-    known = spell_patterns()
-    spells = [spell_id for spell_id in STARTING_SPELLS.get(klass, ()) if spell_id in known] + [RETURN_HOME]
-    class_spells = len(spells) - 1
+    """All of the class's level 1 abilities, then Return Home (kept in the spell book, as on Sandstorm)."""
+    ids = [spell_id for spell_id in _class_spell_ids(klass, level=1) if spell_id != RETURN_HOME]
     return [
-        # Class abilities go on the hotbar; Return Home stays in the spell book, as on Sandstorm.
-        {"spell": spell_id, "hotbar": index if index < class_spells else -1}
-        for index, spell_id in enumerate(spells)
-    ]
+        {"spell": spell_id, "hotbar": index if index < HOTBAR_SLOTS else -1} for index, spell_id in enumerate(ids)
+    ] + [{"spell": RETURN_HOME, "hotbar": -1}]
+
+
+def _class_spell_ids(klass: int, level: int) -> list[int]:
+    if not 0 <= klass < len(CLASS_NAMES):
+        return []
+    name = CLASS_NAMES[klass]
+    patterns = spell_patterns()
+    ids = []
+    for position, ability in enumerate(class_abilities().get(name, ())):
+        # Rows without a power cost are another ability's effect ("Chilling Aura Effect", procs).
+        if ability["level"] != level or not ability["power"]:
+            continue
+        spell_id = RETURN_HOME if ability["name"] == "Return Home" else KNOWN_SPELL_IDS.get(
+            (name, ability["name"]), GUIDE_SPELL_ID_BASE + klass * 1000 + position
+        )
+        if spell_id in patterns and spell_id not in ids:
+            ids.append(spell_id)
+    return ids
 
 
 def equip_slot_for(item_id: int) -> int:

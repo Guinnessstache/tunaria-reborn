@@ -26,18 +26,19 @@ Early but playable to the point of logging in and walking around.
   so the session stays up while you play.
 - Your own character is visible in the world with its own race, class, model,
   hair and face, starting at its race's (or home city's) starting point.
-- Characters start with a training weapon (equipped and visible) and their
-  abilities: Return Home for everyone, plus the level 1 abilities of Warriors
-  and Shadowknights.
+- Characters start with a stack of their home region's rations and all of
+  their class's level 1 abilities plus Return Home (from the Prima guide's
+  ability tables). Equipped weapons, shields and armor show on the character.
 - A web **admin panel**: start / stop / restart services, players online,
   accounts, MOTD, live log, and one-click updates from GitHub.
 
 **Not yet**
 
 - Game account passwords are not checked (any password logs in).
-- Level 1 abilities of the other classes, and which training weapon each class
-  really started with, still need checking against a guide. Stats come from a
-  captured template. Armor appearance needs model data most items don't have.
+- Abilities can't be cast yet, and only Warrior, Shadowknight and Return Home
+  records are copies of real server data; the others are built from the guide's
+  numbers, with icons of the same kind of ability. Stats come from a captured
+  template. Armor appearance needs model data most items don't have.
 - No other players, NPCs, combat or quests in the world yet.
 
 ## Quick start
@@ -186,6 +187,10 @@ preservation community:
 - **Sandstorm** (https://eqoa.live/), whose live server traffic in
   `captures/from_sandstorm.pcapng` is the reference this server is checked
   against.
+- The *EverQuest Online Adventures: Frontiers* Prima guide (hosted by Project
+  ReturnHome): the class ability tables in
+  `eqoa_server/reference_data/class_abilities.json` (numbers only) and the
+  starting kit come from it.
 - ESF file format notes (https://github.com/joukop/ESF-file-format/) and EQOAEmu
   (https://eqoaemu.com/).
 

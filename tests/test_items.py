@@ -8,6 +8,7 @@ from eqoa_server import items
 from eqoa_server.capture_template import (
     SANDSTORM_CAPTURE,
     _skip_item,
+    _skip_spell,
     memory_dump_core_length,
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
@@ -22,25 +23,49 @@ WARRIOR, SHADOWKNIGHT, ENCHANTER = 0, 3, 12
 class StartingKitTests(unittest.TestCase):
     def test_warrior_and_enchanter_kits(self):
         store = JsonStore(Path(tempfile.mkdtemp()) / "state.json")
-        warrior = store.create_character(1, "Brute", klass=WARRIOR)
-        self.assertEqual(warrior.inventory, [{"item": items.APPRENTICE_SWORD, "stack": 1, "equip": items.EQUIP_PRIMARY}])
-        self.assertEqual([s["spell"] for s in warrior.spells], [178, 686, items.RETURN_HOME])
+        warrior = store.create_character(1, "Brute", klass=WARRIOR, race=0)
+        self.assertEqual(warrior.inventory, [{"item": 8395, "stack": 20, "equip": items.NOT_EQUIPPED}])  # plains rations
+        self.assertEqual([s["spell"] for s in warrior.spells], [686, 178, items.RETURN_HOME])  # Fortitude, Quick Strike
         self.assertEqual([s["hotbar"] for s in warrior.spells], [0, 1, -1])
-        enchanter = store.create_character(1, "Chanty", klass=ENCHANTER)
-        self.assertEqual(enchanter.inventory[0]["item"], items.APPRENTICE_STAFF)
-        self.assertEqual(enchanter.inventory[0]["equip"], items.EQUIP_TWO_HAND)
-        self.assertEqual([s["spell"] for s in enchanter.spells], [items.RETURN_HOME])
+        enchanter = store.create_character(1, "Chanty", klass=ENCHANTER, race=2)
+        self.assertEqual(enchanter.inventory[0]["item"], 8392)  # travel cuisine, sold in Neriak
+        names = [items.spell_patterns()[s["spell"]]["name"] for s in enchanter.spells]
+        self.assertEqual(names[0], "Arcane Bolt")
+        self.assertEqual(names[-1], "Return Home")
+
+    def test_every_class_starts_with_its_level_one_abilities(self):
+        for klass, name in enumerate(items.CLASS_NAMES):
+            spells = items.starting_spells(klass)
+            self.assertGreaterEqual(len(spells), 3, name)
+            for order, entry in enumerate(spells):
+                record = items.spell_record(entry, order)
+                self.assertEqual(_skip_spell(record, 0), len(record), name)
+            self.assertNotIn("Effect", " ".join(items.spell_patterns()[s["spell"]]["name"] for s in spells))
 
     def test_characters_saved_before_kits_get_one_on_load(self):
         path = Path(tempfile.mkdtemp()) / "state.json"
         path.write_text(json.dumps({"characters": [{"character_id": 1, "account_id": 1, "name": "Old", "klass": SHADOWKNIGHT}]}))
         old = JsonStore(path).get_character(1)
-        self.assertEqual([s["spell"] for s in old.spells], [1421, 1420, items.RETURN_HOME])
-        self.assertEqual(old.inventory[0]["item"], items.APPRENTICE_SWORD)
+        self.assertEqual([s["spell"] for s in old.spells], [1420, 1421, items.RETURN_HOME])
+        self.assertEqual(old.inventory[0]["item"], 8395)
+
+    def test_first_kit_is_replaced_once(self):
+        path = Path(tempfile.mkdtemp()) / "state.json"
+        first_kit = {"inventory": [{"item": items.APPRENTICE_STAFF, "stack": 1, "equip": 16}],
+                     "spells": [{"spell": items.RETURN_HOME, "hotbar": -1}]}
+        path.write_text(json.dumps({"characters": [
+            {"character_id": 1, "account_id": 1, "name": "Chanty", "klass": ENCHANTER, **first_kit}]}))
+        store = JsonStore(path)
+        chanty = store.get_character(1)
+        self.assertEqual(chanty.kit_version, items.STARTING_KIT_VERSION)
+        self.assertEqual(len(chanty.spells), len(items.starting_spells(ENCHANTER)))
+        chanty.inventory.append({"item": items.APPRENTICE_STAFF, "stack": 1, "equip": 16})
+        store.save()
+        self.assertEqual(len(JsonStore(path).get_character(1).inventory), 2)  # kept from now on
 
     def test_gear_shows_on_the_character(self):
         character = Character(character_id=1, account_id=1, name="Chanty", klass=ENCHANTER,
-                              inventory=items.starting_inventory(ENCHANTER))
+                              inventory=[{"item": items.APPRENTICE_STAFF, "stack": 1, "equip": items.EQUIP_TWO_HAND}])
         staff_model = items.item_patterns()[items.APPRENTICE_STAFF]["model"]
         self.assertNotEqual(staff_model, 0)
         update = build_object_update(character, 1)
@@ -66,7 +91,9 @@ class SandstormLayoutTests(unittest.TestCase):
         payload = sandstorm_memory_dump_payload()
         core_length = memory_dump_core_length(payload)
         character = Character(character_id=1, account_id=1, name="Brute", klass=WARRIOR)
-        character.inventory, character.spells = items.starting_inventory(WARRIOR), items.starting_spells(WARRIOR)
+        character.inventory = [{"item": items.APPRENTICE_SWORD, "stack": 1, "equip": items.EQUIP_PRIMARY}]
+        character.inventory += items.starting_inventory(0)
+        character.spells = items.starting_spells(WARRIOR)
         body = memory_dump_without_belongings(
             payload, core_length, items.inventory_section(character.inventory), items.spells_section(character.spells)
         )

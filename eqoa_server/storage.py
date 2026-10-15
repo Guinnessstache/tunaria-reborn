@@ -62,6 +62,8 @@ class Character:
     # None until the character has been given its starting kit.
     inventory: list[dict] | None = None
     spells: list[dict] | None = None
+    # Version of the starting kit given (items.STARTING_KIT_VERSION); older kits are replaced once.
+    kit_version: int = 0
 
     @property
     def model_id(self) -> int:
@@ -284,11 +286,12 @@ class JsonStore:
 
 
 def _give_starting_kit(character: Character) -> None:
-    """Starting weapon and abilities for characters that have none yet (also older saves)."""
-    if character.inventory is None:
-        character.inventory = items.starting_inventory(character.klass)
-    if character.spells is None:
+    """Starting food and abilities for characters that have none yet (also older saves)."""
+    # Nothing can be bought or looted yet, so replacing an older kit loses nothing.
+    if character.inventory is None or character.kit_version < items.STARTING_KIT_VERSION:
+        character.inventory = items.starting_inventory(character.race)
         character.spells = items.starting_spells(character.klass)
+        character.kit_version = items.STARTING_KIT_VERSION
 
 
 def _starting_vitals(race: int, klass: int) -> tuple[int, int]:
