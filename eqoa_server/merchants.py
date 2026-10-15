@@ -18,7 +18,9 @@ from . import items
 
 # The two percentages at the top of the MerchantBox. The client multiplies an item's cost by
 # them to show prices: with EQOAGameServer's 200 our 15-tunar well water showed as -16
-# (zigzag-read 15 is -8, times 2). We assume the first is buying and the second selling.
+# (zigzag-read 15 is -8, times 2). Confirmed in game: the FIRST is what the merchant pays
+# (sell window), the SECOND what it charges (buy window). Sent as (100, 25), well water
+# showed 4 to buy (15 x 25%, rounded) and the apprentice sword 220 to sell.
 BUY_PERCENT = 100
 SELL_PERCENT = 25
 
@@ -109,9 +111,14 @@ def _stock_for(description: str) -> tuple[int, ...]:
 
 def price(item_id: int) -> int:
     """What a merchant asks for one: the item's full value (BUY_PERCENT)."""
-    return items.base_price(item_id) * BUY_PERCENT // 100
+    return _percent(items.base_price(item_id), BUY_PERCENT)
 
 
 def sell_price(item_id: int) -> int:
     """What a merchant pays for one: a quarter of its value (SELL_PERCENT)."""
-    return max(1, items.base_price(item_id) * SELL_PERCENT // 100)
+    return max(1, _percent(items.base_price(item_id), SELL_PERCENT))
+
+
+def _percent(value: int, percent: int) -> int:
+    """value x percent / 100, rounded like the client (15 x 25% showed as 4)."""
+    return (value * percent + 50) // 100

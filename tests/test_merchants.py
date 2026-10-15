@@ -84,12 +84,12 @@ class MerchantHandlerTests(unittest.TestCase):
         # The client read our unsigned 15 as zigzag (-8) and doubled it (200%) to show -16.
         self.server.merchant_window(self.session, struct.pack("<I", self.merchant.object_id))
         body = self.sent[0][1]
-        percents = zigzag(merchants.BUY_PERCENT) + zigzag(merchants.SELL_PERCENT)
+        percents = zigzag(merchants.SELL_PERCENT) + zigzag(merchants.BUY_PERCENT)  # sell first
         self.assertEqual(body[4:4 + len(percents)], percents)
         item_id = merchants.stock(self.merchant.name)[0]
         self.assertIn(zigzag(item_id) + zigzag(items.base_price(item_id)), body)
         self.assertEqual(merchants.price(item_id), items.base_price(item_id))
-        self.assertEqual(merchants.sell_price(item_id), max(1, items.base_price(item_id) // 4))
+        self.assertEqual(merchants.sell_price(item_id), max(1, (items.base_price(item_id) * 25 + 50) // 100))
 
     def test_window_ignores_non_merchants(self):
         guard = next(n for n in npcs.all_npcs() if not n.is_merchant)

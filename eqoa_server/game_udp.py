@@ -741,13 +741,13 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
 
     def merchant_window(self, session: GameSession, payload: bytes) -> list[str]:
         """MerchantDiag (0x4C: merchant object id) -> MerchantBox (0xB7), as EQOAGameServer:
-        u32 merchant, zigzag buy percent, zigzag sell percent, item count (zigzag and int32),
+        u32 merchant, zigzag sell percent (what it pays), zigzag buy percent (what it charges), item count (zigzag and int32),
         item records (cost = the item's value; the client shows cost x percent / 100)."""
         npc = npcs.by_object_id(struct.unpack_from("<I", payload, 0)[0]) if len(payload) >= 4 else None
         if npc is None or not npc.is_merchant:
             return []
         goods = merchants.stock(npc.name)
-        body = struct.pack("<I", npc.object_id) + _write_zigzag(merchants.BUY_PERCENT) + _write_zigzag(merchants.SELL_PERCENT)
+        body = struct.pack("<I", npc.object_id) + _write_zigzag(merchants.SELL_PERCENT) + _write_zigzag(merchants.BUY_PERCENT)
         body += _write_zigzag(len(goods)) + struct.pack("<i", len(goods))
         body += b"".join(
             items.item_record({"item": item_id, "stack": 1, "equip": items.NOT_EQUIPPED}, key)
