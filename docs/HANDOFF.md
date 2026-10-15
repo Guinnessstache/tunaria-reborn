@@ -1,0 +1,297 @@
+# Handoff: where Tunaria Reborn stands
+
+Give this file to a new assistant session so it can pick up the work. It sums up
+the project, the setup, what has been confirmed in game, the protocol facts we
+have verified, and what is still open. Last updated after the merchants commit
+(`5a85678`).
+
+## The project
+
+Tunaria Reborn is a private server for *EverQuest Online Adventures: Frontiers*
+(PS2), written in pure Python 3.10+ with no required dependencies. The repo is
+`Guinnessstache/tunaria-reborn` on GitHub. The old name, `eqoa-returnhome`,
+redirects to it.
+
+- The working branch is `claude/serve-eqahosts`. Each change is pushed both to
+  that branch and to `main`:
+
+  ```
+  git push origin claude/serve-eqahosts
+  git push origin HEAD:main
+  ```
+
+- Run the tests with `python3 -m unittest discover -s tests`. All 125 pass, with
+  1 skipped.
+- Commit messages end with these two lines (no model names anywhere in the repo):
+
+  ```
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  Claude-Session: https://claude.ai/code/session_01DTxAZVte174AM8Euxi2Vj8
+  ```
+
+  A new session should use its own attribution lines instead.
+- Don't rewrite the user's own commits (`21aa84e`, `ee8f377`).
+- Don't commit the user's disc files (ITEM.ESF, CHAR.ESF, ISO). Commit only the
+  ids and numbers derived from them.
+
+## How the user tests
+
+- **Server:** Ubuntu at 192.168.1.65, installed as a systemd service with
+  `deploy/install.sh`.
+  - The admin panel is at http://192.168.1.65:8090. The user updates the server
+    from the panel: **Updates** tab, then **Update & restart**. That pulls
+    `main` fast-forward, runs the tests, and rolls back if they fail.
+  - The user accepts the risk of exposing the admin panel.
+- **Client:** PCSX2 on a Windows PC at 192.168.1.51. It uses a DNAS pnach
+  (`tools/make_local_pnach.py`) and internal DNS pointing at the server.
+- **Feedback:** the user sends screenshots and log lines from the panel's
+  **Logs** tab.
+
+**Ports:**
+
+| Port | Use |
+| --- | --- |
+| TCP 9735 | Auth |
+| TCP 7000 | Patch and MOTD |
+| UDP 10070 | Game |
+| TCP 8080 | Status page |
+| TCP 8090 | Admin panel |
+
+## Modules (`eqoa_server/`)
+
+| Module | What it does |
+| --- | --- |
+| `auth.py` | Login over TCP 9735. A refusal is sent as a 0x29 text message. Logs fingerprints of the token. |
+| `patch_tcp.py`, `patch_http.py` | Patch check, hosts file, MOTD. |
+| `protocol.py` | Bundle and message encoding, discovery and server list, client update (0x40) decode (`rle_zero_decode`, `decode_client_update`). |
+| `game_udp.py` | The game session state machine, from discovery through character select into the world. Reliable send with segmentation (`send_reliable`), keepalives, entity channels (NPCs), position tracking, item interaction, merchants. |
+| `memory_dump.py` | Builds the in-world MemoryDump and the object update (`build_object_update`) for the player and for previews. |
+| `capture_template.py` | Parses the Sandstorm capture. Splices our inventory and spells into the captured MemoryDump template. `sandstorm_entity_updates()`. |
+| `items.py` | Item and spell patterns and records. Starting kit (`STARTING_KIT_VERSION = 2`). Equip slots, armor and models (`model_for`, overrides in `data/item_models.json`), search and describe. |
+| `npcs.py` | NPC placements (`reference_data/npcs.json.gz`). Nearest-23 grid lookup and `build_npc_update` from the capture's channel-8 template. |
+| `merchants.py` | Merchant stock fitted from the guide's descriptions, and the price formula. |
+| `storage.py` | `JsonStore`: accounts (salted sha256 game passwords) and characters. Inventory, spells, level, tunar, position. |
+| `admin.py`, `admin_ui.html` | Admin panel: services, players, accounts, give item, equip, level, tunar, reset password, model browser, settings, logs, updates. |
+| `config.py`, `main.py`, `services.py`, `updater.py`, `netconfig.py` | Plumbing. |
+
+**Reference data** (`eqoa_server/reference_data/`):
+
+| File | Contents |
+| --- | --- |
+| `items.json.gz`, `spells.json`, `npcs.json.gz` | From ReturnHome's `EQOA_Master.sql` |
+| `class_abilities.json`, `merchants.json` | From the Prima guide |
+| `wiki_items.json.gz` | wiki.eqoa.live facts |
+| `sandstorm_items.json` | Items seen in the capture |
+| `item_models.json` | Model ids from ITEM.ESF |
+
+Each one is built by a script in `tools/` (`import_*.py`).
+
+**Other docs:**
+- `docs/PROTOCOL.md`
+- `docs/research-notes.md`
+- `docs/linux-server.md`
+- `docs/disc_analysis.md`
+
+**External sources used:**
+- ReturnHome EQOAGameServer (AGPL), github.com/devin103/EQOAGameServer
+- The Sandstorm capture, `captures/from_sandstorm.pcapng`
+- The Prima guide PDF (via `pdftotext -layout`)
+- wiki.eqoa.live through its MediaWiki API
+- joukop/eqoa-server (Java) and joukop/ESF-file-format
+
+eqoa.live has no public database. Only `/scp/status` (players online) is open to
+the public.
+
+## Verified protocol facts
+
+### State channel messages
+
+Channels 0x00–0x17 carry object state:
+
+```
+[channel][size][seq u16 LE][xor-ref byte][RLE data]
+```
+
+The RLE coding works like this:
+- A control byte of 0x80 or more means `c & 0x7F` literal bytes, then a byte
+  giving the count of zeros.
+- Otherwise the high nibble is the literal count and the low nibble is the zero
+  count.
+- Zeros come before the literals. A 0x00 byte ends the data.
+
+Hide an entity by resending its update with byte 0 set to 0.
+
+### Object update (162 bytes)
+
+| Offset | Field |
+| --- | --- |
+| 0 | Active flag |
+| 1 | Object id |
+| 5 | 0x82, then x/y/z as 3-byte big-endian ×128 |
+| 15 | Facing |
+| 26 | HP shown |
+| 27 | HP |
+| 28 | Model |
+| 32 | Model 2 |
+| 36 | Scale (float) |
+| 67, 71, 75 | Weapons (int32 each) |
+| 93–98 | Armor parts: chest, bracers, hands, legs, feet, head |
+| 99–104 | Armor colors |
+| 105–108 | Hair and face |
+| 109 | Robe |
+| 116 | Name (24 bytes) |
+| 140 | Level |
+| 144 | Race |
+| 145 | Class |
+| 146 | NPC type (u16): 0x81 merchant, 0x82 banker, 0x80 talkable |
+
+Armor values, checked in game:
+
+| Value | Look |
+| --- | --- |
+| 0 | None |
+| 1 | Cloth |
+| 2 | Leather |
+| 3 | Chain |
+| 4 | Plate |
+| 5, 6 | Heavier plate looks |
+
+### Client update (0x40)
+
+The payload is RLE-compressed, then XORed against an earlier update. Decoded:
+
+- x and z are 24-bit big-endian values, scaled as `36000·v/0xFFFFFF − 4000`.
+- y is scaled as `2000·v/0xFFFFFF − 1000`.
+- The facing byte is at offset 22: heading = `b·2π/256 + π`.
+
+### MemoryDump order
+
+core → hotkeys → 2 int32 → quests → inventory → bank → 4 bytes → spells → 191-byte stat tail
+
+### Item record
+
+Fields, in order:
+
+1. zz stack, zz durability, zz charges, zz equip slot
+2. byte 1, int32 key
+3. zz id, uvarint cost
+4. zz fields: unk1, icon, unk2, slot, unk3, trade, rent, unk4, atk, dmg, unk5,
+   lvl, maxstack, maxhp, dur, class mask, race mask, proc, lore, unk6, craft
+5. UTF-16 name and description, then the stats list
+
+The class mask bit order is:
+WAR RAN PAL SK MNK BRD RGE DRD SHA CL MAG NEC ENC WIZ ALC
+
+### Spell record
+
+Fields, in order:
+
+1. 9 zz fields: id, order, onhotbar, where, 0, −1, abilitylvl, 0, 0
+2. u16 range:
+
+   | Value | Range |
+   | --- | --- |
+   | 0x4090 | Self |
+   | 0x40A0 | Melee |
+   | 0x41F0 | Target |
+
+3. 7 zz fields: cast, power, icon_color, icon, scope, recast, −1
+4. Name, description, then a 0 byte
+
+### Equip slots
+
+| Slot | Value |
+| --- | --- |
+| Head | 0 |
+| Hands | 1 |
+| Chest | 5 |
+| Bracers | 8 |
+| Rings | 9 / 10 |
+| Legs | 12 |
+| Feet | 13 |
+| Primary | 14 |
+| Secondary | 15 |
+| Two-hand | 16 |
+| Shield | 17 |
+| Thrown | 18 |
+| Held | 19 |
+| Robe | 21 |
+
+### Opcodes
+
+**Inventory:**
+
+| Opcode | Name | Payload |
+| --- | --- | --- |
+| 0x3E | InteractItem | u32 index, u32 target, zz action |
+| 0x3F | Equip | |
+| 0x40 | Unequip | byte slot |
+| 0x3B | AddInvItem | item record |
+| 0x3C | RemoveInvItem | byte index, byte 1, zz qty |
+| 0x52 | PlayerTunar | zz |
+
+**Merchants:**
+
+| Opcode | Name | Payload |
+| --- | --- | --- |
+| 0x4C | MerchantDiag | u32 npc |
+| 0xB7 | MerchantBox | u32 npc, zz 200, zz 200, zz count, i32 count, records (segmented) |
+| 0x4A | MerchantBuy | zz slot, zz qty, u32 npc |
+| 0x4B | MerchantSell | i32 index, zz qty, u32 npc |
+
+## Confirmed working in game
+
+- Login, server list and character select. The session stays alive while idle
+  on any screen.
+- Character creation, entering the world, and walking around.
+- Logging back in at the saved position (saved every 15 s and on disconnect).
+- Starting kit: rations and the class's level 1 abilities plus Return Home.
+- Admin panel:
+  - Give items. Weapons, shields and armor show on the character, and equip and
+    unequip work in game.
+  - Setting a character's level.
+  - The model browser changes the look of an item live.
+- NPCs, merchants and mobs appear around the player. The "$" has been removed
+  from mob names; the user has not confirmed the fix yet.
+
+## Just shipped, not yet tested in game
+
+**Merchants** (`5a85678`). Clicking a merchant should open a shop window. Buying
+costs tunar and selling earns it. Give a character tunar from the panel first:
+**Accounts**, then **Tunar**, then **Set**.
+
+If the window doesn't open, look at:
+- The log line `merchant <name>: N items`.
+- Whether the client sent 0x4C at all.
+- Whether the 0xB7 layout matches EQOAGameServer's `MerchantBox`.
+
+## Open issues and ideas, roughly by priority
+
+1. **Password refusal on re-login.** With password checking on, logging in
+   again was refused even with the right password. The token the client sends
+   may not be stable.
+   - The auth log prints the token and stored fingerprints, so compare those
+     across two logins.
+   - The user has turned checking off for now (Settings).
+2. **Merchants are untested** (see above). Prices are our own formula:
+   - Consumables cost 5 + 5·level.
+   - Everything else costs 100 + 120·level.
+   - Merchants buy back at a quarter of that.
+   - Only 519 of the 1051 merchants have a guide description. The rest sell food
+     and drink.
+3. **NPCs are static.** They don't move, talk (no dialogue), or fight. There is
+   no banker window yet; the banker NPC type is 0x82. Scale and race bytes come
+   from a template.
+4. **Spells can't be cast.** Only the records for Warrior, Shadowknight and
+   Return Home are real data. The others are built from the guide.
+5. **No other players are visible.** The game needs to share entity channels
+   between sessions.
+6. **Combat, experience, loot and quests** are not implemented.
+7. Armor colors always default to 0. Weapon models are exact only where known.
+   Elsewhere the item gets a model of the same shape, or one set through the
+   model browser.
+
+## Useful local paths in the old session (gone now; ask the user if needed)
+
+- The Prima guide text came from the PDF the user uploaded. The user also has
+  ITEM.ESF and CHAR.ESF from their disc and can upload them again.

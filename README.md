@@ -204,8 +204,8 @@ preservation community:
   against.
 - The *EverQuest Online Adventures: Frontiers* Prima guide (hosted by Project
   ReturnHome): the class ability tables in
-  `eqoa_server/reference_data/class_abilities.json` (numbers only) and the
-  starting kit come from it.
+  `eqoa_server/reference_data/class_abilities.json` (numbers only), the merchant
+  descriptions in `merchants.json` and the starting kit come from it.
 - The Sandstorm wiki (https://wiki.eqoa.live/): class restrictions, levels,
   durability and stats of items (`eqoa_server/reference_data/wiki_items.json.gz`,
   facts only), which match what the Sandstorm server sends.
