@@ -103,6 +103,8 @@ class GameSession:
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int] | None = None
+    # Spell book order -> monotonic time the ability is ready again.
+    cooldowns: dict[int, float] = field(default_factory=dict)
     # The player's own channels 0x42 (stats) and 0x43: {channel: PlayerChannel}.
     player_channels: dict[int, "PlayerChannel"] = field(default_factory=dict)
     last_regen: float = 0.0
@@ -911,31 +913,56 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         return [f"hotbar {slot}: {name}"]
 
     def use_ability(self, session: GameSession, payload: bytes) -> list[str]:
-        """UseAbility (0x32): int32 0, byte hotbar slot, u32 target. The client runs the casting
-        bar itself; the Sandstorm server answered Return Home only when the 60 s cast ended,
-        with SetPosition. Other abilities don't do anything yet."""
+        """UseAbility (0x32): int32 0, byte hotbar slot, u32 target. As the Sandstorm server
+        answered it, at once: the power spent (stat channel 0x42), the ability greyed out for
+        its cast and recast time (AbilityCooldown 0xCD) and, for abilities whose effect we
+        know, the caster's effect (CastEffect 0xB1: Return Home's blue glow). Return Home
+        lands when its cast ends (SetPosition); other abilities have no effect yet."""
         character = session.selected_character
         if character is None or len(payload) < 5:
             return []
         slot = payload[4]
-        entry = next((e for e in self._spell_book(character) if e.get("hotbar", -1) == slot), None)
-        if entry is None:
+        target = struct.unpack_from("<I", payload, 5)[0] if len(payload) >= 9 else 0xFFFFFFFF
+        book = self._spell_book(character)
+        order = next((i for i, e in enumerate(book) if e.get("hotbar", -1) == slot), None)
+        if order is None:
             return [f"use ability: nothing on hotbar {slot}"]
-        spell = items.spell_patterns()[entry["spell"]]
-        if entry["spell"] == items.RETURN_HOME:
-            if session.pending_cast is not None:
-                # Pressing it again mid-cast must not restart the 60 s (in game it was pressed
-                # 15 times in 7 s).
-                left = session.pending_cast[0] - time.monotonic()
-                return [f"{spell['name']} already casting, {max(0, left):.0f} s left"]
-            if character.mana < spell["power"]:
-                self.send_client_message(session, "You don't have enough power.")
-                return [f"{spell['name']}: needs {spell['power']} power, has {character.mana}"]
-            character.mana -= spell["power"]
-            self.update_player_channels(session)
-            session.pending_cast = (time.monotonic() + spell["cast_time"], entry["spell"])
+        spell_id = book[order]["spell"]
+        spell = items.spell_patterns()[spell_id]
+        now = time.monotonic()
+        if session.cooldowns.get(order, 0.0) > now:
+            # The client shouldn't send it while greyed out; in game Return Home was pressed
+            # 15 times in 7 s when we didn't grey it out.
+            return [f"{spell['name']} not ready, {session.cooldowns[order] - now:.0f} s left"]
+        if character.mana < spell["power"]:
+            self.send_client_message(session, "You don't have enough power.")
+            return [f"{spell['name']}: needs {spell['power']} power, has {character.mana}"]
+        character.mana -= spell["power"]
+        self.update_player_channels(session)
+        cooldown_ms = (spell["cast_time"] + spell["recast"]) * 1000 + COOLDOWN_SLACK_MS
+        session.cooldowns[order] = now + cooldown_ms / 1000
+        self.send_reliable(session, ABILITY_COOLDOWN_OPCODE, bytes([order]) + struct.pack("<i", 0) + _write_zigzag(cooldown_ms))
+        effect = CAST_EFFECTS.get(spell["name"])
+        if effect is not None:
+            effect_target = PHASE3_SESSION_ID if spell["scope"] == 0 or target == 0xFFFFFFFF else target
+            self.send_reliable(
+                session, CAST_EFFECT_OPCODE,
+                struct.pack("<II", PHASE3_SESSION_ID, effect_target) + b"\x00"
+                + struct.pack("<iI", spell["cast_time"] * 1000, effect),
+            )
+        if spell_id == items.RETURN_HOME:
+            session.pending_cast = (now + spell["cast_time"], spell_id)
             return [f"casting {spell['name']} ({spell['cast_time']} s, {spell['power']} power)"]
-        return [f"cast {spell['name']} (no effect yet)"]
+        return [f"cast {spell['name']} ({spell['power']} power; no effect yet)"]
+
+    def end_cooldowns(self, session: GameSession, now: float) -> list[str]:
+        """AbilityCooldown with 0 ms when an ability is ready again (Sandstorm sent it as the
+        cast and recast time ran out), which lights it up again."""
+        done = [order for order, ready in session.cooldowns.items() if ready <= now]
+        for order in done:
+            del session.cooldowns[order]
+            self.send_reliable(session, ABILITY_COOLDOWN_OPCODE, bytes([order]) + struct.pack("<i", 0) + _write_zigzag(0))
+        return [f"ready: spell {order}" for order in done]
 
     def update_player_channels(self, session: GameSession) -> None:
         """Queue the player's stat block (0x42) and buffs (0x43) if they changed; they're
@@ -1141,6 +1168,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 sent += self.regenerate(session, now)
                 sent += self.send_player_channels(session)
                 sent += self.finish_cast(session, now)
+                sent += self.end_cooldowns(session, now)
                 sent += self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
                     print(f"UDP phase3 keepalive {address[0]}:{address[1]} -> {', '.join(sent)}")
@@ -1350,6 +1378,13 @@ ASSIGN_HOTBAR_OPCODE = 0x0033
 SET_POSITION_OPCODE = 0x00B2
 ADD_SPELL_OPCODE = 0x00B3
 HOTBAR_ASSIGNED_OPCODE = 0x00B4
+CAST_EFFECT_OPCODE = 0x00B1
+ABILITY_COOLDOWN_OPCODE = 0x00CD
+# Sandstorm greyed abilities out for cast + recast + 0.3 s (Kick 6 s: 6300 ms; Return Home
+# 60 + 5 s: 65300 ms).
+COOLDOWN_SLACK_MS = 300
+# The effect id in CastEffect, per ability, as Sandstorm sent them. Others are unknown.
+CAST_EFFECTS = {"Return Home": 0x8FB28233, "Kick": 0x0A286E2E}
 PLAYER_TUNAR_OPCODE = 0x0052
 RELIABLE_SEGMENT_BYTES = 0x0484
 EQUIP_ITEM_OPCODE = 0x003F

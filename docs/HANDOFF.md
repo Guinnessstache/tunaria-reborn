@@ -269,12 +269,17 @@ to learn them."
 | 0xB4 | S>C | HotbarAssigned | the 0x33 payload echoed |
 | 0xB3 | S>C | AddSpell | i32 0, i32 1, one spell record (sent after a scroll is used) |
 | 0xB2 | S>C | SetPosition | byte world, float x, y, z, facing, 12 zero bytes (world entry; end of Return Home) |
+| 0xCD | S>C | AbilityCooldown | byte spell book order, i32 0, zz ms: greys the ability out for cast + recast + 300 ms (Kick 6300, Return Home 65300); sent again with 0 when ready |
+| 0xB1 | S>C | CastEffect | u32 caster, u32 target, byte 0, i32 cast ms, u32 effect id (Return Home 0x8FB28233 = blue glow, Kick 0x0A286E2E; mobs use it too) |
 | 0x15 / 0x16 | C>S | ? | u32 target / empty (consider and close?) |
 | 0x7E1 | C>S | ? | periodic client debug text ("0: discarded (old)") |
 
-- The client runs the casting bar itself. For Return Home (60 s cast) the
-  server sent nothing until SetPosition, about 61 s after UseAbility, putting
-  the character where it had entered the world.
+- Within 30 ms of every UseAbility Sandstorm sent the power spent (channel
+  0x42), AbilityCooldown and CastEffect. Without them the ability doesn't grey
+  out and Return Home's fists don't glow. SetPosition ended Return Home 61.5 s
+  later, at the point where the character had entered the world. (An earlier
+  read missed these: server packets always carry the session id after the
+  header, whatever the header flags say.)
 - Kick killed mobs. The server's replies were 0xDB (u32 attacker, byte, u32
   target; combat animations or hits), stat channel 0x42 updates, 0x20 (3
   bytes), 0xD9 (u32 0) and a ClientMessage "You receive 138 XP". Not decoded.

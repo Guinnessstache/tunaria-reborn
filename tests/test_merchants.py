@@ -238,8 +238,14 @@ class AbilityTests(InWorldCase):
         notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
         self.assertIn("Return Home", notes[0])
         due, _ = self.session.pending_cast
+        # Sent at once, as Sandstorm did: greyed out for 60 + 5 s + 0.3 s, and the blue glow.
+        (cooldown_op, cooldown), (effect_op, effect) = self.sent
+        self.assertEqual((cooldown_op, cooldown), (0xCD, bytes([order]) + bytes.fromhex("00000000a8fc07")))
+        self.assertEqual(effect_op, 0xB1)
+        self.assertEqual(effect[8:], bytes.fromhex("0060ea00003382b28f"))  # byte 0, 60000 ms, glow
+        self.sent.clear()
         again = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
-        self.assertIn("already casting", again[0])
+        self.assertIn("not ready", again[0])
         self.assertEqual(self.session.pending_cast[0], due)  # pressing again doesn't restart it
         self.assertEqual(self.server.finish_cast(self.session, due - 1), [])
         self.assertEqual(self.sent, [])
@@ -250,6 +256,11 @@ class AbilityTests(InWorldCase):
         self.assertEqual(body, bytes([world]) + struct.pack("<4f", x, y, z, facing) + bytes(12))
         self.assertEqual((self.character.x, self.character.z), (x, z))
         self.assertIsNone(self.session.pending_cast)
+        self.sent.clear()
+        ready = self.session.cooldowns[order]
+        self.assertEqual(self.server.end_cooldowns(self.session, ready - 0.01), [])
+        self.server.end_cooldowns(self.session, ready)
+        self.assertEqual(self.sent, [(0xCD, bytes([order]) + bytes(4) + b"\x00")])  # lit up again
 
     def test_empty_hotbar_slot_does_nothing(self):
         notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([9]) + struct.pack("<I", 0))
