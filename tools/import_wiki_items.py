@@ -1,7 +1,7 @@
 """Build eqoa_server/reference_data/wiki_items.json from the Sandstorm wiki (wiki.eqoa.live).
 
     python tools/import_wiki_items.py            # crawl politely (50 pages a request, 1 s apart)
-    python tools/import_wiki_items.py raw.json   # or rebuild from a saved crawl
+    python tools/import_wiki_items.py raw.json   # or rebuild from a saved crawl ({title: wikitext})
 
 The wiki's item pages ({{ItemPage}}) carry Sandstorm's item facts: slot, classes, races,
 level, damage, stats, durability. Checked against the capture's Mecha Fall (SK only,
@@ -9,6 +9,7 @@ level 20, STR 15 / STA 11 / HP 35, durability 2200). Only these facts are kept.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import sys
@@ -18,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 API = "https://wiki.eqoa.live/api.php"
-OUT = Path(__file__).resolve().parents[1] / "eqoa_server" / "reference_data" / "wiki_items.json"
+OUT = Path(__file__).resolve().parents[1] / "eqoa_server" / "reference_data" / "wiki_items.json.gz"
 USER_AGENT = "TunariaReborn-item-import/1.0 (https://github.com/Guinnessstache/tunaria-reborn)"
 FIELD = re.compile(r"^\|\s*(\w+)\s*=\s*(.*?)\s*$", re.M)
 
@@ -62,7 +63,8 @@ def main(saved: str | None = None) -> None:
         for key in ("notes", "droppedby", "zone", "screenshots"):
             fields.pop(key, None)
         items[name.lower()] = {"name": name, **fields}
-    OUT.write_text(json.dumps(dict(sorted(items.items())), separators=(",", ":")), encoding="utf-8")
+    with gzip.open(OUT, "wt", encoding="utf-8") as handle:
+        json.dump(dict(sorted(items.items())), handle, separators=(",", ":"))
     print(f"{len(items)} items -> {OUT}")
 
 

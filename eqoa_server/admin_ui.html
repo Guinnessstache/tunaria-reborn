@@ -529,7 +529,7 @@ document.addEventListener("input", (e) => {
       const { items } = await api(`/api/items?q=${encodeURIComponent(box.value)}`);
       out.innerHTML = items.length ? items.map((it) => `<div>
         <button class="btn primary" data-give-item="${it.id}" data-give-to="${box.dataset.giveChar}" data-give-name="${esc(it.name)}">Give</button>
-        <span>${esc(it.name)}</span><span class="muted">#${it.id} · level ${it.level}${it.slot ? " · " + esc(it.slot) : ""}${it.max_stack > 1 ? ` · stacks of ${it.max_stack}` : ""}${it.equippable && !it.visible ? " · no model" : ""}</span></div>`).join("")
+        <span>${esc(it.name)}</span><span class="muted">#${it.id} · level ${it.level}${it.slot ? " · " + esc(it.slot) : ""} · ${esc(it.classes)}${it.max_stack > 1 ? ` · stacks of ${it.max_stack}` : ""}${it.equippable && !it.visible ? " · no model" : ""}</span></div>`).join("")
         : '<div class="muted">No items match.</div>';
     } catch (err) { if (err.message !== "login required") toast(err.message); }
   }, 250);

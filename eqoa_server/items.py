@@ -48,9 +48,61 @@ def item_patterns() -> dict[int, dict]:
         patterns = {item["id"]: item for item in json.load(handle)}
     # Items from the Sandstorm capture, with the models it drew them with
     # (tools/import_sandstorm_items.py); EQOAGameServer's table lacks most models.
+    wiki = _wiki_items()
+    for item in patterns.values():
+        facts = wiki.get(item["name"].lower())
+        if facts is not None:
+            _apply_wiki_facts(item, facts)
     for item in json.loads((DATA / "sandstorm_items.json").read_text(encoding="utf-8")):
+        item["class_mask"] = item.get("class_use") or ALL_CLASSES  # as the Sandstorm server sent it
         patterns[item["id"]] = item
     return patterns
+
+
+# Class abbreviations on the Sandstorm wiki, in class-mask bit order (matches the masks in the
+# Sandstorm capture for every one of its items).
+WIKI_CLASSES = ("WAR", "RAN", "PAL", "SK", "MNK", "BRD", "RGE", "DRD", "SHA", "CL", "MAG", "NEC", "ENC", "WIZ", "ALC")
+WIKI_STATS = (
+    ("str", 0), ("sta", 1), ("agi", 2), ("dex", 3), ("wis", 4), ("int", 5), ("cha", 6), ("hp", 8),
+    ("pow", 10), ("pot", 12), ("hot", 13), ("ac", 14), ("pr", 22), ("dr", 23), ("fr", 24), ("cr", 25),
+    ("lr", 26), ("ar", 27),
+)
+
+
+@lru_cache(maxsize=1)
+def _wiki_items() -> dict[str, dict]:
+    """Sandstorm's item facts by lower-case name (tools/import_wiki_items.py)."""
+    path = DATA / "wiki_items.json.gz"
+    if not path.is_file():
+        return {}
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def class_names(mask: int) -> str:
+    if mask & ALL_CLASSES == ALL_CLASSES:
+        return "all classes"
+    return ", ".join(name for bit, name in enumerate(WIKI_CLASSES) if mask >> bit & 1)
+
+
+def class_mask(text: str) -> int:
+    names = {name.strip().upper().replace("ROG", "RGE") for name in text.split(",") if name.strip()}
+    if not names or "ALL" in names:
+        return ALL_CLASSES
+    return sum(1 << WIKI_CLASSES.index(name) for name in names if name in WIKI_CLASSES) or ALL_CLASSES
+
+
+def _apply_wiki_facts(item: dict, facts: dict) -> None:
+    number = lambda key: int(facts[key]) if str(facts.get(key, "")).lstrip("-").isdigit() else None
+    item["class_mask"] = class_mask(facts.get("class", "ALL"))
+    for key, field in (("lvl", "level"), ("dmg", "damage"), ("gearhp", "max_hp"), ("dur", "duration")):
+        if number(key) is not None:
+            item[field] = number(key)
+    item["trade"] = 1 if facts.get("notrade") else 0
+    item["lore"] = 1 if facts.get("lore") else 0
+    stats = [[stat_id, number(key)] for key, stat_id in WIKI_STATS if number(key)]
+    if stats or any(key in facts for key, _ in WIKI_STATS):
+        item["stats"] = stats
 
 
 @lru_cache(maxsize=1)
@@ -385,6 +437,7 @@ def describe_item(item_id: int) -> dict:
         "equippable": equip_slot_for(item_id) != NOT_EQUIPPED,
         "visible": bool(model_for(item_id)), "max_stack": max(1, item["max_stack"]),
         "model": model_for(item_id), "model_source": model_source(item_id),
+        "classes": class_names(item.get("class_mask", ALL_CLASSES)),
     }
 
 
@@ -441,7 +494,7 @@ def item_record(entry: dict, key: int) -> bytes:
     for value in (
         0, item["icon"], 0, item["slot"], 0, item["trade"], item["rent"], 0, item["attack_type"],
         item["damage"], 0, item["level"], max(1, item["max_stack"]), durability, duration,
-        ALL_CLASSES, ALL_RACES, item["proc_anim"], item["lore"], 0, item["craft"],
+        item.get("class_mask", ALL_CLASSES), ALL_RACES, item["proc_anim"], item["lore"], 0, item["craft"],
     ):
         out += z(value)
     out += _string(item["name"]) + _string(item["description"])

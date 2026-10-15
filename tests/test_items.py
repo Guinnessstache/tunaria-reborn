@@ -87,6 +87,20 @@ class SandstormLayoutTests(unittest.TestCase):
         for start, end in ((WEAPONS_OFFSET, WEAPONS_OFFSET + 12), (ARMOR_OFFSET, ARMOR_OFFSET + 12)):
             self.assertEqual(update[start:end], SELF_OBJECT_UPDATE_TEMPLATE[start:end])
 
+    def test_wiki_facts_match_what_sandstorm_sent(self):
+        # Items the capture holds whose patterns come from EQOAGameServer + the wiki (not the capture).
+        expected = {  # name: (class mask, durability, duration, level, stats) as Sandstorm sent them
+            7092: (15376, 5600, 50, 28, [[8, 80], [14, 23]]),  # Florid Silk Sash
+            4614: (13, 5350, 50, 23, [[0, 15], [3, 5], [10, 40], [14, 178]]),  # Brutal Chestguard
+            2858: (879, 8550, 50, 41, [[3, 21], [8, 50], [14, 146]]),  # Ochre Bracers
+        }
+        for item_id, (mask, durability, duration, level, stats) in expected.items():
+            item = items.item_patterns()[item_id]
+            self.assertEqual(
+                (item["class_mask"], item["max_hp"], item["duration"], item["level"], item["stats"]),
+                (mask, durability, duration, level, stats), item["name"],
+            )
+
     def test_spell_records_match_sandstorm_bytes(self):
         payload = sandstorm_memory_dump_payload()
         self.assertIn(items.spell_record({"spell": 1421, "hotbar": -1}, 0), payload)  # Hatred
