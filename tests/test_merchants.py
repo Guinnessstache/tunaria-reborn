@@ -57,7 +57,8 @@ class StockTests(unittest.TestCase):
         for name in list(merchants.descriptions())[:60]:
             goods = merchants.stock(name)
             self.assertLessEqual(len(goods), merchants.MAX_STOCK)
-            names = [items.item_patterns()[i]["name"].lower() for i in goods]
+            names = [(items.item_patterns()[i]["name"].lower(), items.item_patterns()[i]["level"] if items.is_scroll(i) else 0)
+                     for i in goods]
             self.assertEqual(len(names), len(set(names)), name)
 
     def test_prices(self):
@@ -123,6 +124,30 @@ class MerchantHandlerTests(unittest.TestCase):
         self.assertEqual([op for op, _ in self.sent], [0x3C, 0x0A7A])
         self.assertIn(ability["name"].encode("utf-16-le"), self.sent[1][1])
         self.assertIn("scribed", notes[0])
+
+    def test_items_are_named_by_key_after_one_is_used_up(self):
+        # In game a level 16 Magician scroll did nothing after another scroll was scribed:
+        # the client still names items by their record keys, but our positions had shifted.
+        mage = items.CLASS_NAMES.index("Magician")
+        self.character.klass, self.character.level, self.character.inventory = mage, 16, []
+        rows = [i for i, a in enumerate(items.class_abilities()["Magician"]) if a["level"] == 16 and a["power"]][:2]
+        for row in rows:
+            self.store.give_item(self.character.character_id, items.scroll_for(mage, row))
+        first, second = (entry["key"] for entry in self.character.inventory)
+        self.server.interact_item(self.session, struct.pack("<II", first, 0) + zigzag(0))
+        self.assertEqual(self.sent[0], (0x3C, bytes([0, 1]) + zigzag(1)))  # removed at client position 0
+        self.sent.clear()
+        notes = self.server.interact_item(self.session, struct.pack("<II", second, 0) + zigzag(0))
+        self.assertIn("scribed", notes[0])
+        self.assertEqual(self.sent[0], (0x3C, bytes([0, 1]) + zigzag(1)))  # it had moved up to position 0
+        known = {entry["spell"] for entry in self.character.spells}
+        self.assertTrue({items.class_spell_id(mage, row) for row in rows} <= known)
+        self.assertEqual(self.character.inventory, [])
+
+    def test_every_rank_of_a_spell_is_sold(self):
+        goods = merchants.stock("Merchant Edmund")  # "Magician Spells Level 16-29"
+        ranks = [items.item_patterns()[i]["level"] for i in goods if items.item_patterns()[i]["name"] == "Earth Elementalkin"]
+        self.assertEqual(sorted(ranks), [16, 24, 29])
 
     def test_scrolls_of_other_classes_are_refused(self):
         wizard = items.CLASS_NAMES.index("Wizard")

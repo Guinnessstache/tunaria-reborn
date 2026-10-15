@@ -107,8 +107,11 @@ def _stock_for(description: str) -> tuple[int, ...]:
     found.sort(key=lambda item: (item["level"], item["name"].lower(), item["id"]))
     unique, seen = [], set()
     for item in found:
-        if item["name"].lower() not in seen:
-            seen.add(item["name"].lower())
+        # The item table repeats some items by name; scrolls repeat names for each rank of a
+        # spell ("Earth Elementalkin" at 16, 24 and 29), and those are different spells.
+        key = (item["name"].lower(), item["level"] if items.is_scroll(item["id"]) else None)
+        if key not in seen:
+            seen.add(key)
             unique.append(item["id"])
     return tuple(unique[:MAX_STOCK])
 

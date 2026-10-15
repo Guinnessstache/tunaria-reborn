@@ -233,7 +233,8 @@ class JsonStore:
             if item_id not in items.item_patterns():
                 raise InventoryError(f"no item with id {item_id}")
             stack = max(1, min(int(stack), items.describe_item(item_id)["max_stack"]))
-            entry = {"item": item_id, "stack": stack, "equip": items.NOT_EQUIPPED}
+            entry = {"item": item_id, "stack": stack, "equip": items.NOT_EQUIPPED,
+                     "key": items.next_item_key(character.inventory)}
             character.inventory.append(entry)
             if equip:
                 self._equip(character, len(character.inventory) - 1)

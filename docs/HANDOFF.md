@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 129 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 131 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -197,6 +197,20 @@ Fields, in order:
 
 3. 7 zz fields: cast, power, icon_color, icon, scope, recast, −1
 4. Name, description, then a 0 byte
+
+### Item keys and client indexes
+
+Each inventory item has two numbers, as in EQOAGameServer:
+
+- **Key:** the int32 in its item record. The client names items by key in
+  InteractItem (0x3E) and MerchantSell (0x4B). Keys don't change while in the
+  world; we restart them at 0 on each world entry and give new items the next
+  free key.
+- **Client index:** its position in the client's list. Our replies
+  (RemoveInvItem 0x3C, EquipItem 0x3F) name items by index, and indexes shift
+  down when an earlier item goes.
+
+Treating the two as one broke using or selling items after any item was used up.
 
 ### Equip slots
 

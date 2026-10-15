@@ -780,20 +780,22 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         character.tunar -= cost
         entry = self.store.give_item(character.character_id, item_id, quantity)
         self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
-        self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, len(character.inventory) - 1))
+        self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, entry["key"]))
         return [f"bought {quantity} x {name} for {cost}"]
 
     def merchant_sell(self, session: GameSession, payload: bytes) -> list[str]:
-        """MerchantSell (0x4B): int32 inventory position, zigzag quantity, u32 merchant."""
+        """MerchantSell (0x4B): int32 item key, zigzag quantity, u32 merchant."""
         character = session.selected_character
         try:
-            index = struct.unpack_from("<i", payload, 0)[0]
+            key = struct.unpack_from("<i", payload, 0)[0]
             quantity, _ = _read_zigzag(payload, 4)
         except (IndexError, struct.error):
             return []
-        if character is None or not 0 <= index < len(character.inventory or ()):
-            return []
+        index = items.index_for_key(character.inventory, key) if character is not None else None
+        if index is None:
+            return [f"sell: no item with key {key}"]
         entry = character.inventory[index]
+        position = items.client_index(character.inventory, index)
         quantity = max(1, min(quantity, entry.get("stack", 1)))
         earned = merchants.sell_price(entry["item"]) * quantity
         character.tunar += earned
@@ -803,19 +805,20 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             entry["stack"] -= quantity
             self.store.save()
         self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
-        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([index & 0xFF, 1]) + _write_zigzag(quantity))
+        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 1]) + _write_zigzag(quantity))
         return [f"sold {quantity} x {items.describe_item(entry['item'])['name']} for {earned}"]
 
     def interact_item(self, session: GameSession, payload: bytes) -> list[str]:
         """The client used an item in its inventory (InteractItem, as in EQOAGameServer):
-        u32 inventory position, u32 target, zigzag action (0 = use / equip / unequip)."""
+        u32 item key, u32 target, zigzag action (0 = use / equip / unequip)."""
         character = session.selected_character
         if character is None or len(payload) < 8:
             return []
-        index = struct.unpack_from("<I", payload, 0)[0]
+        key = struct.unpack_from("<I", payload, 0)[0]
         inventory = character.inventory or []
-        if index >= len(inventory):
-            return [f"interact item {index}: no such item"]
+        index = items.index_for_key(inventory, key)
+        if index is None:
+            return [f"interact item {key}: no item with that key"]
         entry = inventory[index]
         name = items.describe_item(entry["item"])["name"] if entry["item"] in items.item_patterns() else entry["item"]
         if entry.get("equip", items.NOT_EQUIPPED) != items.NOT_EQUIPPED:
@@ -830,7 +833,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 # Items it pushed out of their slots (a two-handed weapon clears both hands).
                 if other != index and old_slot != items.NOT_EQUIPPED and inventory[other]["equip"] == items.NOT_EQUIPPED:
                     self.send_reliable(session, UNEQUIP_ITEM_OPCODE, struct.pack("<B", old_slot & 0xFF))
-            self.send_reliable(session, EQUIP_ITEM_OPCODE, struct.pack("<Bb", index & 0xFF, entry["equip"]))
+            position = items.client_index(inventory, index)
+            self.send_reliable(session, EQUIP_ITEM_OPCODE, struct.pack("<Bb", position & 0xFF, entry["equip"]))
             result = f"equipped {name}"
         elif items.is_scroll(entry["item"]):
             return self.scribe(session, index)
@@ -857,9 +861,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if any(known["spell"] == spell_id for known in character.spells or ()):
             self.send_client_message(session, f"You already know {scroll}.")
             return [f"scribe {scroll}: already known"]
+        position = items.client_index(character.inventory, index)
         self.store.learn_spell(character.character_id, spell_id)
         self.store.remove_item(character.character_id, index)
-        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([index & 0xFF, 1]) + _write_zigzag(1))
+        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 1]) + _write_zigzag(1))
         self.send_client_message(
             session, f"You have scribed {scroll}. It will be in your spell book the next time you enter the world."
         )
@@ -1033,6 +1038,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                         f"{phase3_root} and no {SANDSTORM_CAPTURE.name}) - sending world-entry only."
                     )
                 return packets
+            items.renumber_item_keys(character.inventory)  # keys restart with every MemoryDump
+            self.store.save()
             try:
                 # The captured character's quests, items and spells are not ours.
                 template_body = memory_dump_without_belongings(

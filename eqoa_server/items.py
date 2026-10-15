@@ -674,12 +674,45 @@ def item_record(entry: dict, key: int, cost: int | None = None) -> bytes:
     return bytes(out)
 
 
+# Each inventory item has two numbers (as in EQOAGameServer). Its key is the int32 in its
+# record; the client names items by key in InteractItem and MerchantSell, and keys never
+# change while the character is in the world. Its client index is its position in the
+# client's list; the server's replies (RemoveInvItem, EquipItem) name items by index, and
+# indexes shift down when an item before them goes. Keys restart at 0 on world entry.
+
+def renumber_item_keys(inventory: list[dict] | None) -> None:
+    """Keys 0, 1, 2... in list order, for a fresh MemoryDump."""
+    for key, entry in enumerate(entry for entry in inventory or () if entry["item"] in item_patterns()):
+        entry["key"] = key
+
+
+def next_item_key(inventory: list[dict] | None) -> int:
+    return max((item_key(inventory, index) for index in range(len(inventory or ()))), default=-1) + 1
+
+
+def item_key(inventory: list[dict], index: int) -> int:
+    return inventory[index].get("key", index)
+
+
+def index_for_key(inventory: list[dict] | None, key: int) -> int | None:
+    """The server's list position of the item the client calls ``key``."""
+    for index in range(len(inventory or ())):
+        if item_key(inventory, index) == key:
+            return index
+    return None
+
+
+def client_index(inventory: list[dict], index: int) -> int:
+    """The position the client has the item at (items we can't describe aren't sent)."""
+    return sum(1 for entry in inventory[:index] if entry["item"] in item_patterns())
+
+
 def inventory_section(inventory: list[dict] | None) -> bytes:
     """Item count (zigzag and int32), then the items."""
     entries = [entry for entry in inventory or () if entry["item"] in item_patterns()]
     return (
         _write_zigzag(len(entries)) + struct.pack("<i", len(entries))
-        + b"".join(item_record(entry, key) for key, entry in enumerate(entries))
+        + b"".join(item_record(entry, entry.get("key", position)) for position, entry in enumerate(entries))
     )
 
 
