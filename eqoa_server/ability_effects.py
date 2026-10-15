@@ -17,6 +17,10 @@ from .storage import Character
 STAT_ATTRIBUTES = ("Strength", "Stamina", "Agility", "Dexterity", "Wisdom", "Intelligence", "Charisma")
 MAX_ATTRIBUTES = ("HP Max", "Power Max")
 TICK = 6.0  # seconds between heal/power-over-time ticks (Sandstorm's stat updates came every 6 s)
+# Run speed: Sandstorm sent PlayerSpeed 11.48 at login. Speed abilities (Sprint, Spirit of the
+# Wolf) have no amount in the guide; SPEED_BONUS percent is our guess.
+BASE_SPEED = 11.483332633972168
+SPEED_BONUS = 30
 MODIFIERS = {"Str": 0, "Sta": 1, "Agi": 2, "Dex": 3, "Wis": 4, "Int": 5, "Cha": 6}
 
 
@@ -42,6 +46,12 @@ def bonus(buffs: list[Buff], attribute: str) -> int:
     return sum(buff.change for buff in buffs if buff.attribute == attribute)
 
 
+def speed(buffs: list[Buff]) -> float:
+    """Run speed for PlayerSpeed: the base, plus the best speed buff (they don't stack)."""
+    best = max((buff.change for buff in buffs if buff.attribute == "Speed"), default=0)
+    return BASE_SPEED * (1 + best / 100)
+
+
 def max_hp(character: Character, buffs: list[Buff]) -> int:
     return max(1, character.max_hp + bonus(buffs, "HP Max"))
 
@@ -61,15 +71,25 @@ def _lands_on_caster(effect: dict, targeting_other: bool) -> bool:
     return scope in ("Self", "Group") or (scope == "Target" and not targeting_other)
 
 
-def handled(effect: dict) -> bool:
+def handled(effect: dict, ability_name: str | None = None) -> bool:
     """Whether the server does anything with this effect (on the caster in ``apply``, on a
     creature in GameUDPServer.ability_on_creature, or as a pet). For the self-test's list."""
     kind, attribute = effect.get("type"), effect.get("attribute")
     change, duration = int(effect.get("change", 0)), int(effect.get("duration", 0))
     if effect.get("scope") == "Pet" and kind != "Summon Pet":
         return False  # nothing is done to pets yet
-    if kind == "Summon Pet" or kind == "Modify Hate" or kind == "Backstab":
+    if kind in ("Summon Pet", "Modify Hate", "Backstab"):
         return True
+    if kind == "Create Item":
+        return ability_name is not None and items.created_item(ability_name) is not None
+    if kind == "Increase Speed":
+        return duration > 0
+    if kind == "Drain":
+        return attribute in ("HP", "Power") and change < 0
+    if kind == "Statistic Absolute" and attribute == "Speed":
+        return effect.get("scope") == "Target" and duration > 0
+    if kind == "Statistic Change" and attribute == "Speed":
+        return effect.get("scope") == "Target" and change < 0 and duration > 0
     if kind == "Dmg/Heal" and attribute == "HP":
         return change > 0 or effect.get("scope") == "Target"
     if kind == "Statistic Change":
@@ -123,6 +143,10 @@ def apply(character: Character, row: dict, buffs: list[Buff], now: float, target
             said.append(f"{row['name']}: {value} {what} every {TICK:.0f} s for {_duration(duration)}.")
         elif kind == "Statistic Change" and attribute == "Power" and duration == 0:
             character.mana = max(0, min(max_power(character, buffs), character.mana + value))
+        elif kind == "Increase Speed" and duration > 0:
+            buffs[:] = [b for b in buffs if not (b.spell == row["name"] and b.attribute == "Speed")]
+            buffs.append(Buff(row["name"], "Speed", SPEED_BONUS, now + duration))
+            said.append(f"{row['name']}: you move faster for {_duration(duration)}.")
     character.hp = min(character.hp, max_hp(character, buffs))
     character.mana = min(character.mana, max_power(character, buffs))
     return said

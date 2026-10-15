@@ -32,9 +32,11 @@ class DispatchTests(unittest.TestCase):
         self.session = GameSession(1, 2, phase3_started=True, phase3_in_world=True)
 
     def test_unhandled_opcodes_are_counted(self):
-        self.assertIsNone(self.server.handle_game_message(self.session, 0x0010, struct.pack("<II", 0, 5)))
-        self.server.handle_game_message(self.session, 0x0010, b"")
-        self.assertEqual(self.server.ignored_opcodes[0x0010]["count"], 2)
+        self.assertIsNone(self.server.handle_game_message(self.session, 0x0E01, struct.pack("<II", 0, 5)))  # WhoList
+        self.server.handle_game_message(self.session, 0x0E01, b"")
+        self.assertEqual(self.server.ignored_opcodes[0x0E01]["count"], 2)
+        self.server.handle_game_message(self.session, 0x07E1, b"")  # client debug text: needs nothing
+        self.assertNotIn(0x07E1, self.server.ignored_opcodes)
 
     def test_handled_opcodes_go_to_their_handler(self):
         self.assertEqual(self.server.handle_game_message(self.session, 0x0015, b""), [])  # loot, no character

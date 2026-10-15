@@ -107,6 +107,8 @@ class GameSession:
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
     attack_target: int | None = None  # object id auto attack is swinging at
+    target: int | None = None  # object id the player has selected (SelectTarget)
+    speed_sent: float | None = None  # last PlayerSpeed sent (None: the login's)
     pet: "combat.Mob | None" = None  # a summoned pet (pets.py)
     next_swing: float = 0.0
     # Spell book order -> monotonic time the ability is ready again.
@@ -784,6 +786,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             ATTACK_OPCODE: self.attack,
             LOOT_OPCODE: self.loot,
             LOOT_ITEM_OPCODE: self.take_loot,
+            SELECT_TARGET_OPCODE: self.select_target,
         }
         handler = handlers.get(opcode)
         if handler is not None:
@@ -798,6 +801,24 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             seen["count"] += 1
             seen["sample"] = bytes(payload[:32]).hex()
         return None
+
+    def select_target(self, session: GameSession, payload: bytes) -> list[str]:
+        """SelectTarget (0x10): int32 0, u32 target (0 / 0xFFFFFFFF: none). Sandstorm answered
+        every real target with a 0x10 of 259 bytes, all zero but the first three: 00 04 01 for
+        creatures (alive or dead), 02 00 01 for a merchant and another NPC (8 of 9 replies in
+        the capture; one creature got 02 04 01, reason unknown)."""
+        if len(payload) < 8:
+            return []
+        target = struct.unpack_from("<I", payload, 4)[0]
+        session.target = None if target in (0, 0xFFFFFFFF) else target
+        if session.target is None:
+            return ["target cleared"]
+        npc = npcs.by_object_id(target) or (self._pet_by_id(target).npc if self._pet_by_id(target) else None)
+        if npc is None:
+            return [f"target {target:#x}: unknown"]
+        flags = (0x00, 0x04, 0x01) if npc.creature else (0x02, 0x00, 0x01)
+        self.send_reliable(session, SELECT_TARGET_OPCODE, bytes(flags) + bytes(TARGET_REPLY_SIZE - 3))
+        return [f"target {npc.name}"]
 
     def merchant_window(self, session: GameSession, payload: bytes) -> list[str]:
         """MerchantDiag (0x4C: merchant object id) -> MerchantBox (0xB7), as EQOAGameServer:
@@ -887,6 +908,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             self.send_reliable(session, UNEQUIP_ITEM_OPCODE, struct.pack("<B", slot & 0xFF))
             result = f"unequipped {name}"
         elif items.equip_slot_for(entry["item"]) != items.NOT_EQUIPPED:
+            refused = items.cannot_equip(entry["item"], character.klass, character.level)
+            if refused:
+                self.send_client_message(session, refused)
+                return [f"equip {name}: {refused}"]
             before = {i: e.get("equip") for i, e in enumerate(inventory)}
             self.store.set_item_equipped(character.character_id, index, True)
             for other, old_slot in before.items():
@@ -1015,13 +1040,39 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if any(effect.get("type") == "Summon Pet" for effect in row.get("effects", ())):
             return self.summon_pet(session, spell["name"], row["level"])
         targeting_other = target not in (0, 0xFFFFFFFF, PHASE3_SESSION_ID)
+        made = self.create_items(session, row) if any(
+            e.get("type") == "Create Item" for e in row.get("effects", ())) else []
         said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
+        self.sync_speed(session)
         for line in said:  # chat lines for the player
             self.send_client_message(session, line)
         notes = self.ability_on_creature(session, spell, row, target) if targeting_other else []  # log only
         self.update_player_channels(session)
-        done = said + notes
+        done = made + said + notes
         return [f"cast {spell['name']}: " + (" ".join(done) if done else "nothing on you (needs combat)")]
+
+    def create_items(self, session: GameSession, row: dict) -> list[str]:
+        """Create Item abilities (Forage, Phase Staff, Conjurer's Cowl...) give the item of the
+        same name when the item table has one (most alchemist mixtures aren't in it)."""
+        character = session.selected_character
+        item_id = items.created_item(row["name"])
+        if item_id is None:
+            return [f"(no item named {row['name']})"]
+        if len(character.inventory or ()) >= MAX_INVENTORY:
+            self.send_client_message(session, "Your inventory is full.")
+            return ["inventory full"]
+        entry = self.store.give_item(character.character_id, item_id)
+        self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, entry["key"]))
+        self.send_client_message(session, f"You create {items.describe_item(item_id)['name']}.")
+        return [f"created {items.describe_item(item_id)['name']}"]
+
+    def sync_speed(self, session: GameSession) -> None:
+        """PlayerSpeed (0xF8, float) when speed buffs change the run speed (Sandstorm sent
+        11.48 at login)."""
+        speed = ability_effects.speed(session.buffs)
+        if abs(speed - (session.speed_sent or ability_effects.BASE_SPEED)) > 1e-6:
+            session.speed_sent = speed
+            self.send_reliable(session, PLAYER_SPEED_OPCODE, struct.pack("<f", speed))
 
     # ---- combat (combat.py has the rules and the capture notes) ----
 
@@ -1030,7 +1081,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         mob = self.mobs.get(object_id)
         if mob is None:
             npc = npcs.by_object_id(object_id)
-            if npc is None or not npc.creature:
+            if npc is None or not npc.creature or not npcs.placeable(npc):
                 return None
             mob = self.mobs[object_id] = combat.new_mob(npc)
         return mob
@@ -1124,7 +1175,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         mob.hp -= damage
         if mob.target is None:
             mob.target = session.selected_character.character_id
-            mob.next_swing = time.monotonic() + combat.MOB_DELAY / 2
+            mob.next_swing = time.monotonic() + combat.MOB_FIRST_SWING
         if mob.hp <= 0:
             return self.kill(session, mob)
         self.refresh_mob(mob)
@@ -1176,7 +1227,37 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             elif effect.get("type") == "Modify Hate" and mob.target is None:
                 mob.target = character.character_id
                 mob.next_swing = time.monotonic() + combat.MOB_DELAY
+            elif effect.get("type") == "Drain" and amount < 0 and effect.get("attribute") == "HP" and mob.state == combat.ALIVE:
+                drained = min(mob.hp, combat.vary(-amount, self.rng))
+                notes += self.hit_mob(session, mob, drained)
+                top = ability_effects.max_hp(character, session.buffs)
+                healed = min(top - character.hp, drained)
+                character.hp += healed
+                if healed > 0:
+                    self.send_client_message(session, f"You drain {healed} health.")
+            elif effect.get("type") == "Drain" and amount < 0 and effect.get("attribute") == "Power":
+                top = ability_effects.max_power(character, session.buffs)
+                gained = min(top - character.mana, -amount)
+                character.mana += gained
+                self._aggro(mob, character)
+                if gained > 0:
+                    self.send_client_message(session, f"You drain {gained} power.")
+            elif effect.get("attribute") == "Speed" and effect.get("duration", 0) > 0 and (
+                    effect.get("type") == "Statistic Absolute" or amount < 0):
+                until = time.monotonic() + effect["duration"]
+                if effect.get("type") == "Statistic Absolute":
+                    mob.rooted_until = until
+                    notes.append(f"{mob.npc.name} is rooted for {effect['duration']} s")
+                else:
+                    mob.slowed_until, mob.slow = until, max(0.1, 1 + amount / 100)
+                    notes.append(f"{mob.npc.name} is slowed to {mob.slow:.0%} for {effect['duration']} s")
+                self._aggro(mob, character)
         return notes
+
+    def _aggro(self, mob: combat.Mob, character) -> None:
+        if mob.target is None:
+            mob.target = character.character_id
+            mob.next_swing = time.monotonic() + combat.MOB_DELAY
 
     def _session_of(self, character_id: int | None) -> GameSession | None:
         if character_id is None:
@@ -1215,6 +1296,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if mob.state == combat.CORPSE:
             if now >= mob.corpse_until:
                 mob.state, mob.loot = combat.GONE, []
+                for session in self.sessions.values():
+                    if session.target == mob.object_id:
+                        session.target = None
+                        self.send_reliable(session, TARGET_GONE_OPCODE, bytes(4))
                 self.refresh_mob(mob)
             return []
         if mob.state == combat.GONE:
@@ -1239,7 +1324,13 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing, mob.velocity = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None, (0.0, 0.0)
             self.refresh_mob(mob)
             return notes + [f"{mob.npc.name} gives up"]
-        if combat.step_toward(mob, character.x, character.z, seconds):
+        if now < mob.rooted_until:
+            moved = False
+            mob.velocity = (0.0, 0.0)
+        else:
+            pace = combat.MOB_SPEED * (mob.slow if now < mob.slowed_until else 1.0)
+            moved = combat.step_toward(mob, character.x, character.z, seconds, speed=pace)
+        if moved:
             mob.animation = combat.RUN
             self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
         elif mob.animation == combat.RUN:
@@ -1400,6 +1491,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         changed, said = ability_effects.tick(character, session.buffs, now)
         for line in said:
             self.send_client_message(session, line)
+        self.sync_speed(session)
         if changed:
             self.update_player_channels(session)
         return said
@@ -1784,8 +1876,15 @@ LOOT_ITEM_OPCODE = 0x0019
 LOOT_OPTIONS_OPCODE = 0x0085  # byte: 1 being looted by someone else, 2 not lootable, 3 not your kill
 LOOT_NOT_YOURS = 3
 # Client messages that need nothing from the server (not counted as ignored).
-QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE}
+# 0xC9 / 0xCA: the client's faction and loot message settings (0 on, 1 off); 0x49 EnableChannel
+# (chat); 0x7E1 the client's debug text, its answer to the server's 0x7E0. Sandstorm sent no
+# steady reply to any of them.
+QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE, 0x00C9, 0x00CA, 0x0049, 0x07E1}
 MAX_INVENTORY = 40  # EQOAReturnHome's inventory limit
+SELECT_TARGET_OPCODE = 0x0010
+PLAYER_SPEED_OPCODE = 0x00F8
+TARGET_REPLY_SIZE = 259
+TARGET_GONE_OPCODE = 0x007B  # 4 zero bytes; Sandstorm sent it ~7 s after a kill, as the corpse went
 HIT_OPCODE = 0x00DB
 EXPERIENCE_OPCODE = 0x0020
 TARGET_DIED_OPCODE = 0x00D9

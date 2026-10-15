@@ -500,6 +500,70 @@ class LootTests(CombatCase):
         self.assertEqual(self.sent, [(0x85, b"\x03")])
 
 
+class SelfTestFixTests(CombatCase):
+    """Fixes from the self-test's first list."""
+
+    def test_select_target_is_answered_like_sandstorm(self):
+        self.server.handle_game_message(self.session, 0x10, struct.pack("<II", 0, self.npc.object_id))
+        (op, body), = self.sent
+        self.assertEqual((op, len(body), body[:3]), (0x10, 259, b"\x00\x04\x01"))
+        self.assertEqual(self.session.target, self.npc.object_id)
+
+    def test_corpse_going_away_clears_the_target(self):
+        self.server.handle_game_message(self.session, 0x10, struct.pack("<II", 0, self.npc.object_id))
+        self.attack()
+        mob = self.server.mob(self.npc.object_id)
+        mob.hp = 1
+        self.server.combat_tick(self.session.next_swing)
+        self.sent.clear()
+        self.server.combat_tick(mob.corpse_until + 0.01)
+        self.assertIn((0x7B, bytes(4)), self.sent)
+        self.assertIsNone(self.session.target)
+
+    def test_class_and_level_limit_equipping(self):
+        from eqoa_server import items
+
+        bard_only = next(i for i, p in items.item_patterns().items()
+                         if items.equip_slot_for(i) != items.NOT_EQUIPPED and p.get("class_mask") == 1 << 5)
+        self.assertIn("class", items.cannot_equip(bard_only, 0, 60))
+        entry = self.server.store.give_item(self.character.character_id, bard_only)
+        self.server.interact_item(self.session, struct.pack("<II", entry["key"], 0) + b"\x00")
+        self.assertEqual(entry["equip"], items.NOT_EQUIPPED)
+        self.assertEqual(self.sent[-1][0], 0x0A7A)  # told why
+
+    def test_offmap_npcs_are_left_out(self):
+        from eqoa_server import npcs
+
+        bad = next(n for n in npcs.all_npcs() if not npcs.placeable(n))
+        self.assertIsNone(self.server.mob(bad.object_id))
+        npcs.build_npc_update(bad)  # clamped, no error
+
+    def test_root_and_drain(self):
+        from eqoa_server import ability_effects
+
+        mob = self.server.mob(self.npc.object_id)
+        row = {"name": "Test", "effects": [
+            {"type": "Statistic Absolute", "scope": "Target", "attribute": "Speed", "change": 0, "duration": 30},
+            {"type": "Drain", "scope": "Target", "attribute": "HP", "change": -5, "duration": 0}]}
+        self.character.hp = 50
+        spell = {"name": "Test", "cast_time": 0, "range_raw": 0}
+        self.server.ability_on_creature(self.session, spell, row, mob.object_id)
+        self.assertGreater(mob.rooted_until, 0)
+        self.assertLess(mob.hp, mob.max_hp)
+        self.assertGreater(self.character.hp, 50)
+        self.assertTrue(all(ability_effects.handled(e) for e in row["effects"]))
+
+    def test_speed_buff_sends_player_speed(self):
+        from eqoa_server import ability_effects
+
+        row = {"name": "Sprint", "effects": [{"type": "Increase Speed", "scope": "Self", "duration": 30}]}
+        ability_effects.apply(self.character, row, self.session.buffs, 0.0, False)
+        self.server.sync_speed(self.session)
+        (op, body), = self.sent
+        self.assertEqual(op, 0xF8)
+        self.assertAlmostEqual(struct.unpack("<f", body)[0], ability_effects.BASE_SPEED * 1.3, places=3)
+
+
 class CombatTests(CombatCase):
     """Fighting a creature, in the message shapes of the Sandstorm capture."""
 
@@ -507,7 +571,7 @@ class CombatTests(CombatCase):
         self.attack()
         self.server.combat_tick(self.session.next_swing)
         mob = self.server.mobs[self.npc.object_id]
-        (op, body), = [s for s in self.sent if s[0] == 0xDB]
+        (op, body), = [s for s in self.sent if s[0] == 0xDB and s[1][5:9] == struct.pack("<I", self.npc.object_id)]
         self.assertEqual(len(body), 9)  # attacker, damage, target: as Sandstorm's 0xDB
         self.assertEqual(struct.unpack_from("<I", body, 5)[0], self.npc.object_id)
         self.assertEqual(mob.hp, mob.max_hp - body[4])

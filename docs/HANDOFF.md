@@ -59,6 +59,20 @@ redirects to it.
   (`ignored_opcodes`), shown as "live play" findings. "Copy as a list" gives a
   numbered list the user pastes into the chat. It can't judge how the game
   draws anything.
+  First run's list, worked through (untested in game): off-map NPCs (1,147
+  rows of the NPC table, z up to -4e9) are left out of the world and positions
+  are clamped (265 would have crashed the combat tick); equipping checks class
+  mask and level (ClientMessage says why); SelectTarget 0x10 (int32 0, u32
+  target) is answered with Sandstorm's 259-byte 0x10, 00 04 01 + zeros for
+  creatures and 02 00 01 for other NPCs (8 of 9 replies fit; one creature got
+  02 04 01); 0x7B (4 zero bytes) goes to whoever targets a corpse as it goes
+  (Sandstorm sent it ~7 s after kills); a creature swings back 0.25 s after
+  its first hit (Sandstorm); Drain (HP: damage + heal, Power: caster gains),
+  roots ("Statistic Absolute" Speed) and snares (Speed < 0) on creatures;
+  Increase Speed buffs send PlayerSpeed 0xF8 (float; 11.48 at login on
+  Sandstorm, +30% is our guess); Create Item gives the item of the same name
+  (7 of 76 exist in the item table). Settings/debug opcodes 0x49, 0xC9, 0xCA,
+  0x7E1 count as handled (no steady Sandstorm reply).
 
 **Ports:**
 

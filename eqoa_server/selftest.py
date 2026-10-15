@@ -250,7 +250,7 @@ def _harmful(row: dict) -> bool:
         if effect.get("scope") != "Target":
             continue
         change = int(effect.get("change", 0))
-        if effect.get("type") in ("Backstab", "Modify Hate", "Drain", "Charm", "Lull", "Remove Ability",
+        if effect.get("type") in ("Backstab", "Modify Hate", "Drain", "Charm", "Lull",
                                   "Statistic Absolute", "Pickpocket", "Drain Group") or change < 0:
             return True
     return False
@@ -270,13 +270,10 @@ def _creature_near(level: int, avoid: set[int] = frozenset()):
     return min(creatures, key=lambda n: (abs(n.level - level), n.object_id))
 
 
-POSITION_LIMIT = 65536.0  # object updates carry x, y, z in 3 bytes (x 128, signed)
-
-
 def _placeable(npc) -> bool:
-    import math
+    from . import npcs
 
-    return all(math.isfinite(v) and abs(v) < POSITION_LIMIT for v in (npc.x, npc.y, npc.z))
+    return npcs.placeable(npc)
 
 
 def play_abilities(bot: Bot, quick: bool) -> None:
@@ -320,7 +317,7 @@ def play_abilities(bot: Bot, quick: bool) -> None:
                 target = npc.object_id
             bot.send(session, 0x33, struct.pack("<i", 0) + bytes([order, 0]), "abilities", "AssignHotbar")
             position = (character.x, character.y, character.z)
-            before = (character.hp, character.mana - spell["power"], len(session.buffs),
+            before = (character.hp, character.mana - spell["power"], len(session.buffs), len(character.inventory),
                       mob.hp if mob else 0, len(mob.dots) if mob else 0, mob.target if mob else None)
             start = len(bot.sent)
             notes = bot.send(session, 0x32, struct.pack("<i", 0) + bytes([0]) + struct.pack("<I", target),
@@ -336,14 +333,14 @@ def play_abilities(bot: Bot, quick: bool) -> None:
                 bot.report.add("broken", "abilities", "Ability isn't greyed out when used (no 0xCD)", label)
             if spell_effects.effect_for(spell["name"]) is None:
                 bot.report.add("data", "abilities", "Ability has no cast visual", label)
-            after = (character.hp, character.mana, len(session.buffs),
+            after = (character.hp, character.mana, len(session.buffs), len(character.inventory),
                      mob.hp if mob else 0, len(mob.dots) if mob else 0, mob.target if mob else None)
             did = (after != before or session.pet is not None
                    or (character.x, character.y, character.z) != position or (mob is not None and mob.state != combat.ALIVE))
             if row is None:
                 bot.report.add("data", "abilities", "Ability has no data (not in the guide tables)", label)
             elif not did:
-                handled = [e for e in row.get("effects", ()) if ability_effects.handled(e)]
+                handled = [e for e in row.get("effects", ()) if ability_effects.handled(e, row["name"])]
                 if handled and not any(e.get("scope") == "Target" for e in handled):
                     bot.report.add("broken", "abilities", "Ability should do something but did nothing",
                                    f"{label}: {', '.join(_effect_label(e) for e in handled)}")
@@ -560,7 +557,7 @@ def audit(report: Report) -> None:
     for class_name, rows in abilities.items():
         for row in rows:
             for effect in row.get("effects", ()):
-                if not ability_effects.handled(effect) and effect.get("type") not in ("Teleport to Bind Point",):
+                if not ability_effects.handled(effect, row["name"]) and effect.get("type") not in ("Teleport to Bind Point",):
                     effects_by_kind[_effect_label(effect)][f"{class_name}: {row['name']}"] = None
     title = "Ability effects the server doesn't do yet (kinds; abilities using each)"
     for kind, users in sorted(effects_by_kind.items(), key=lambda kv: -len(kv[1])):
@@ -592,9 +589,8 @@ def audit(report: Report) -> None:
     report.stats["creature names"] = len(seen)
     report.stats["creature names without loot"] = no_loot
     unplaceable = [n for n in npcs.all_npcs() if not _placeable(n)]
-    crashing = [n for n in unplaceable if not all(abs(v) * 128 < 2 ** 31 for v in (n.x, n.y, n.z))]
     if unplaceable:
-        title = f"NPCs placed outside the map (their position is sent garbled; {len(crashing)} would crash the combat tick if fought)"
+        title = "NPCs placed outside the map in the NPC table (left out of the world)"
         report.add("data", "npcs", title, count=len(unplaceable))
         report._findings[("data", "npcs", title)].examples = [
             f"#{n.id} {n.name.rstrip('$ ')}: {n.x:.0f}, {n.y:.0f}, {n.z:.0f}" for n in unplaceable[:MAX_EXAMPLES]]

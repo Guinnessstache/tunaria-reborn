@@ -79,12 +79,22 @@ def all_npcs() -> tuple[Npc, ...]:
 
 
 GRID = 256.0  # world units per grid cell for nearby lookups
+# Object updates carry x, y, z in 3 bytes (x 128, signed), so positions must stay inside this.
+POSITION_LIMIT = 65536.0
+
+
+def placeable(npc: Npc) -> bool:
+    """False for the 1,147 rows of EQOAGameServer's table placed far outside the map (a z of
+    -4,022,340,000...): they can't be sent and are left out of the world."""
+    return all(math.isfinite(v) and abs(v) < POSITION_LIMIT for v in (npc.x, npc.y, npc.z))
 
 
 @lru_cache(maxsize=1)
 def _grid() -> dict[tuple[int, int, int], list[Npc]]:
     cells: dict[tuple[int, int, int], list[Npc]] = {}
     for npc in all_npcs():
+        if not placeable(npc):
+            continue
         cells.setdefault((npc.world, int(npc.x // GRID), int(npc.z // GRID)), []).append(npc)
     return cells
 
@@ -117,7 +127,9 @@ def build_npc_update(npc: Npc) -> bytes:
     update = bytearray(NPC_UPDATE_TEMPLATE)
     struct.pack_into("<I", update, ID, npc.object_id)
     update[POSITION] = 0x82
+    top = POSITION_LIMIT - 1 / 128
     for index, value in enumerate((npc.x, npc.y, npc.z)):
+        value = max(-POSITION_LIMIT, min(top, value)) if math.isfinite(value) else 0.0
         update[POSITION + 1 + 3 * index : POSITION + 4 + 3 * index] = struct.pack(">i", round(value * 128.0))[1:]
     update[FACING] = npc.facing & 0xFF
     update[HP_SHOWN], update[HP] = 1, 0xFF

@@ -33,6 +33,7 @@ LOOT_CORPSE_TIME = 180.0  # a corpse with loot on it stays this long
 EMPTIED_CORPSE_TIME = 3.0  # and goes this long after its last item is taken
 RESPAWN = 90.0
 FIRST_SWING = 0.7  # Sandstorm's first hit came 0.7 s after Attack
+MOB_FIRST_SWING = 0.25  # and the creature's swing (CastEffect) 0.25 s after that hit
 DOT_TICK = 6.0
 MOB_ATTACK_EFFECT = 0xDA9BEA11
 
@@ -75,6 +76,9 @@ class Mob:
     loot: list[dict] = field(default_factory=list)  # items on the corpse ({"item", "stack", "key"})
     killer: int | None = None  # character id: only they can loot it
     corpse_until: float = 0.0  # when the corpse goes
+    rooted_until: float = 0.0  # can't move until then (roots: "Statistic Absolute" Speed)
+    slowed_until: float = 0.0  # moves at ``slow`` x its speed until then (snares)
+    slow: float = 1.0
 
     @property
     def object_id(self) -> int:

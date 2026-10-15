@@ -615,6 +615,30 @@ class Gear:
     robe: int = -1
 
 
+@lru_cache(maxsize=1)
+def _items_by_name() -> dict[str, int]:
+    found: dict[str, int] = {}
+    for item_id, item in sorted(item_patterns().items()):
+        if item_id < SCROLL_ID_BASE and not is_scroll(item_id):
+            found.setdefault(item["name"].lower(), item_id)
+    return found
+
+
+def created_item(ability_name: str) -> int | None:
+    """The item a Create Item ability makes: the real item of the same name, if any."""
+    return _items_by_name().get(ability_name.lower())
+
+
+def cannot_equip(item_id: int, klass: int, level: int) -> str | None:
+    """Why a character can't equip an item (its class mask or level), or None."""
+    item = item_patterns()[item_id]
+    if not item.get("class_mask", ALL_CLASSES) >> klass & 1:
+        return f"Your class can't use {item['name']}."
+    if item.get("level", 0) > level:
+        return f"You must be level {item['level']} to use {item['name']}."
+    return None
+
+
 def gear(inventory: list[dict] | None) -> Gear:
     worn = {}
     for entry in inventory or ():
