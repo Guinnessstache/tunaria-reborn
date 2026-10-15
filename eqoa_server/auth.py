@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 
 from .config import ServerConfig
-from .storage import JsonStore
+from .storage import JsonStore, _hash_token
 
 
 LOGIN_REQUEST = 0x24
@@ -208,7 +208,17 @@ class AuthServer(socketserver.ThreadingTCPServer):
             if outcome == "wrong" and not self.config.check_passwords:
                 account = self.store.accounts.get(request.username.strip().lower())
                 outcome = "not checked"
-            print(f"AUTH login {request.username!r}: {LOGIN_OUTCOMES.get(outcome, outcome)}")
+            # One-way fingerprints (of the salted hash the store keeps): equal fingerprints mean
+            # the same password token, without the token itself ever reaching the log.
+            key = request.username.strip().lower()
+            stored = self.store.accounts.get(key)
+            token = request.password_token
+            print(
+                f"AUTH login {request.username!r}: {LOGIN_OUTCOMES.get(outcome, outcome)} "
+                f"token={_hash_token(key, token)[7:15]} len={len(token)} "
+                f"stored={(stored.password_token[7:15] if stored and stored.password_token else '-')} "
+                f"challenge={challenge[:2].hex() if challenge else '-'}"
+            )
             if outcome == "wrong":
                 return build_disabled_response(WRONG_PASSWORD_MESSAGE)
             if account is None:
