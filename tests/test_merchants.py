@@ -572,3 +572,29 @@ class VitalsTests(unittest.TestCase):
         store.set_level(mage.character_id, 60, learn_abilities=False)
         self.assertGreater(mage.max_mana, 1943)  # Summon Djinn-level costs fit
         self.assertEqual(mage.mana, mage.max_mana)
+
+
+class MovementTests(unittest.TestCase):
+    def mob(self):
+        from eqoa_server import combat, npcs
+
+        npc = next(n for n in npcs.all_npcs() if n.creature)
+        mob = combat.new_mob(npc)
+        mob.x, mob.z = 100.0, 100.0
+        return combat, mob
+
+    def test_facing_points_at_the_target(self):
+        combat, mob = self.mob()
+        self.assertEqual(combat.facing_toward(mob, 100.0, 110.0), 0)     # +z
+        self.assertEqual(combat.facing_toward(mob, 110.0, 100.0), 64)    # +x: a quarter turn
+        self.assertEqual(combat.facing_toward(mob, 100.0, 90.0), 128)    # behind: half a turn
+
+    def test_running_sends_velocity(self):
+        combat, mob = self.mob()
+        self.assertTrue(combat.step_toward(mob, 100.0 - 20, 100.0 + 10, 0.1))
+        update = combat.update_bytes(mob)
+        vx, vz = (b - 256 if b > 127 else b for b in (update[40], update[42]))
+        self.assertLess(vx, 0)  # heading -x, +z, as Sandstorm's (-54, 27)
+        self.assertGreater(vz, 0)
+        self.assertFalse(combat.step_toward(mob, mob.x, mob.z, 0.1))
+        self.assertEqual(combat.update_bytes(mob)[40], 0)

@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 156 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 158 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -129,7 +129,7 @@ Hide an entity by resending its update with byte 0 set to 0.
 | 0 | Active flag |
 | 1 | Object id |
 | 5 | 0x82, then x/y/z as 3-byte big-endian ×128 |
-| 15 | Facing |
+| 15 | Facing: atan2(dx, dz) in 256ths of a turn (no half turn added, unlike the player's heading in client updates) |
 | 26 | HP shown |
 | 27 | HP |
 | 28 | Model |
@@ -141,6 +141,7 @@ Hide an entity by resending its update with byte 0 set to 0.
 | 105–108 | Hair and face |
 | 109 | Robe |
 | 58 | Animation: 0/1 standing, 3 running, 4 creature attack, 11 Kick, 14 lying dead |
+| 40–42 | Velocity x, y, z as signed bytes, ~8 per unit/s (a running creature: −54, −10, 27). Without it the run animation plays in place |
 | 116 | Name (24 bytes) |
 | 140 | Level |
 | 144 | Race |

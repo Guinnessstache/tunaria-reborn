@@ -1178,7 +1178,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         session = self._session_of(mob.target)
         character = session.selected_character if session is not None else None
         if character is None or math.hypot(character.x - mob.npc.x, character.z - mob.npc.z) > combat.LEASH:
-            mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None
+            mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing, mob.velocity = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None, (0.0, 0.0)
             self.refresh_mob(mob)
             return notes + [f"{mob.npc.name} gives up"]
         if combat.step_toward(mob, character.x, character.z, seconds):
@@ -1186,6 +1186,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
         elif mob.animation == combat.RUN:
             mob.animation = combat.STAND
+            mob.velocity = (0.0, 0.0)
             self.refresh_mob(mob)
         if mob.animation != combat.RUN and now >= mob.next_swing:
             mob.next_swing = now + combat.MOB_DELAY
@@ -1240,7 +1241,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             foe = next((m for m in self.mobs.values()
                         if m.state == combat.ALIVE and m.target == character.character_id), None)
         if foe is not None:
-            if combat.step_toward(pet, foe.x, foe.z, seconds):
+            if combat.step_toward(pet, foe.x, foe.z, seconds, speed=combat.MOB_SPEED * 1.5):
                 pet.animation = combat.RUN
                 self.refresh_mob(pet, combat.facing_toward(pet, foe.x, foe.z))
                 return []
@@ -1251,13 +1252,15 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 pet.animation = combat.STAND
                 return self.hit_mob(session, foe, pets.swing(pet.npc.level, self.rng), attacker=pet.object_id)
             return []
-        if combat.distance(character.x, character.z, pet) > pets.FOLLOW_DISTANCE and combat.step_toward(
-                pet, character.x, character.z, seconds * 1.5):
+        far = combat.distance(character.x, character.z, pet) > pets.FOLLOW_DISTANCE
+        if (far or pet.animation == combat.RUN) and combat.step_toward(
+                pet, character.x, character.z, seconds, stop=pets.FOLLOW_STOP, speed=combat.MOB_SPEED * 1.5):
             pet.animation = combat.RUN
             self.refresh_mob(pet, combat.facing_toward(pet, character.x, character.z))
         elif pet.animation == combat.RUN:
             pet.animation = combat.STAND
-            self.refresh_mob(pet)
+            pet.velocity = (0.0, 0.0)
+            self.refresh_mob(pet, combat.facing_toward(pet, character.x, character.z))
         return []
 
     def player_died(self, session: GameSession, killer: combat.Mob) -> list[str]:
@@ -1269,7 +1272,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         character.hp, character.mana = character.max_hp, character.max_mana
         for mob in self.mobs.values():
             if mob.target == character.character_id:
-                mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None
+                mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing, mob.velocity = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None, (0.0, 0.0)
                 self.refresh_mob(mob)
         world, x, y, z, facing = bind_point(character)
         self.teleport(session, world, x, y, z, facing)

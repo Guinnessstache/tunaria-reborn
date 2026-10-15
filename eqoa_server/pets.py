@@ -14,7 +14,8 @@ from functools import lru_cache
 from . import combat, npcs
 
 PET_NPC_ID_BASE = 0x00E00000  # pets' NPC ids: base + character id (object id adds npcs' base)
-FOLLOW_DISTANCE = 6.0
+FOLLOW_DISTANCE = 4.0  # starts following past this; stops 2.5 units behind
+FOLLOW_STOP = 2.5
 PET_DELAY = 3.0
 
 # Most pets are in the NPC table under their own names (not marked as creatures): Earth
