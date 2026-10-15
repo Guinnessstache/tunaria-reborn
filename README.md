@@ -43,7 +43,8 @@ Early but playable to the point of logging in and walking around.
   template. Weapon and shield models are exact only where known (the Sandstorm
   capture, or picked in the model browser); other weapons get a game model of
   the same shape. Armor shows as cloth / leather / chain / plate by the item's
-  name or classes, with guessed values until checked in the model browser.
+  name or classes (values checked in game: 1 cloth, 2 leather, 3 chain, 4 plate,
+  5 and 6 heavier plate looks).
 - No other players, NPCs, combat or quests in the world yet.
 
 ## Quick start

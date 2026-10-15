@@ -290,10 +290,11 @@ _overrides: dict[int, int] = {}
 _color_overrides: dict[int, int] = {}
 
 # Armor: one small value per body part (which texture set the character model draws) and a
-# colour byte. Sandstorm's characters use values 0-6. Which value is which material is a
-# guess to be checked with the model browser: cloth 1, leather 2, chain 3, plate 4 (the
-# Sandstorm Shadowknight's plate set is 4).
+# colour byte. Checked in game with the model browser: 0 none, 1 cloth, 2 leather, 3 chain
+# mail, 4 plate, 5 heavier plate, 6 heaviest-looking plate (the Sandstorm Shadowknight's
+# Legplates of Malice). Plate items default to 4; 5 and 6 are set per item in the browser.
 ARMOR_VALUES = {"cloth": 1, "leather": 2, "chain": 3, "plate": 4}
+ARMOR_LOOKS = {0: "none", 1: "cloth", 2: "leather", 3: "chain mail", 4: "plate", 5: "heavier plate", 6: "heaviest plate"}
 ARMOR_KIND_ORDER = ("cloth", "leather", "chain", "plate")
 CLASS_ARMOR = ("plate", "chain", "plate", "plate", "leather", "chain", "leather", "leather", "chain", "plate",
                "cloth", "cloth", "cloth", "cloth", "cloth")  # heaviest armor per class, class index order
