@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data, items, merchants, npcs, player_stats
+from . import game_data, items, merchants, npcs, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -915,8 +915,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
     def use_ability(self, session: GameSession, payload: bytes) -> list[str]:
         """UseAbility (0x32): int32 0, byte hotbar slot, u32 target. As the Sandstorm server
         answered it, at once: the power spent (stat channel 0x42), the ability greyed out for
-        its cast and recast time (AbilityCooldown 0xCD) and, for abilities whose effect we
-        know, the caster's effect (CastEffect 0xB1: Return Home's blue glow). Return Home
+        its cast and recast time (AbilityCooldown 0xCD) and the cast's look (CastEffect 0xB1:
+        Return Home's blue glow; other abilities a best guess, spell_effects.py). Return Home
         lands when its cast ends (SetPosition); other abilities have no effect yet."""
         character = session.selected_character
         if character is None or len(payload) < 5:
@@ -942,7 +942,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         cooldown_ms = (spell["cast_time"] + spell["recast"]) * 1000 + COOLDOWN_SLACK_MS
         session.cooldowns[order] = now + cooldown_ms / 1000
         self.send_reliable(session, ABILITY_COOLDOWN_OPCODE, bytes([order]) + struct.pack("<i", 0) + _write_zigzag(cooldown_ms))
-        effect = CAST_EFFECTS.get(spell["name"])
+        effect = spell_effects.effect_for(spell["name"])
         if effect is not None:
             effect_target = PHASE3_SESSION_ID if spell["scope"] == 0 or target == 0xFFFFFFFF else target
             self.send_reliable(
@@ -1383,8 +1383,6 @@ ABILITY_COOLDOWN_OPCODE = 0x00CD
 # Sandstorm greyed abilities out for cast + recast + 0.3 s (Kick 6 s: 6300 ms; Return Home
 # 60 + 5 s: 65300 ms).
 COOLDOWN_SLACK_MS = 300
-# The effect id in CastEffect, per ability, as Sandstorm sent them. Others are unknown.
-CAST_EFFECTS = {"Return Home": 0x8FB28233, "Kick": 0x0A286E2E}
 PLAYER_TUNAR_OPCODE = 0x0052
 RELIABLE_SEGMENT_BYTES = 0x0484
 EQUIP_ITEM_OPCODE = 0x003F

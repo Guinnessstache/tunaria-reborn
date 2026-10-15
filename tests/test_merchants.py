@@ -313,3 +313,29 @@ class PlayerStatsTests(InWorldCase):
         self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([6]) + struct.pack("<I", 0))
         self.assertEqual(self.character.mana, 5)
         self.assertFalse(self.session.player_channels[0x42].acked)  # the new power goes out
+
+
+class SpellEffectTests(unittest.TestCase):
+    def test_known_effects_are_exact(self):
+        from eqoa_server import spell_effects
+
+        self.assertEqual(spell_effects.effect_for("Return Home"), 0x8FB28233)
+        self.assertEqual(spell_effects.effect_for("Kick"), 0x0A286E2E)
+
+    def test_every_ability_gets_an_effect_from_the_disc(self):
+        from eqoa_server import spell_effects
+
+        catalogue = {effect["id"] for effect in spell_effects.effects()}
+        self.assertEqual(len(catalogue), 228)  # SPELLFX.CSF's 238, less 10 without particles
+        for abilities in items.class_abilities().values():
+            for ability in abilities:
+                if ability["power"]:
+                    self.assertIn(spell_effects.effect_for(ability["name"]), catalogue | {0x0A286E2E}, ability["name"])
+
+    def test_guesses_follow_the_element(self):
+        from eqoa_server import spell_effects
+
+        colour = {e["id"]: e["colour"] for e in spell_effects.effects()}
+        self.assertIn(colour[spell_effects.effect_for("Burst of Frost")], ("blue", "cyan"))
+        self.assertIn(colour[spell_effects.effect_for("Fire Bolt")], ("red", "orange"))
+        self.assertEqual(spell_effects.family({"name": "Protection of Air"}), "buff")  # not "rot"

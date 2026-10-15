@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 137 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 140 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -83,6 +83,7 @@ redirects to it.
 | `wiki_items.json.gz` | wiki.eqoa.live facts |
 | `sandstorm_items.json` | Items seen in the capture |
 | `item_models.json` | Model ids from ITEM.ESF |
+| `spell_effects.json` | The 238 spell effect ids in DATA2/SPELLFX.CSF, with particle counts and colours |
 
 Each one is built by a script in `tools/` (`import_*.py`).
 
@@ -291,6 +292,14 @@ to learn them."
   Channel 0x43 got 4 zero bytes on world entry. **Without 0x42 the client has
   no power and won't cast** (Return Home didn't start; the fists glow blue
   while it casts). `player_stats.py` builds both; they're resent until acked.
+- **Spell effects** are in `DATA2/SPELLFX.CSF` (compressed ESF: zlib blocks):
+  238 SpellEffect objects (0xC200, id in the 0xC210 header) made of 332
+  ParticleDefinitions (0xC000). Nothing says which spell uses which; the
+  original server held that. `spell_effects.py` uses the two known ones and
+  guesses the rest by colour (each particle has an RGBA ramp from byte 0x6C;
+  Return Home's particles come out blue) against the ability's element and
+  kind (name words, then the guide's effect type). All ranks of a spell share
+  an effect. Not a hash of the spell name (8 hash functions tried).
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
 
