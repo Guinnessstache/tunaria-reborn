@@ -235,3 +235,65 @@ def entity_names(path: Path, game_port: int = GAME_PORT) -> dict[int, str]:
                 if name:
                     names[struct.unpack_from("<I", data, OBJECT_ID)[0]] = name
     return names
+
+
+ITEM_FIELDS = ("unknown1", "icon", "unknown2", "slot", "unknown3", "trade", "rent", "unknown4", "attack_type",
+               "damage", "unknown5", "level", "max_stack", "max_hp", "duration", "class_mask", "race_mask",
+               "proc_anim", "lore", "unknown6", "craft")
+
+
+def _zigzag(data: bytes, offset: int) -> tuple[int, int]:
+    value, offset = read_varuint(data, offset)
+    return (value >> 1) ^ -(value & 1), offset
+
+
+def _utf16(data: bytes, offset: int) -> tuple[str, int]:
+    length = struct.unpack_from("<i", data, offset)[0]
+    start = offset + 4
+    return data[start:start + 2 * length].decode("utf-16-le", "replace"), start + 2 * length
+
+
+def item_record(data: bytes, offset: int) -> tuple[dict, int]:
+    """One item record (inventory, MerchantBox, Loot, AddInventoryItem), in the field order
+    items.item_record writes: zigzag stack, durability, charges, equip slot; byte location;
+    int32 key; zigzag item id, cost, 21 pattern fields; name, description; zigzag stat count
+    and (stat, value) pairs."""
+    item: dict = {}
+    for name in ("stack", "durability", "charges", "equip"):
+        item[name], offset = _zigzag(data, offset)
+    item["location"] = data[offset]
+    item["key"] = struct.unpack_from("<i", data, offset + 1)[0]
+    offset += 5
+    item["id"], offset = _zigzag(data, offset)
+    item["cost"], offset = _zigzag(data, offset)
+    for name in ITEM_FIELDS:
+        item[name], offset = _zigzag(data, offset)
+    item["name"], offset = _utf16(data, offset)
+    item["description"], offset = _utf16(data, offset)
+    count, offset = _zigzag(data, offset)
+    stats = []
+    for _ in range(count):
+        stat, offset = _zigzag(data, offset)
+        value, offset = _zigzag(data, offset)
+        stats.append([stat, value])
+    item["stats"] = stats
+    return item, offset
+
+
+def item_list(data: bytes, offset: int) -> list[dict]:
+    """zigzag count, int32 count, then the records (MerchantBox after its header, Loot)."""
+    count, offset = _zigzag(data, offset)
+    offset += 4
+    found = []
+    for _ in range(count):
+        item, offset = item_record(data, offset)
+        found.append(item)
+    return found
+
+
+def merchant_box(payload: bytes) -> tuple[int, int, int, list[dict]]:
+    """MerchantBox 0xB7: u32 merchant, zigzag sell %, zigzag buy %, then the item list."""
+    merchant = struct.unpack_from("<I", payload, 0)[0]
+    sell, offset = _zigzag(payload, 4)
+    buy, offset = _zigzag(payload, offset)
+    return merchant, sell, buy, item_list(payload, offset)

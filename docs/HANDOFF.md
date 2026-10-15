@@ -376,6 +376,17 @@ spiritmaster `bind` ([world, x, y, z, facing], used by Return Home and death).
 
 Sandstorm also answered a sale with "You receive N tunar." (we do now).
 
+The same captures teach goods (`dialogue.learn_goods`, applied by
+`Library.refresh`): every item record the official server sent (merchant
+windows, loot, items given; `capture_reader.item_record`) whose id our item
+table lacks is added (Sandstorm's ids match ours where both have the item; it
+has more, e.g. Evergreen Tunic 13456 and its spell scrolls 20743+, marked as
+scrolls by the scroll icon since their descriptions are the spell's), and what
+each merchant sold (by NPC name) replaces our fitted stock, at the captured
+price (Sandstorm's MerchantBox sent 100/100 with the price as cost). A player
+deleting a quest from the log sends DeleteQuest 0x7D (int32 0, byte 0): the
+quest is dropped and the steps that gave it can be done again.
+
 Same capture, the player's own channels: stat field 14 is AC (0, 7 with the
 tunic on, 11 and 14 at levels 3-4, 26 with Woodskin's +12) and field 42 went
 1, 2, 3 with levels 1-3 (still 3 at level 4; we leave it at 3). We send AC as

@@ -206,8 +206,38 @@ def _key(exchange: Exchange) -> str:
     return exchange.key
 
 
+def learn_goods(path: Path) -> tuple[list[dict], dict[str, list[int]]]:
+    """Items (every record the server sent: merchant windows, loot, items given) and what
+    each merchant sold (by name, in its order; "Buyback:" entries left out)."""
+    from . import capture_reader
+
+    records: list[dict] = []
+    stock: dict[str, list[int]] = {}
+    names = capture_reader.entity_names(path)
+    for message in capture_reader.read_capture(path):
+        if message.from_client:
+            continue
+        try:
+            if message.opcode == 0xB7:
+                merchant, _sell, _buy, goods = capture_reader.merchant_box(message.payload)
+                goods = [g for g in goods if not g["name"].startswith("Buyback:")]
+                records += goods
+                name = names.get(merchant)
+                if name and len(goods) > len(stock.get(name, ())):
+                    stock[name] = [g["id"] for g in goods]
+            elif message.opcode == 0x18:
+                records += capture_reader.item_list(message.payload, 0)
+            elif message.opcode == ADD_ITEM:
+                records.append(capture_reader.item_record(message.payload, 0)[0])
+        except (IndexError, struct.error, UnicodeDecodeError):
+            continue
+    return records, stock
+
+
 class Library:
-    """Every exchange learned from the captures in a folder, relearned when they change."""
+    """What the captures in a folder teach: NPC exchanges, items the server lacks and what
+    merchants sell. Relearned when the folder changes; items and stock go to items.py and
+    merchants.py."""
 
     def __init__(self, folder: Path | None) -> None:
         self.folder = Path(folder) if folder else None
@@ -216,19 +246,35 @@ class Library:
         self._exchanges: list[Exchange] = []
 
     def exchanges(self) -> list[Exchange]:
+        self.refresh()
+        return self._exchanges
+
+    def refresh(self) -> None:
+        from . import items, merchants
+
         with self._lock:
             files = sorted(self.folder.glob("*.pcap*")) if self.folder and self.folder.is_dir() else []
             stamp = tuple((f.name, f.stat().st_mtime, f.stat().st_size) for f in files)
-            if stamp != self._stamp:
-                learned: dict[str, Exchange] = {}
-                for path in files:
-                    try:
-                        for exchange in learn(path):
-                            learned.setdefault(exchange.key, exchange)
-                    except Exception as exc:  # noqa: BLE001 - one bad capture shouldn't stop the rest
-                        print(f"DIALOGUE couldn't learn from {path.name}: {exc}")
-                self._exchanges, self._stamp = list(learned.values()), stamp
-            return self._exchanges
+            if stamp == self._stamp:
+                return
+            learned: dict[str, Exchange] = {}
+            records: list[dict] = []
+            stock: dict[str, list[int]] = {}
+            for path in files:
+                try:
+                    for exchange in learn(path):
+                        learned.setdefault(exchange.key, exchange)
+                    found, sold = learn_goods(path)
+                    records += found
+                    stock.update(sold)
+                except Exception as exc:  # noqa: BLE001 - one bad capture shouldn't stop the rest
+                    print(f"DIALOGUE couldn't learn from {path.name}: {exc}")
+            items.set_learned(records)
+            merchants.set_learned(stock, {r["id"]: r["cost"] for r in records})
+            self._exchanges, self._stamp = list(learned.values()), stamp
+            if files:
+                print(f"LEARNED from {len(files)} capture(s): {len(learned)} NPC exchanges, "
+                      f"{len(stock)} merchants' stock, {len(records)} item records")
 
     def for_interact(self, npc_name: str, klass: int, quest: str | None, done: set[str], has_items) -> Exchange | None:
         """What the NPC does when talked to: the next step of the captured chain whose quest,

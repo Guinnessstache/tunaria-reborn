@@ -132,3 +132,40 @@ class BuffDisplayTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<I", listed)[0], 1)
         self.assertEqual(text_of(listed, 8), "Woodskin")
         self.assertEqual(player_stats.buffs_block([]), bytes(4))
+
+
+class LearnedGoodsTests(unittest.TestCase):
+    """Items and merchant stock captured from an official-style server."""
+
+    def tearDown(self):
+        from eqoa_server import merchants
+
+        items.set_learned([])
+        merchants.set_learned({}, {})
+
+    def test_a_learned_item_is_sold_at_its_captured_price(self):
+        from eqoa_server import merchants
+
+        record = {"id": 13456, "name": "Evergreen Tunic", "description": "A verdant green tunic.", "cost": 7,
+                  "icon": -1092141747, "slot": 5, "trade": 1, "rent": 1, "attack_type": 0, "damage": 0, "level": 1,
+                  "max_stack": 1, "max_hp": 200, "duration": 0, "class_mask": 1 << 7, "race_mask": 0x3FF,
+                  "proc_anim": 0, "lore": 1, "craft": 0, "stats": [[14, 4]]}
+        self.assertNotIn(13456, items.item_patterns())
+        items.set_learned([record])
+        merchants.set_learned({"Merchant Whitepaw": [13456]}, {13456: 7})
+        self.assertEqual(merchants.stock("Merchant Whitepaw"), (13456,))
+        self.assertEqual(merchants.price(13456), 7)
+        self.assertEqual(items.item_by_name("evergreen tunic", 7), 13456)
+        self.assertEqual(items.names_in("Report to Lirinia once you aquire Evergreen Tunic."), ["Evergreen Tunic"])
+        self.assertEqual(items.gear_ac([{"item": 13456, "equip": 5}]), 4)
+        items.set_learned([])
+        self.assertNotIn(13456, items.item_patterns())
+
+    def test_captured_scrolls_scribe_by_their_icon(self):
+        druid_woodskin = next(a for a in items.class_abilities()["Druid"] if a["name"] == "Woodskin")
+        record = {"id": 20743, "name": "Woodskin", "description": "The target's skin shimmers.", "cost": 11,
+                  "icon": items.SCROLL_ICON, "slot": -1, "level": druid_woodskin["level"], "class_mask": 1 << 7,
+                  "race_mask": 0x3FF, "stats": []}
+        items.set_learned([record])
+        self.assertTrue(items.is_scroll(20743))
+        self.assertIsNotNone(items.scroll_spell(20743, 7))

@@ -291,6 +291,8 @@ SCROLL_ID_BASE = 200000  # built scrolls: base + class * 1000 + guide table posi
 
 def _scribes(item: dict) -> str | None:
     """The spell name a scroll item scribes, or None for other items."""
+    if item.get("scribes"):
+        return item["scribes"]
     description = item.get("description") or ""
     if not description.startswith(SCRIBE_TEXT):
         return None
@@ -633,6 +635,35 @@ def names_in(text: str) -> list[str]:
             found.append(item_patterns()[_items_by_name()[name]]["name"])
             lowered = lowered.replace(name, " ")
     return found
+
+
+_learned_ids: set[int] = set()
+
+
+def set_learned(records: list[dict]) -> None:
+    """Items an official-style server sent (capture_reader.item_record) that our item table
+    lacks (Sandstorm's Evergreen Tunic, its spell scrolls...): added to item_patterns.
+    Its scrolls carry the spell's own description, so they're marked by their scroll icon."""
+    patterns = item_patterns()
+    for item_id in _learned_ids:
+        patterns.pop(item_id, None)
+    _learned_ids.clear()
+    for record in records:
+        if record["id"] in patterns or record["id"] <= 0 or not record.get("name"):
+            continue
+        pattern = {key: record.get(key, 0) for key in (
+            "icon", "slot", "trade", "rent", "attack_type", "damage", "level", "max_stack", "max_hp", "duration",
+            "proc_anim", "lore", "craft")}
+        pattern.update(id=record["id"], name=record["name"], description=record["description"],
+                       class_use=record["class_mask"], race_use=record["race_mask"],
+                       class_mask=record["class_mask"] or ALL_CLASSES, stats=record["stats"], model=0, color=0,
+                       learned=True)
+        if record["icon"] == SCROLL_ICON and record["slot"] == -1:
+            pattern["scribes"] = record["name"]
+        patterns[record["id"]] = pattern
+        _learned_ids.add(record["id"])
+    for cached in (_items_by_name, _items_by_key, _real_scrolls):
+        cached.cache_clear()
 
 
 def name_key(name: str) -> str:

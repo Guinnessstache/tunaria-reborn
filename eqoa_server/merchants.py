@@ -60,10 +60,30 @@ def _rarity(item: dict) -> str:
     return (items._wiki_items().get(item["name"].lower()) or {}).get("rarity", "").lower()
 
 
-@lru_cache(maxsize=None)
+_learned_stock: dict[str, tuple[int, ...]] = {}
+_learned_cost: dict[int, int] = {}
+
+
+def set_learned(stock_by_name: dict[str, list[int]], costs: dict[int, int]) -> None:
+    """What merchants sold in captures of an official-style server, and their prices: they
+    replace our fitted stock for those merchants (dialogue.Library learns them)."""
+    _learned_stock.clear()
+    _learned_stock.update({name: tuple(i for i in ids if i in items.item_patterns()) for name, ids in stock_by_name.items()})
+    _learned_cost.clear()
+    _learned_cost.update(costs)
+
+
 def stock(merchant_name: str) -> tuple[int, ...]:
-    """Item ids the merchant sells, cheapest first. Merchants the guide doesn't describe
-    (or whose goods aren't in the item table) sell basic food and drink."""
+    """Item ids the merchant sells: as captured from an official-style server, else fitted
+    from the guide's description (cheapest first); merchants the guide doesn't describe
+    sell basic food and drink."""
+    if merchant_name in _learned_stock:
+        return _learned_stock[merchant_name]
+    return _fitted_stock(merchant_name)
+
+
+@lru_cache(maxsize=None)
+def _fitted_stock(merchant_name: str) -> tuple[int, ...]:
     return _stock_for(descriptions().get(merchant_name, "")) or (
         _stock_for("Healing Foods")[:MAX_STOCK // 2] + _stock_for("Replenishing Drinks")[:MAX_STOCK // 2]
     )
@@ -116,14 +136,19 @@ def _stock_for(description: str) -> tuple[int, ...]:
     return tuple(unique[:MAX_STOCK])
 
 
+def value(item_id: int) -> int:
+    """An item's value: what an official-style server priced it at (captured), else ours."""
+    return _learned_cost.get(item_id, items.base_price(item_id))
+
+
 def price(item_id: int) -> int:
     """What a merchant asks for one: the item's full value (BUY_PERCENT)."""
-    return _percent(items.base_price(item_id), BUY_PERCENT)
+    return _percent(value(item_id), BUY_PERCENT)
 
 
 def sell_price(item_id: int) -> int:
     """What a merchant pays for one: a quarter of its value (SELL_PERCENT)."""
-    return max(1, _percent(items.base_price(item_id), SELL_PERCENT))
+    return max(1, _percent(value(item_id), SELL_PERCENT))
 
 
 def _percent(value: int, percent: int) -> int:

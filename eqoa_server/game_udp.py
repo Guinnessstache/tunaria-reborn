@@ -794,6 +794,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             LOOT_ITEM_OPCODE: self.take_loot,
             SELECT_TARGET_OPCODE: self.select_target,
             INTERACT_OPCODE: self.interact,
+            QUEST_DELETE_OPCODE: self.abandon_quest,
             OPTION_PICKED_OPCODE: self.pick_option,
             LOOT_ALL_OPCODE: self.loot_all,
         }
@@ -877,6 +878,20 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             return [f"option {choice} of {npc.name}'s box: nothing learned"]
         return self._run_exchange(session, npc, exchange, parent=key)
 
+    def abandon_quest(self, session: GameSession, _payload: bytes) -> list[str]:
+        """DeleteQuest (0x7D) from the client: the player deleted the quest from the log.
+        The steps that gave it can be done again."""
+        character = session.selected_character
+        if character is None or not character.quests.get("active"):
+            return []
+        quests = character.quests
+        dropped = quests.get("active")
+        quests["active"] = None
+        quests["done"] = [key for key in quests.get("done", []) if key not in quests.get("given_by", [])]
+        quests["given_by"] = []
+        self.store.save()
+        return [f"abandoned quest: {dropped}"]
+
     def loot_all(self, session: GameSession, _payload: bytes) -> list[str]:
         self.send_reliable(session, LOOT_ALL_OPCODE, b"")
         return []
@@ -905,6 +920,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 place += 1
             elif kind == "quest_add":
                 quests["active"] = action[1]
+                quests["given_by"] = [key for key in (exchange.key, parent) if key]
                 self.send_reliable(session, QUEST_ADD_OPCODE, struct.pack("<ii", 0, len(action[1])) + action[1].encode("utf-16-le"))
                 self._say(session, "You have received a quest!")
                 notes.append(f"quest: {action[1]}")
@@ -976,11 +992,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         npc = npcs.by_object_id(struct.unpack_from("<I", payload, 0)[0]) if len(payload) >= 4 else None
         if npc is None or not npc.is_merchant:
             return []
+        self.dialogue.refresh()  # stock captured from an official-style server replaces ours
         goods = merchants.stock(npc.name)
         body = struct.pack("<I", npc.object_id) + _write_zigzag(merchants.SELL_PERCENT) + _write_zigzag(merchants.BUY_PERCENT)
         body += _write_zigzag(len(goods)) + struct.pack("<i", len(goods))
         body += b"".join(
-            items.item_record({"item": item_id, "stack": 1, "equip": items.NOT_EQUIPPED}, key)
+            items.item_record({"item": item_id, "stack": 1, "equip": items.NOT_EQUIPPED}, key, merchants.value(item_id))
             for key, item_id in enumerate(goods)
         )
         self.send_reliable(session, MERCHANT_BOX_OPCODE, body)
