@@ -517,6 +517,9 @@ class PetTests(CombatCase):
         pet = self.summon()
         self.assertIsNotNone(pet)
         self.assertEqual(pet.npc.name, "Earth Elementaling")
+        from eqoa_server import pets
+        self.assertEqual(pets.look_for("Earth Elementaling").model & 0xFFFFFFFF, 0x3787521F)  # its own NPC entry
+        self.assertEqual(pets.look_for("Summon Greater Efreet").name, "Efreet")
         chat = [body for op, body in self.sent if op == 0x0A7A]
         self.assertTrue(any("answers your call".encode("utf-16-le") in body for body in chat))
         self.session.phase3_address = ("127.0.0.1", 1)
