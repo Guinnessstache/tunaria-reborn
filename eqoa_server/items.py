@@ -540,16 +540,29 @@ def _string(text: str) -> bytes:
     return struct.pack("<i", len(text)) + text.encode("utf-16-le")
 
 
-def item_record(entry: dict, key: int, cost: int = 0) -> bytes:
-    """One inventory item, in the field order the Sandstorm server used."""
+def base_price(item_id: int) -> int:
+    """An item's value in tunar (our formula: the item table has no prices). The Sandstorm
+    capture's well water is worth 20, ours 15; its level 20 sword 2453, ours 2500."""
+    item = item_patterns()[item_id]
+    level = max(1, item["level"])
+    if item["slot"] == -1:
+        return 5 + 5 * level
+    return 100 + 120 * level
+
+
+def item_record(entry: dict, key: int, cost: int | None = None) -> bytes:
+    """One inventory item, in the field order the Sandstorm server used. The cost is the
+    item's value; merchant windows scale it by their buy and sell percentages."""
     item = item_patterns()[entry["item"]]
+    if cost is None:
+        cost = base_price(entry["item"])
     durability = item["max_hp"] if item["max_hp"] > 0 else DEFAULT_DURABILITY
     duration = item["duration"] if item["duration"] > 0 else DEFAULT_DURATION
     z = _write_zigzag
     out = bytearray()
     out += z(entry.get("stack", 1)) + z(durability) + z(0) + z(entry.get("equip", NOT_EQUIPPED))
     out += bytes([INVENTORY]) + struct.pack("<i", key)
-    out += z(item["id"]) + _write_varuint(cost)  # item id, cost (unsigned)
+    out += z(item["id"]) + z(cost)  # item id, cost (zigzag: every cost in the capture is even)
     for value in (
         0, item["icon"], 0, item["slot"], 0, item["trade"], item["rent"], 0, item["attack_type"],
         item["damage"], 0, item["level"], max(1, item["max_stack"]), durability, duration,

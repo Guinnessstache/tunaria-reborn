@@ -16,6 +16,12 @@ from pathlib import Path
 
 from . import items
 
+# The two percentages at the top of the MerchantBox. The client multiplies an item's cost by
+# them to show prices: with EQOAGameServer's 200 our 15-tunar well water showed as -16
+# (zigzag-read 15 is -8, times 2). We assume the first is buying and the second selling.
+BUY_PERCENT = 100
+SELL_PERCENT = 25
+
 DATA = Path(__file__).resolve().parent / "reference_data"
 MAX_STOCK = 40
 WEAPON_SLOTS = (12, 14, 15)
@@ -102,13 +108,10 @@ def _stock_for(description: str) -> tuple[int, ...]:
 
 
 def price(item_id: int) -> int:
-    """What a merchant asks for one (our formula: the item table has no prices)."""
-    item = items.item_patterns()[item_id]
-    level = max(1, item["level"])
-    if item["slot"] == -1:
-        return 5 + 5 * level
-    return 100 + 120 * level
+    """What a merchant asks for one: the item's full value (BUY_PERCENT)."""
+    return items.base_price(item_id) * BUY_PERCENT // 100
 
 
 def sell_price(item_id: int) -> int:
-    return max(1, price(item_id) // 4)
+    """What a merchant pays for one: a quarter of its value (SELL_PERCENT)."""
+    return max(1, items.base_price(item_id) * SELL_PERCENT // 100)
