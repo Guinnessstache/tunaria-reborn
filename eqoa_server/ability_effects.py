@@ -51,7 +51,7 @@ def max_power(character: Character, buffs: list[Buff]) -> int:
 
 
 def stat_block(character: Character, buffs: list[Buff]) -> bytes:
-    stats = [value + bonus(buffs, name) for value, name in zip(player_stats.base_stats(character), STAT_ATTRIBUTES)]
+    stats = stat_values(character, buffs)
     return player_stats.stat_block(character, stats=stats, max_hp=max_hp(character, buffs),
                                    max_power=max_power(character, buffs))
 
@@ -61,7 +61,11 @@ def _lands_on_caster(effect: dict, targeting_other: bool) -> bool:
     return scope in ("Self", "Group") or (scope == "Target" and not targeting_other)
 
 
-def _amount(character: Character, effect: dict) -> int:
+def stat_values(character: Character, buffs: list[Buff]) -> list[int]:
+    return [value + bonus(buffs, name) for value, name in zip(player_stats.base_stats(character), STAT_ATTRIBUTES)]
+
+
+def amount(character: Character, effect: dict) -> int:
     """The guide's change plus its stat modifier share (e.g. 40% of Str), same sign."""
     change = int(effect.get("change", 0))
     percent = int(effect.get("percent", 0))
@@ -80,22 +84,22 @@ def apply(character: Character, row: dict, buffs: list[Buff], now: float, target
         if not _lands_on_caster(effect, targeting_other):
             continue
         kind, attribute = effect.get("type"), effect.get("attribute")
-        amount, duration = _amount(character, effect), int(effect.get("duration", 0))
-        if kind == "Dmg/Heal" and attribute == "HP" and amount > 0:
+        value, duration = amount(character, effect), int(effect.get("duration", 0))
+        if kind == "Dmg/Heal" and attribute == "HP" and value > 0:
             before = character.hp
-            character.hp = min(max_hp(character, buffs), character.hp + amount)
+            character.hp = min(max_hp(character, buffs), character.hp + value)
             said.append(f"You are healed for {character.hp - before}.")
         elif kind == "Statistic Change" and attribute in STAT_ATTRIBUTES + MAX_ATTRIBUTES and duration > 0:
             buffs[:] = [b for b in buffs if not (b.spell == row["name"] and b.attribute == attribute)]
-            buffs.append(Buff(row["name"], attribute, amount, now + duration))
-            said.append(f"{row['name']}: {amount:+d} {attribute} for {_duration(duration)}.")
-        elif kind == "Statistic Change" and attribute in ("HoT", "PoT") and duration > 0 and amount > 0:
+            buffs.append(Buff(row["name"], attribute, value, now + duration))
+            said.append(f"{row['name']}: {value:+d} {attribute} for {_duration(duration)}.")
+        elif kind == "Statistic Change" and attribute in ("HoT", "PoT") and duration > 0 and value > 0:
             buffs[:] = [b for b in buffs if not (b.spell == row["name"] and b.attribute == attribute)]
-            buffs.append(Buff(row["name"], attribute, amount, now + duration, next_tick=now + TICK))
+            buffs.append(Buff(row["name"], attribute, value, now + duration, next_tick=now + TICK))
             what = "HP" if attribute == "HoT" else "power"
-            said.append(f"{row['name']}: {amount} {what} every {TICK:.0f} s for {_duration(duration)}.")
+            said.append(f"{row['name']}: {value} {what} every {TICK:.0f} s for {_duration(duration)}.")
         elif kind == "Statistic Change" and attribute == "Power" and duration == 0:
-            character.mana = max(0, min(max_power(character, buffs), character.mana + amount))
+            character.mana = max(0, min(max_power(character, buffs), character.mana + value))
     character.hp = min(character.hp, max_hp(character, buffs))
     character.mana = min(character.mana, max_power(character, buffs))
     return said

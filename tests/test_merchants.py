@@ -398,3 +398,86 @@ class AbilityEffectTests(InWorldCase):
         notes = self.cast("Minor Healing", target=0x01004600)  # an NPC targeted
         self.assertEqual(self.character.hp, 10)
         self.assertIn("needs combat", notes[0])
+
+
+class CombatTests(InWorldCase):
+    """Fighting a creature, in the message shapes of the Sandstorm capture."""
+
+    def setUp(self):
+        super().setUp()
+        from eqoa_server import combat, npcs
+
+        self.combat = combat
+        self.npc = next(n for n in npcs.all_npcs() if n.creature and n.level == 1)
+        self.server.sessions[("127.0.0.1", 1)] = self.session
+        self.character.x, self.character.z = self.npc.x + 2, self.npc.z
+        self.character.hp = self.character.max_hp = 100
+        self.server.rng.seed(4)
+
+    def attack(self):
+        return self.server.attack(self.session, struct.pack("<I", self.npc.object_id))
+
+    def test_auto_attack_hits_and_the_creature_turns(self):
+        self.attack()
+        self.server.combat_tick(self.session.next_swing)
+        mob = self.server.mobs[self.npc.object_id]
+        (op, body), = [s for s in self.sent if s[0] == 0xDB]
+        self.assertEqual(len(body), 9)  # attacker, damage, target: as Sandstorm's 0xDB
+        self.assertEqual(struct.unpack_from("<I", body, 5)[0], self.npc.object_id)
+        self.assertEqual(mob.hp, mob.max_hp - body[4])
+        self.assertEqual(mob.target, self.character.character_id)
+        self.assertEqual(self.combat.update_bytes(mob)[27], round(255 * mob.hp / mob.max_hp))
+
+    def test_a_kill_gives_xp_and_leaves_a_corpse_then_respawns(self):
+        self.attack()
+        mob = self.server.mob(self.npc.object_id)
+        mob.hp = 1
+        self.server.combat_tick(self.session.next_swing)
+        ops = [op for op, _ in self.sent]
+        self.assertEqual(ops[-3:], [0x20, 0xD9, 0x0A7A])  # Sandstorm's order on a kill
+        xp_body = self.sent[-3][1]
+        self.assertEqual(xp_body[:1], b"\x08")
+        self.assertEqual(self.character.experience, self.combat.xp_for(1, self.character.level))
+        self.assertEqual(self.combat.update_bytes(mob)[26], 3)  # dead
+        self.assertIsNone(self.session.attack_target)
+        self.server.combat_tick(mob.died_at + self.combat.CORPSE_TIME)
+        self.assertEqual(self.combat.update_bytes(mob)[0], 0)  # cleared away
+        self.server.combat_tick(mob.died_at + self.combat.RESPAWN)
+        self.assertEqual(self.server.mobs[self.npc.object_id].state, self.combat.ALIVE)
+
+    def test_creature_chases_hits_and_can_kill(self):
+        mob = self.server.mob(self.npc.object_id)
+        mob.target = self.character.character_id
+        self.character.x = self.npc.x + 30
+        self.server.combat_tick(10.0)
+        self.server.combat_tick(10.5)
+        self.assertGreater(mob.x, self.npc.x)  # coming over
+        self.character.x = mob.x + 1
+        self.character.hp = 1
+        mob.next_swing = 0
+        self.server.combat_tick(11.0)
+        ops = [op for op, _ in self.sent]
+        self.assertIn(0xB1, ops)  # its swing
+        self.assertIn(0xB2, ops)  # died: sent home
+        self.assertEqual(self.character.hp, self.character.max_hp)
+        self.assertIsNone(mob.target)
+
+    def test_townsfolk_cant_be_attacked(self):
+        from eqoa_server import npcs
+
+        guard = next(n for n in npcs.all_npcs() if not n.creature)
+        notes = self.server.attack(self.session, struct.pack("<I", guard.object_id))
+        self.assertIn("not a living creature", notes[0])
+        self.assertIsNone(self.session.attack_target)
+
+    def test_damage_ability_on_a_creature(self):
+        self.character.klass = items.CLASS_NAMES.index("Warrior")
+        self.character.level = 10
+        kick = next(i for i, a in enumerate(items.class_abilities()["Warrior"]) if a["name"] == "Kick")
+        spell_id = items.class_spell_id(0, kick)
+        self.character.spells.append({"spell": spell_id, "hotbar": 8})
+        self.character.mana = 500
+        notes = self.server.use_ability(self.session, struct.pack("<i", 0) + bytes([8]) + struct.pack("<I", self.npc.object_id))
+        mob = self.server.mobs[self.npc.object_id]
+        self.assertLess(mob.hp, mob.max_hp)
+        self.assertIn(0xDB, [op for op, _ in self.sent])

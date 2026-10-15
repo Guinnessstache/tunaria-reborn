@@ -50,6 +50,8 @@ class Npc:
     weapons: tuple[int, int, int]
     armor: tuple[int, ...]
     looks: tuple[int, ...]
+    # EQOAGameServer marks creatures (things to fight) with a "$" after the name.
+    creature: bool = False
 
     @property
     def object_id(self) -> int:
@@ -71,7 +73,7 @@ def all_npcs() -> tuple[Npc, ...]:
         # 4,815 creature names in EQOAGameServer's table end in "$" (its own marker); the
         # Sandstorm server sends names without it.
         Npc(r["id"], r["name"].rstrip("$").strip(), r["world"], float(r["x"]), float(r["y"]), float(r["z"]), r["facing"], r["model"],
-            r["level"], r["type"], tuple(r["weapons"]), tuple(r["armor"]), tuple(r["looks"]))
+            r["level"], r["type"], tuple(r["weapons"]), tuple(r["armor"]), tuple(r["looks"]), r["name"].rstrip().endswith("$"))
         for r in rows
     )
 

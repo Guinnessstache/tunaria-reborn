@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import random
 import socketserver
 import struct
 import threading
@@ -13,7 +15,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import ability_effects, game_data, items, merchants, npcs, player_stats, spell_effects
+from . import ability_effects, combat, game_data, items, merchants, npcs, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -53,6 +55,7 @@ from .protocol import (
     parse_create_character,
     parse_udp_packet,
     read_varuint,
+    write_varuint as _write_varuint,
 )
 from .storage import Character, JsonStore, bind_point
 
@@ -103,6 +106,8 @@ class GameSession:
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
+    attack_target: int | None = None  # object id auto attack is swinging at
+    next_swing: float = 0.0
     # Spell book order -> monotonic time the ability is ready again.
     cooldowns: dict[int, float] = field(default_factory=dict)
     # Buffs and heal/power-over-time on the character (ability_effects.Buff); not saved.
@@ -449,6 +454,12 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                         sent += server.assign_hotbar(session, msg.payload)
                     elif msg.opcode == USE_ABILITY_OPCODE:
                         sent += server.use_ability(session, msg.payload)
+                    elif msg.opcode == ATTACK_OPCODE:
+                        sent += server.attack(session, msg.payload)
+                    elif msg.opcode == LOOT_OPCODE:
+                        sent += server.loot(session, msg.payload)
+                    elif msg.opcode == LOOT_CLOSE_OPCODE:
+                        server.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
             update = next(
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
@@ -661,6 +672,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.sessions: dict[tuple[str, int], GameSession] = {}
         self.discovery: dict[tuple[str, int], DiscoverySession] = {}
         self.lock = threading.RLock()
+        # Creatures that have been fought (combat.Mob by object id); the rest are untouched.
+        self.mobs: dict[int, combat.Mob] = {}
+        self.rng = random.Random()
+        self.last_combat_tick = 0.0
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
         """Send one phase3 bundle (flags, arrival placeholder, messages) with the next bundle number."""
@@ -711,7 +726,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         return notes
 
     def _assign_entity_channels(self, session: GameSession, character: Character) -> list[str]:
-        wanted = npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS, ENTITY_RANGE)
+        wanted = [npc for npc in npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS + 8, ENTITY_RANGE)
+                  if self.mobs.get(npc.object_id) is None or self.mobs[npc.object_id].state != combat.GONE][:ENTITY_CHANNELS]
         wanted_ids = {npc.object_id: npc for npc in wanted}
         current = {entity.object_id: channel for channel, entity in session.entity_channels.items() if entity.update[0]}
         free = [channel for channel in range(1, ENTITY_CHANNELS + 1) if channel not in current.values()]
@@ -724,7 +740,9 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             if npc.object_id in current:
                 continue
             channel = free.pop(0)
-            self._set_channel(session, channel, npc.object_id, npcs.build_npc_update(npc))
+            mob = self.mobs.get(npc.object_id)
+            update = combat.update_bytes(mob) if mob is not None else npcs.build_npc_update(npc)
+            self._set_channel(session, channel, npc.object_id, update)
             added += 1
         for channel in free:
             entity = session.entity_channels.get(channel)
@@ -972,10 +990,210 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             return [f"cast {spell['name']} (no guide data)"]
         targeting_other = target not in (0, 0xFFFFFFFF, PHASE3_SESSION_ID)
         said = ability_effects.apply(character, row, session.buffs, time.monotonic(), targeting_other)
+        if targeting_other:
+            said += self.ability_on_creature(session, spell, row, target)
         for line in said:
             self.send_client_message(session, line)
         self.update_player_channels(session)
         return [f"cast {spell['name']}: " + (" ".join(said) if said else "nothing on you (needs combat)")]
+
+    # ---- combat (combat.py has the rules and the capture notes) ----
+
+    def mob(self, object_id: int) -> combat.Mob | None:
+        """A creature's fight state (made when first touched); None for non-creatures."""
+        mob = self.mobs.get(object_id)
+        if mob is None:
+            npc = npcs.by_object_id(object_id)
+            if npc is None or not npc.creature:
+                return None
+            mob = self.mobs[object_id] = combat.new_mob(npc)
+        return mob
+
+    def refresh_mob(self, mob: combat.Mob, facing: int | None = None) -> None:
+        """Send the creature's new state to everyone who has it on a channel."""
+        update = combat.update_bytes(mob, facing)
+        for session in self.sessions.values():
+            for channel, entity in list(session.entity_channels.items()):
+                if entity.object_id == mob.object_id and entity.update[0]:
+                    self._set_channel(session, channel, mob.object_id, update)
+
+    def attack(self, session: GameSession, payload: bytes) -> list[str]:
+        """Attack (0x0F, u32 target): auto attack on (again on the same target: off)."""
+        character = session.selected_character
+        if character is None or len(payload) < 4:
+            return []
+        target = struct.unpack_from("<I", payload, 0)[0]
+        if session.attack_target == target:
+            session.attack_target = None
+            return ["auto attack off"]
+        mob = self.mob(target)
+        if mob is None or mob.state != combat.ALIVE:
+            self.send_client_message(session, "You can't attack that.")
+            return [f"attack {target:#x}: not a living creature"]
+        session.attack_target = target
+        session.next_swing = time.monotonic() + combat.FIRST_SWING
+        return [f"auto attack on {mob.npc.name}"]
+
+    def loot(self, session: GameSession, payload: bytes) -> list[str]:
+        """0x15 (u32 corpse): Sandstorm answered 0x16 and 0x18 (00 00000000: nothing to take)."""
+        self.send_reliable(session, LOOT_CLOSE_OPCODE, b"")
+        self.send_reliable(session, LOOT_OPCODE + 3, b"\x00" + bytes(4))
+        return ["loot: empty"]
+
+    def _weapon_damage(self, character: Character) -> int:
+        for entry in character.inventory or ():
+            if entry.get("equip") in items.PRIMARY_SLOTS:
+                pattern = items.item_patterns().get(entry["item"])
+                if pattern is not None:
+                    return pattern.get("damage", 0)
+        return 0
+
+    def hit_mob(self, session: GameSession, mob: combat.Mob, damage: int) -> list[str]:
+        """The player deals ``damage`` to the creature (0xDB), which turns on them."""
+        self.send_reliable(session, HIT_OPCODE, struct.pack("<I", PHASE3_SESSION_ID) + _write_varuint(damage)
+                           + struct.pack("<I", mob.object_id))
+        mob.hp -= damage
+        if mob.target is None:
+            mob.target = session.selected_character.character_id
+            mob.next_swing = time.monotonic() + combat.MOB_DELAY / 2
+        if mob.hp <= 0:
+            return self.kill(session, mob)
+        self.refresh_mob(mob)
+        return [f"hit {mob.npc.name} for {damage} ({mob.hp}/{mob.max_hp})"]
+
+    def kill(self, session: GameSession, mob: combat.Mob) -> list[str]:
+        character = session.selected_character
+        mob.hp, mob.state, mob.died_at, mob.target, mob.dots = 0, combat.CORPSE, time.monotonic(), None, []
+        self.refresh_mob(mob)
+        for other in self.sessions.values():
+            if other.attack_target == mob.object_id:
+                other.attack_target = None
+        xp = combat.xp_for(mob.npc.level, character.level)
+        character.experience += xp
+        self.store.save()
+        self.send_reliable(session, EXPERIENCE_OPCODE, b"\x08" + _write_zigzag(character.experience))
+        self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
+        self.send_client_message(session, f"You receive {xp} XP.")
+        return [f"killed {mob.npc.name}: {xp} XP (total {character.experience})"]
+
+    def ability_on_creature(self, session: GameSession, spell: dict, row: dict, target: int) -> list[str]:
+        """An ability's harmful effects on a targeted creature: damage and damage over time."""
+        mob = self.mob(target)
+        character = session.selected_character
+        if mob is None or mob.state != combat.ALIVE:
+            return []
+        reach = combat.MELEE_RANGE if spell.get("range_raw", 0) == 0x40A0 or not spell.get("cast_time") else combat.SPELL_RANGE
+        if combat.distance(character.x, character.z, mob) > reach * 1.5:
+            self.send_client_message(session, "Out of range.")
+            return ["out of range"]
+        notes = []
+        for effect in row.get("effects", ()):
+            if effect.get("scope") != "Target":
+                continue
+            amount = ability_effects.amount(character, effect)
+            if effect.get("type") in ("Dmg/Heal", "Backstab") and amount < 0 and mob.state == combat.ALIVE:
+                notes += self.hit_mob(session, mob, combat.vary(-amount, self.rng))
+            elif effect.get("attribute") == "DoT" and amount < 0 and effect.get("duration", 0) > 0:
+                now = time.monotonic()
+                mob.dots.append(combat.Dot(-amount, now + combat.DOT_TICK, now + effect["duration"], character.character_id))
+                if mob.target is None:
+                    mob.target = character.character_id
+                    mob.next_swing = now + combat.MOB_DELAY
+                notes.append(f"{mob.npc.name}: {-amount} damage every {combat.DOT_TICK:.0f} s")
+            elif effect.get("type") == "Modify Hate" and mob.target is None:
+                mob.target = character.character_id
+                mob.next_swing = time.monotonic() + combat.MOB_DELAY
+        return notes
+
+    def _session_of(self, character_id: int | None) -> GameSession | None:
+        if character_id is None:
+            return None
+        return next((s for s in self.sessions.values()
+                     if s.phase3_in_world and not s.phase3_closed and s.selected_character is not None
+                     and s.selected_character.character_id == character_id), None)
+
+    def combat_tick(self, now: float) -> None:
+        """Auto attacks, creatures chasing and hitting, damage over time, corpses, respawns."""
+        seconds = min(1.0, now - self.last_combat_tick) if self.last_combat_tick else 0.0
+        self.last_combat_tick = now
+        notes = []
+        for session in list(self.sessions.values()):
+            character = session.selected_character
+            if session.attack_target is None or character is None or session.phase3_closed:
+                continue
+            mob = self.mobs.get(session.attack_target)
+            if mob is None or mob.state != combat.ALIVE:
+                session.attack_target = None
+                continue
+            if now >= session.next_swing and combat.distance(character.x, character.z, mob) <= combat.MELEE_RANGE * 1.5:
+                session.next_swing = now + combat.PLAYER_DELAY
+                strength = ability_effects.stat_values(character, session.buffs)[0]
+                notes += self.hit_mob(session, mob, combat.player_swing(
+                    character.level, strength, self._weapon_damage(character), self.rng))
+        for mob in list(self.mobs.values()):
+            notes += self._mob_tick(mob, now, seconds)
+        if notes and self.log_packets:
+            print("COMBAT " + "; ".join(notes))
+
+    def _mob_tick(self, mob: combat.Mob, now: float, seconds: float) -> list[str]:
+        if mob.state == combat.CORPSE:
+            if now - mob.died_at >= combat.CORPSE_TIME:
+                mob.state = combat.GONE
+                self.refresh_mob(mob)
+            return []
+        if mob.state == combat.GONE:
+            if now - mob.died_at >= combat.RESPAWN:
+                fresh = combat.new_mob(mob.npc)
+                self.mobs[mob.object_id] = fresh
+            return []
+        notes = []
+        for dot in list(mob.dots):
+            if now >= dot.next_tick:
+                dot.next_tick += combat.DOT_TICK
+                caster = self._session_of(dot.caster)
+                if caster is not None and mob.state == combat.ALIVE:
+                    notes += self.hit_mob(caster, mob, dot.per_tick)
+            if now >= dot.until:
+                mob.dots.remove(dot)
+        if mob.state != combat.ALIVE or mob.target is None:
+            return notes
+        session = self._session_of(mob.target)
+        character = session.selected_character if session is not None else None
+        if character is None or math.hypot(character.x - mob.npc.x, character.z - mob.npc.z) > combat.LEASH:
+            mob.target, mob.x, mob.z, mob.hp, mob.dots = None, mob.npc.x, mob.npc.z, mob.max_hp, []
+            self.refresh_mob(mob)
+            return notes + [f"{mob.npc.name} gives up"]
+        if combat.step_toward(mob, character.x, character.z, seconds):
+            self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
+        elif now >= mob.next_swing:
+            mob.next_swing = now + combat.MOB_DELAY
+            damage = combat.mob_swing(mob.npc.level, self.rng)
+            self.send_reliable(session, CAST_EFFECT_OPCODE, struct.pack("<II", mob.object_id, PHASE3_SESSION_ID)
+                               + b"\x00" + struct.pack("<iI", int(combat.MOB_DELAY * 1000), combat.MOB_ATTACK_EFFECT))
+            self.send_reliable(session, HIT_OPCODE, struct.pack("<I", mob.object_id) + _write_varuint(damage)
+                               + struct.pack("<I", PHASE3_SESSION_ID))
+            character.hp -= damage
+            if character.hp <= 0:
+                notes += self.player_died(session, mob)
+            else:
+                self.update_player_channels(session)
+            notes.append(f"{mob.npc.name} hits {character.name} for {damage}")
+        return notes
+
+    def player_died(self, session: GameSession, killer: combat.Mob) -> list[str]:
+        """Back to the bind point with full HP and power; creatures after them give up."""
+        character = session.selected_character
+        self.send_client_message(session, f"You have been slain by {killer.npc.name}!")
+        session.attack_target, session.pending_cast, session.buffs = None, None, []
+        character.hp, character.mana = character.max_hp, character.max_mana
+        for mob in self.mobs.values():
+            if mob.target == character.character_id:
+                mob.target, mob.x, mob.z, mob.hp, mob.dots = None, mob.npc.x, mob.npc.z, mob.max_hp, []
+                self.refresh_mob(mob)
+        world, x, y, z, facing = bind_point(character)
+        self.teleport(session, world, x, y, z, facing)
+        self.update_player_channels(session)
+        return [f"{character.name} died"]
 
     def end_cooldowns(self, session: GameSession, now: float) -> list[str]:
         """AbilityCooldown with 0 ms when an ability is ready again (Sandstorm sent it as the
@@ -1177,6 +1395,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         super().service_actions()
         now = time.monotonic()
         with self.lock:
+            self.combat_tick(now)
             for address, discovery in list(self.discovery.items()):
                 if now - discovery.last_client_packet > DISCOVERY_SESSION_TIMEOUT:
                     del self.discovery[address]
@@ -1411,6 +1630,12 @@ SET_POSITION_OPCODE = 0x00B2
 ADD_SPELL_OPCODE = 0x00B3
 HOTBAR_ASSIGNED_OPCODE = 0x00B4
 CAST_EFFECT_OPCODE = 0x00B1
+ATTACK_OPCODE = 0x000F
+LOOT_OPCODE = 0x0015
+LOOT_CLOSE_OPCODE = 0x0016
+HIT_OPCODE = 0x00DB
+EXPERIENCE_OPCODE = 0x0020
+TARGET_DIED_OPCODE = 0x00D9
 ABILITY_COOLDOWN_OPCODE = 0x00CD
 # Sandstorm greyed abilities out for cast + recast + 0.3 s (Kick 6 s: 6300 ms; Return Home
 # 60 + 5 s: 65300 ms).

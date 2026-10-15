@@ -20,7 +20,7 @@ redirects to it.
   git push origin HEAD:main
   ```
 
-- Run the tests with `python3 -m unittest discover -s tests`. All 144 pass, with
+- Run the tests with `python3 -m unittest discover -s tests`. All 149 pass, with
   1 skipped.
 - Commit messages end with these two lines (no model names anywhere in the repo):
 
@@ -300,6 +300,10 @@ to learn them."
   Return Home's particles come out blue) against the ability's element and
   kind (name words, then the guide's effect type). All ranks of a spell share
   an effect. Not a hash of the spell name (8 hash functions tried).
+- **Combat** (same capture): see the notes at the top of `combat.py`. A
+  creature's HP is 0-255 at byte 27 of its object update; byte 26 is 1 alive,
+  3 dead. 0xDB is a hit (attacker, damage, target). 0x15 on a corpse is
+  answered 0x16 + 0x18 (`00 00000000`); the client's 0x16 closes it.
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
 
@@ -356,7 +360,15 @@ to learn them."
    Only the records for Warrior, Shadowknight and Return Home are real data. The others are built from the guide.
 5. **No other players are visible.** The game needs to share entity channels
    between sessions.
-6. **Combat, experience, loot and quests** are not implemented.
+6. **Combat works in a first form (untested in game)**, `combat.py`. Creatures
+   are the NPCs EQOAGameServer marks with "$" (4,815). Attack (0x0F) starts
+   auto attack (3 s swings); damage abilities and DoTs hit the target. The
+   creature turns, chases (8 units/s), swings every 3 s (CastEffect + 0xDB),
+   gives up past 120 units. On death: corpse (byte 26 = 3), XP (0x20, 0xD9,
+   chat line), gone after 7 s, back after 90 s. A dead player goes to the bind
+   point with full HP. HP, damage, XP and speeds are our formulas, fitted to
+   the one capture. Loot (0x15) answers "empty". No level-ups yet (XP only),
+   no quests.
 7. Armor colors always default to 0. Weapon models are exact only where known.
    Elsewhere the item gets a model of the same shape, or one set through the
    model browser.
