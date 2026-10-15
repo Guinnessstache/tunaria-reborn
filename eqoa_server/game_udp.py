@@ -15,7 +15,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import ability_effects, combat, game_data, items, loot, merchants, npcs, pets, player_stats, spell_effects
+from . import ability_effects, combat, dialogue, game_data, items, loot, merchants, npcs, pets, player_stats, spell_effects
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -109,6 +109,8 @@ class GameSession:
     attack_target: int | None = None  # object id auto attack is swinging at
     target: int | None = None  # object id the player has selected (SelectTarget)
     speed_sent: float | None = None  # last PlayerSpeed sent (None: the login's)
+    dialog_number: int = 2  # DialogueBox / OptionBox numbers count up (Sandstorm's did)
+    option_boxes: dict = field(default_factory=dict)  # box number -> (exchange key, place)
     pet: "combat.Mob | None" = None  # a summoned pet (pets.py)
     next_swing: float = 0.0
     # Spell book order -> monotonic time the ability is ready again.
@@ -456,6 +458,8 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 (msg for msg in packet.messages if msg.message_type == MessageType.CLIENT_UPDATE), None
             )
             if update is not None and update.message_number is not None:
+                if not session.phase3_in_world and session.selected_character is not None:
+                    server.send_quest_log(session)
                 session.phase3_in_world = True
                 body = (
                     bytes([PacketBundleFlags.PROCESS_MESSAGES | PacketBundleFlags.PROCESS_UNRELIABLE_ACKS | PacketBundleFlags.RDP_REPORT])
@@ -670,6 +674,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.last_combat_tick = 0.0
         # Client opcodes the server got in the world but doesn't handle: {opcode: {count, sample}}.
         self.ignored_opcodes: dict[int, dict] = {}
+        # NPC conversations and quests learned from the captures in data/captures (dialogue.py).
+        self.dialogue = dialogue.Library(Path(config.data_path).parent / "captures")
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
         """Send one phase3 bundle (flags, arrival placeholder, messages) with the next bundle number."""
@@ -787,6 +793,9 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             LOOT_OPCODE: self.loot,
             LOOT_ITEM_OPCODE: self.take_loot,
             SELECT_TARGET_OPCODE: self.select_target,
+            INTERACT_OPCODE: self.interact,
+            OPTION_PICKED_OPCODE: self.pick_option,
+            LOOT_ALL_OPCODE: self.loot_all,
         }
         handler = handlers.get(opcode)
         if handler is not None:
@@ -819,6 +828,146 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         flags = (0x00, 0x04, 0x01) if npc.creature else (0x02, 0x00, 0x01)
         self.send_reliable(session, SELECT_TARGET_OPCODE, bytes(flags) + bytes(TARGET_REPLY_SIZE - 3))
         return [f"target {npc.name}"]
+
+    # ---- talking to NPCs and quests (dialogue.py) ----
+
+    def send_experience(self, session: GameSession) -> None:
+        """GrantXP (0x20): zigzag level, zigzag XP (Sandstorm's first byte was 04, 06, 08 as a
+        druid went from level 2 to 4, and 08 for a level 4 warrior)."""
+        character = session.selected_character
+        self.send_reliable(session, EXPERIENCE_OPCODE, _write_zigzag(character.level) + _write_zigzag(character.experience))
+
+    def _say(self, session: GameSession, text: str, number: int | None = None) -> None:
+        if number is None:
+            number, session.dialog_number = session.dialog_number, session.dialog_number + 1
+        self.send_reliable(session, DIALOGUE_BOX_OPCODE, struct.pack("<Ii", number, len(text)) + text.encode("utf-16-le"))
+
+    def interact(self, session: GameSession, payload: bytes) -> list[str]:
+        """Interact (0x04, u32 NPC): the NPC's next step learned from captures, a greeting, or
+        that it has nothing to say."""
+        character = session.selected_character
+        if character is None or len(payload) < 4:
+            return []
+        npc = npcs.by_object_id(struct.unpack_from("<I", payload, 0)[0])
+        if npc is None:
+            return []
+        if math.hypot(character.x - npc.x, character.z - npc.z) > dialogue.INTERACT_RANGE:
+            self.send_client_message(session, "Out of range.")
+            return [f"talk to {npc.name}: out of range"]
+        quests = character.quests
+        exchange = self.dialogue.for_interact(npc.name, character.klass, quests.get("active"), set(quests.get("done", ())),
+                                              lambda name, count: self._count_items(character, name) >= count)
+        if exchange is None:
+            self._say(session, f"{npc.name} has nothing to say to you.", 1)
+            return [f"talk to {npc.name}: nothing learned"]
+        return self._run_exchange(session, npc, exchange)
+
+    def pick_option(self, session: GameSession, payload: bytes) -> list[str]:
+        """DialogueBoxOption (0x35): u32 box number, byte option."""
+        character = session.selected_character
+        if character is None or len(payload) < 5:
+            return []
+        number, choice = struct.unpack_from("<IB", payload, 0)
+        picked = session.option_boxes.pop(number, None)
+        if picked is None:
+            return [f"option {choice} of box {number}: no such box"]
+        key, place, npc = picked
+        exchange = self.dialogue.for_option(key, place, choice)
+        if exchange is None:
+            return [f"option {choice} of {npc.name}'s box: nothing learned"]
+        return self._run_exchange(session, npc, exchange, parent=key)
+
+    def loot_all(self, session: GameSession, _payload: bytes) -> list[str]:
+        self.send_reliable(session, LOOT_ALL_OPCODE, b"")
+        return []
+
+    def _count_items(self, character: Character, name: str) -> int:
+        wanted = items.name_key(name)
+        return sum(entry.get("stack", 1) for entry in character.inventory or ()
+                   if entry["item"] in items.item_patterns()
+                   and items.name_key(items.item_patterns()[entry["item"]]["name"]) == wanted)
+
+    def _run_exchange(self, session: GameSession, npc, exchange, parent: str | None = None) -> list[str]:
+        character = session.selected_character
+        quests = character.quests
+        notes, place = [], 0
+        for action in exchange.actions:
+            kind = action[0]
+            if kind == "say":
+                self._say(session, action[1])
+            elif kind == "options":
+                number, session.dialog_number = session.dialog_number, session.dialog_number + 1
+                body = struct.pack("<Ii", number, len(action[1])) + action[1].encode("utf-16-le") + bytes([len(action[2])])
+                for option in action[2]:
+                    body += struct.pack("<i", len(option)) + option.encode("utf-16-le")
+                self.send_reliable(session, OPTION_BOX_OPCODE, body)
+                session.option_boxes[number] = (exchange.key, place, npc)
+                place += 1
+            elif kind == "quest_add":
+                quests["active"] = action[1]
+                self.send_reliable(session, QUEST_ADD_OPCODE, struct.pack("<ii", 0, len(action[1])) + action[1].encode("utf-16-le"))
+                self._say(session, "You have received a quest!")
+                notes.append(f"quest: {action[1]}")
+            elif kind == "quest_delete":
+                quests["active"] = None
+                self.send_reliable(session, QUEST_DELETE_OPCODE, struct.pack("<i", 0) + b"\x00")
+                self._say(session, "You have finished a quest!")
+                notes.append("quest done")
+            elif kind == "take":
+                self._take_items(session, action[1], action[2])
+                self._say(session, f"You have given away {action[1]}" + (f" ({action[2]})." if action[2] > 1 else "."))
+            elif kind == "give":
+                item_id = items.item_by_name(action[1], character.klass)
+                if item_id is None:
+                    notes.append(f"(no item named {action[1]})")
+                    continue
+                entry = self.store.give_item(character.character_id, item_id)
+                self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, entry["key"]))
+                self._say(session, f"You have received {action[1]}.")
+            elif kind == "xp":
+                character.experience += action[1]
+                self.send_experience(session)
+                self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
+                self.send_client_message(session, f"You receive {action[1]} XP.")
+            elif kind == "message":
+                self.send_client_message(session, action[1])
+            elif kind == "bind":
+                character.bind = [session.world, character.x, character.y, character.z, character.heading]
+                self.send_reliable(session, CAST_EFFECT_OPCODE, struct.pack("<II", npc.object_id, PHASE3_SESSION_ID)
+                                   + b"\x00" + struct.pack("<iI", 3000, action[1]))
+                notes.append("bound here")
+        if exchange.changes:
+            done = quests.setdefault("done", [])
+            for key in (exchange.key, parent):
+                if key and key not in done:
+                    done.append(key)
+        self.store.save()
+        return [f"talk to {npc.name}: " + (", ".join(notes) or f"{len(exchange.actions)} lines")]
+
+    def _take_items(self, session: GameSession, name: str, count: int) -> None:
+        character = session.selected_character
+        wanted = items.name_key(name)
+        index = len(character.inventory) - 1
+        while count > 0 and index >= 0:
+            entry = character.inventory[index]
+            item = items.item_patterns().get(entry["item"])
+            if item is not None and items.name_key(item["name"]) == wanted:
+                taken = min(count, entry.get("stack", 1))
+                position = items.client_index(character.inventory, index)
+                if taken >= entry.get("stack", 1):
+                    self.store.remove_item(character.character_id, index)
+                else:
+                    entry["stack"] -= taken
+                self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 0]) + _write_zigzag(taken))
+                count -= taken
+            index -= 1
+
+    def send_quest_log(self, session: GameSession) -> None:
+        """On entering the world: the quest in the character's log (the MemoryDump template's
+        own quests are taken out)."""
+        active = session.selected_character.quests.get("active") if session.selected_character else None
+        if active:
+            self.send_reliable(session, QUEST_ADD_OPCODE, struct.pack("<ii", 0, len(active)) + active.encode("utf-16-le"))
 
     def merchant_window(self, session: GameSession, payload: bytes) -> list[str]:
         """MerchantDiag (0x4C: merchant object id) -> MerchantBox (0xB7), as EQOAGameServer:
@@ -887,6 +1036,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             self.store.save()
         self.send_reliable(session, PLAYER_TUNAR_OPCODE, _write_zigzag(character.tunar))
         self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 1]) + _write_zigzag(quantity))
+        self.send_client_message(session, f"You receive {earned} tunar.")  # as Sandstorm did
         return [f"sold {quantity} x {items.describe_item(entry['item'])['name']} for {earned}"]
 
     def interact_item(self, session: GameSession, payload: bytes) -> list[str]:
@@ -1194,7 +1344,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         xp = combat.xp_for(mob.npc.level, character.level)
         character.experience += xp
         self.store.save()
-        self.send_reliable(session, EXPERIENCE_OPCODE, b"\x08" + _write_zigzag(character.experience))
+        self.send_experience(session)
         self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
         self.send_client_message(session, f"You receive {xp} XP.")
         dropped = ", ".join(items.describe_item(entry["item"])["name"] for entry in mob.loot) or "no loot"
@@ -1882,6 +2032,13 @@ LOOT_NOT_YOURS = 3
 QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE, 0x00C9, 0x00CA, 0x0049, 0x07E1}
 MAX_INVENTORY = 40  # EQOAReturnHome's inventory limit
 SELECT_TARGET_OPCODE = 0x0010
+INTERACT_OPCODE = 0x0004
+DIALOGUE_BOX_OPCODE = 0x0046
+OPTION_BOX_OPCODE = 0x0034
+OPTION_PICKED_OPCODE = 0x0035
+QUEST_ADD_OPCODE = 0x007C
+QUEST_DELETE_OPCODE = 0x007D
+LOOT_ALL_OPCODE = 0x001A  # the client sent it (empty) with a loot box open; Sandstorm echoed it
 PLAYER_SPEED_OPCODE = 0x00F8
 TARGET_REPLY_SIZE = 259
 TARGET_GONE_OPCODE = 0x007B  # 4 zero bytes; Sandstorm sent it ~7 s after a kill, as the corpse went

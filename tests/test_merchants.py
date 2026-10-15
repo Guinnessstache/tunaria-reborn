@@ -184,7 +184,7 @@ class MerchantHandlerTests(unittest.TestCase):
         self.server.merchant_sell(self.session, struct.pack("<i", index) + zigzag(1) + struct.pack("<I", self.merchant.object_id))
         self.assertEqual(self.character.tunar, 7 + merchants.sell_price(item_id))
         self.assertEqual(len(self.character.inventory), before)
-        self.assertEqual([op for op, _ in self.sent], [0x52, 0x3C])
+        self.assertEqual([op for op, _ in self.sent], [0x52, 0x3C, 0x0A7A])  # + "You receive N tunar."
 
     def test_buy_without_money(self):
         self.character.tunar = 0
@@ -586,7 +586,7 @@ class CombatTests(CombatCase):
         ops = [op for op, _ in self.sent]
         self.assertEqual(ops[-3:], [0x20, 0xD9, 0x0A7A])  # Sandstorm's order on a kill
         xp_body = self.sent[-3][1]
-        self.assertEqual(xp_body[:1], b"\x08")
+        self.assertEqual(xp_body[:1], bytes([2 * self.character.level]))  # zigzag level (Sandstorm: 08 at level 4)
         self.assertEqual(self.character.experience, self.combat.xp_for(1, self.character.level))
         self.assertEqual(self.combat.update_bytes(mob)[26], 3)  # dead
         self.assertEqual(self.combat.update_bytes(mob)[58], 14)  # lying down, as Sandstorm's corpses

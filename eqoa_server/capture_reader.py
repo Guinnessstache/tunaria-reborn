@@ -142,7 +142,10 @@ def server_messages(data: bytes, with_session: bool = True) -> list[tuple[int, i
             out.append((kind, None, data[offset:offset + size]))
             offset += size
         elif kind <= 0x17 or 0x40 <= kind <= 0x43:
-            offset = _rle_end(data, offset + 3)
+            sequence, reference = struct.unpack_from("<HB", data, offset)
+            end_of_data = _rle_end(data, offset + 3)
+            out.append((kind, (sequence, reference), data[offset + 3:end_of_data]))
+            offset = end_of_data
         else:
             if with_session:
                 return server_messages(data, False)
@@ -182,7 +185,7 @@ def read_capture(path: Path, game_port: int = GAME_PORT) -> list[CapturedMessage
         except Exception:
             continue
         for kind, number, body in messages:
-            if kind == 0xF9 or kind == 0xFC:
+            if kind not in (0xFA, 0xFB):
                 continue
             if number in seen_server:
                 continue
@@ -194,3 +197,41 @@ def read_capture(path: Path, game_port: int = GAME_PORT) -> list[CapturedMessage
             if len(full) >= 2:
                 out.append(CapturedMessage(when, False, number, struct.unpack_from("<H", full, 0)[0], full[2:]))
     return out
+
+
+NAME, NAME_LENGTH, OBJECT_ID = 116, 24, 1  # in the 162-byte object update
+
+
+def entity_names(path: Path, game_port: int = GAME_PORT) -> dict[int, str]:
+    """{object id: name} of everything the server drew on its entity channels (0x01-0x17):
+    each channel message is zero-RLE data, XORed with the state ``reference`` messages back
+    (0: a full update)."""
+    from .protocol import rle_zero_decode
+
+    states: dict[int, dict[int, bytes]] = {}
+    names: dict[int, str] = {}
+    for _stamp, _src, source_port, _dst, _dest_port, payload in udp_packets(path):
+        if source_port != game_port:
+            continue
+        try:
+            messages = server_messages(payload)
+        except Exception:
+            continue
+        for kind, header, body in messages:
+            if not 0x01 <= kind <= 0x17 or not isinstance(header, tuple):
+                continue
+            sequence, reference = header
+            data = rle_zero_decode(body)
+            history = states.setdefault(kind, {})
+            if reference:
+                base = history.get((sequence - reference) & 0xFFFF)
+                if base is None:
+                    continue
+                size = max(len(base), len(data))
+                data = bytes(a ^ b for a, b in zip(data.ljust(size, b"\0"), base.ljust(size, b"\0")))
+            history[sequence] = data
+            if len(data) >= NAME + NAME_LENGTH and data[0]:
+                name = data[NAME:NAME + NAME_LENGTH].split(b"\0", 1)[0].decode("ascii", "replace").strip()
+                if name:
+                    names[struct.unpack_from("<I", data, OBJECT_ID)[0]] = name
+    return names

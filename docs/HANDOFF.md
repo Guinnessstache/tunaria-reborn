@@ -97,6 +97,7 @@ redirects to it.
 | `items.py` | Item and spell patterns and records. Starting kit (`STARTING_KIT_VERSION = 2`). Equip slots, armor and models (`model_for`, overrides in `data/item_models.json`), search and describe. |
 | `npcs.py` | NPC placements (`reference_data/npcs.json.gz`). Nearest-23 grid lookup and `build_npc_update` from the capture's channel-8 template. |
 | `merchants.py` | Merchant stock fitted from the guide's descriptions, and the price formula. |
+| `dialogue.py` | NPC conversations and quests learned from the captures in `data/captures` (see "Talking to NPCs"). |
 | `selftest.py`, `capture_reader.py` | The self-test bot and report; reliable game messages of both sides out of a pcap/pcapng. |
 | `combat.py`, `loot.py`, `pets.py` | Creature fights, corpse loot (creature parts + named drops), summoned pets. |
 | `storage.py` | `JsonStore`: accounts (salted sha256 game passwords) and characters. Inventory, spells, level, tunar, position. |
@@ -342,6 +343,38 @@ to learn them."
   answered 0x16 + 0x18 (`00 00000000`); the client's 0x16 closes it.
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
+
+### Talking to NPCs and quests (Sandstorm capture of a new druid in Tethelin, 2026-10-15)
+
+Nobody has the quest scripts, so the server learns them from captures
+(`dialogue.py`): each time a captured player talked to an NPC (Interact) or
+picked a choice, what the NPC did within 1.5 s is an "exchange" with its
+conditions (the quest in the log, the captured character's class, items handed
+in, and the previous state-changing exchange, so a capture's quests happen in
+its order). The server replays them: the next unfinished step that fits, else
+a greeting the NPC said, else "<name> has nothing to say to you." (ours).
+Learned on demand from every pcap in `data/captures` (relearned when the folder
+changes); NPC names come from the capture's entity channel updates
+(`capture_reader.entity_names`). The captures and their text stay on the
+server. Characters keep `quests` = {"active", "done": [exchange keys]} and a
+spiritmaster `bind` ([world, x, y, z, facing], used by Return Home and death).
+
+| Opcode | Name | Payload |
+| --- | --- | --- |
+| 0x04 | Interact (client) | u32 NPC. Too far: "Out of range." in chat. |
+| 0x46 | DialogueBox | u32 box number (counts up per session; 1 for a plain greeting), int32 length, UTF-16 text |
+| 0x34 | OptionBox | u32 box number, int32 length, text, byte option count, options (int32 length + text) |
+| 0x35 | DialogueBoxOption (client) | u32 box number, byte option |
+| 0x7C | AddQuestLog | int32 0, int32 length, text (also sent on entering the world) |
+| 0x7D | DeleteQuest | int32 0, byte 0 |
+| 0x3C | RemoveInventoryItem | byte index, byte 0 (handing in; selling used 1), zigzag count, then "You have given away X (2)." |
+| 0x20 | GrantXP | zigzag **level**, zigzag XP (04/06/08 at levels 2-4), then TargetDied 0xD9 and "You receive N XP." |
+| 0xB1 | CastEffect | the spiritmaster binding: NPC -> player, 3000 ms, effect 0x08F3B955 |
+| 0x1A | (both ways, empty) | the client sends it with a loot box open; Sandstorm echoed it (we do) |
+| 0x36 | ? | 01 06 / 01 0C / 01 12 after quest XP |
+| 0x60 | AdjustItemHP | u32 item, varint durability (armor wear when hit) |
+
+Sandstorm also answered a sale with "You receive N tunar." (we do now).
 
 ## Confirmed working in game
 

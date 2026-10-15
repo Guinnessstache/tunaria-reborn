@@ -617,29 +617,41 @@ def audit(report: Report) -> None:
 
 # ---- 3. capture comparison ----
 
-TARGET_OFFSETS = {0x0F: 0, 0x10: 4, 0x32: 5, 0x15: 0, 0x4C: 0}  # where the u32 target sits
+TARGET_OFFSETS = {0x0F: 0, 0x10: 4, 0x32: 5, 0x15: 0, 0x4C: 0, 0x04: 0}  # where the u32 target sits
 MERCHANT_OPCODES = {0x4C: 0, 0x4A: -4, 0x4B: -4}  # where the merchant's id sits (-4: the last 4 bytes)
 ITEM_KEY_OPCODES = {0x3E, 0x4B}  # item key in the first 4 bytes
 
 
-def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character) -> bytes:
-    """Point a captured message at our world: the official server's creatures and merchants
-    become ours (the same one each time), item keys become our character's items."""
+def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character, names: dict[int, str] | None = None,
+           session=None) -> bytes:
+    """Point a captured message at our world: the official server's NPCs become ours of the
+    same name (the capture's entity updates name them) or, failing that, any creature or
+    merchant (the same one each time); item keys become our character's items; a picked
+    option names our latest choice box."""
     from . import npcs
+
+    if names and not targets.get("_named"):
+        by_name = {n.name.lower(): n for n in npcs.all_npcs() if npcs.placeable(n)}
+        for original, name in names.items():
+            if name.lower() in by_name:
+                targets[original] = by_name[name.lower()].object_id
+        targets["_named"] = 1
+    if opcode == 0x35 and len(payload) >= 4 and session is not None and session.option_boxes:
+        struct.pack_into("<I", payload, 0, max(session.option_boxes))
 
     merchant_at = MERCHANT_OPCODES.get(opcode)
     offset = TARGET_OFFSETS.get(opcode) if merchant_at is None else merchant_at % max(1, len(payload))
     if offset is not None and len(payload) >= offset + 4:
         original = struct.unpack_from("<I", payload, offset)[0]
         ours = npcs.by_object_id(original)
-        fits = ours is not None and (ours.is_merchant if merchant_at is not None else ours.creature)
+        fits = ours is not None and (ours.is_merchant if merchant_at is not None else ours.creature or opcode == 0x04)
         if original not in (0, 0xFFFFFFFF) and (original in targets or not fits):
             if original not in targets:
                 if merchant_at is not None:
-                    taken = set(targets.values())
+                    taken = {v for k, v in targets.items() if k != "_named"}
                     npc = next(n for n in npcs.all_npcs() if n.is_merchant and n.object_id not in taken)
                 else:
-                    npc = _creature_near(character.level, set(targets.values()))
+                    npc = _creature_near(character.level, {v for k, v in targets.items() if k != "_named"})
                 targets[original] = npc.object_id
             struct.pack_into("<I", payload, offset, targets[original])
             npc = npcs.by_object_id(targets[original])
@@ -650,6 +662,8 @@ def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character) 
         if struct.unpack_from("<i", payload, 0)[0] not in keys:
             struct.pack_into("<i", payload, 0, character.inventory[-1].get("key", 0))
     return bytes(payload)
+
+
 REPLY_WINDOW = 2.0  # seconds after a client message that the server's messages count as its reply
 
 
@@ -684,11 +698,16 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
             continue
         used += 1
         world = messages[entered + 1:]
-        character = bot.character(0, level=10)
+        from . import dialogue
+
+        klass = dialogue._captured_class(messages[entered].payload)
+        character = bot.character(klass if klass is not None and 0 <= klass < 15 else 0, level=10)
+        bot.server.dialogue = dialogue.Library(path.parent)
+        names = capture_reader.entity_names(path)
         session = bot.session(character)
         for order in range(min(10, len(bot.server._spell_book(character)))):
             bot.server._spell_book(character)[order]["hotbar"] = order
-        targets: dict[int, int] = {}
+        targets: dict = {}
         last = world[0].time if world else 0.0
         for index, message in enumerate(world):
             if not message.from_client:
@@ -710,7 +729,7 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
             theirs[message.opcode].update(following)
             bot.tick(max(0.0, min(30.0, message.time - last)), session)
             last = message.time
-            payload = _remap(bytearray(message.payload), message.opcode, targets, character)
+            payload = _remap(bytearray(message.payload), message.opcode, targets, character, names, session)
             character.tunar = 10_000_000
             start = len(bot.sent)
             result = bot.send(session, message.opcode, bytes(payload), "capture replay", name(message.opcode))

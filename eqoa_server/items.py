@@ -8,6 +8,7 @@ capture_template.memory_dump_without_belongings.
 from __future__ import annotations
 
 import gzip
+import re
 import json
 import struct
 from dataclasses import dataclass
@@ -622,6 +623,43 @@ def _items_by_name() -> dict[str, int]:
         if item_id < SCROLL_ID_BASE and not is_scroll(item_id):
             found.setdefault(item["name"].lower(), item_id)
     return found
+
+
+def names_in(text: str) -> list[str]:
+    """Item names (of 6+ letters) mentioned in a text, longest first, not overlapping."""
+    lowered, found = text.lower(), []
+    for name in sorted((n for n in _items_by_name() if len(n) >= 6), key=len, reverse=True):
+        if name in lowered:
+            found.append(item_patterns()[_items_by_name()[name]]["name"])
+            lowered = lowered.replace(name, " ")
+    return found
+
+
+def name_key(name: str) -> str:
+    """For matching names loosely: lower case, words made singular ("Ruined Snake Scale" and
+    "ruined snake scales" match; Sandstorm named some items differently)."""
+    words = re.sub(r"[^a-z' ]+", " ", name.lower()).split()
+    return " ".join(w[:-3] + "y" if w.endswith("ies") and len(w) > 4 else
+                    w[:-1] if w.endswith("s") and not w.endswith("ss") and len(w) > 3 else w for w in words)
+
+
+@lru_cache(maxsize=1)
+def _items_by_key() -> dict[str, int]:
+    found: dict[str, int] = {}
+    for name, item_id in _items_by_name().items():
+        found.setdefault(name_key(name), item_id)
+    return found
+
+
+def item_by_name(name: str, klass: int) -> int | None:
+    """An item by name: a real one, else a spell scroll of that name for the class."""
+    lowered = name.lower()
+    if lowered in _items_by_name():
+        return _items_by_name()[lowered]
+    if name_key(name) in _items_by_key():
+        return _items_by_key()[name_key(name)]
+    return next((item_id for item_id, item in sorted(item_patterns().items())
+                 if item["name"].lower() == lowered and item.get("class_mask", ALL_CLASSES) >> klass & 1), None)
 
 
 def created_item(ability_name: str) -> int | None:

@@ -24,6 +24,12 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertEqual(len(numbers), len(set(numbers)))  # resends count once
 
 
+    def test_names_entities_from_their_channel_updates(self):
+        names = capture_reader.entity_names(REPO_CAPTURE)
+        self.assertGreater(len(names), 5)
+        self.assertTrue(all(isinstance(name, str) and name for name in names.values()))
+
+
 class DispatchTests(unittest.TestCase):
     def setUp(self):
         store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")

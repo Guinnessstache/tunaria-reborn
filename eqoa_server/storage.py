@@ -64,6 +64,10 @@ class Character:
     spells: list[dict] | None = None
     # Version of the starting kit given (items.STARTING_KIT_VERSION); older kits are replaced once.
     kit_version: int = 0
+    # {"active": quest log text or None, "done": [dialogue exchange keys]} (dialogue.py).
+    quests: dict = field(default_factory=dict)
+    # [world, x, y, z, facing] a spiritmaster bound the character to; None: where it started.
+    bind: list | None = None
 
     @property
     def model_id(self) -> int:
@@ -427,7 +431,11 @@ def _dearest_ability(klass: int, level: int) -> int:
 
 def bind_point(character: Character) -> tuple[int, float, float, float, float]:
     """(world, x, y, z, facing) Return Home sends the character to: where its class and
-    race start (the Sandstorm capture returned a character to where it entered the world)."""
+    race start (the Sandstorm capture returned a character to where it entered the world),
+    or where a spiritmaster bound it."""
+    if character.bind:
+        world, x, y, z, facing = character.bind
+        return int(world), float(x), float(y), float(z), float(facing)
     start = game_data.starting_character(character.klass, character.race, character.human_type)
     if start is not None:
         return start.world, start.x, start.y, start.z, start.facing
