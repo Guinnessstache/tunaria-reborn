@@ -464,9 +464,22 @@ def build_old_world_list(
     return body + struct.pack("<I", rdp_crc(body))
 
 
-def build_discovery_bundle(client_endpoint: int, instance_id: int, bundle: int, messages: bytes) -> bytes:
-    """A later bundle from the discovery endpoint (0x73B0) while the client sits on the server list."""
-    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", bundle & 0xFFFF) + messages
+def build_discovery_bundle(
+    client_endpoint: int,
+    instance_id: int,
+    bundle: int,
+    messages: bytes = b"",
+    ack: tuple[int, int] | None = None,
+) -> bytes:
+    """A later bundle from the discovery endpoint (0x73B0) while the client sits on the server list.
+
+    ``ack`` (client bundle, client message) adds an RDP report acknowledging the client.
+    """
+    flags = PacketBundleFlags.PROCESS_MESSAGES | (PacketBundleFlags.RDP_REPORT if ack else 0)
+    body = bytes([flags]) + struct.pack("<H", bundle & 0xFFFF)
+    if ack:
+        body += struct.pack("<HH", ack[0] & 0xFFFF, ack[1] & 0xFFFF)
+    body += messages
     header = b"\xb0\x73" + struct.pack("<H", client_endpoint)
     packet = header + write_varuint(0x3000 + len(body)) + struct.pack("<I", instance_id) + body
     return packet + struct.pack("<I", rdp_crc(packet))

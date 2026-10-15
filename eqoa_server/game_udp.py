@@ -103,6 +103,11 @@ class DiscoverySession:
     instance_id: int
     # The world list is bundle 1 and its follow-up bundle 2.
     next_bundle: int = 3
+    client_message: int = 0
+    pings: int = 0
+    # False once the client has picked a server; its discovery connection stays open
+    # (and keeps pinging) until it closes it with a bare control.
+    on_server_list: bool = True
     last_send: float = field(default_factory=time.monotonic)
     last_client_packet: float = field(default_factory=time.monotonic)
 
@@ -114,6 +119,35 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
         server: GameUDPServer = self.server  # type: ignore[assignment]
         try:
             packet = parse_udp_packet(data)
+            discovery = server.discovery.get(self.client_address)
+            if (
+                discovery is not None
+                and packet.target_endpoint == DISCOVERY_ENDPOINT
+                and packet.messages
+                and all(msg.message_type == MessageType.PING for msg in packet.messages)
+            ):
+                # After ~30 s on the server list the client pings the discovery endpoint
+                # several times a second until those pings are acknowledged.
+                discovery.last_client_packet = time.monotonic()
+                discovery.client_message = max(
+                    [discovery.client_message] + [msg.message_number or 0 for msg in packet.messages]
+                )
+                reply = build_discovery_bundle(
+                    discovery.client_endpoint,
+                    discovery.instance_id,
+                    discovery.next_bundle,
+                    ack=(packet.client_bundle_number, discovery.client_message),
+                )
+                discovery.next_bundle += 1
+                discovery.last_send = time.monotonic()
+                sock.sendto(reply, self.client_address)
+                discovery.pings += 1
+                if server.log_packets and (discovery.pings in (1, 10, 100) or discovery.pings % 1000 == 0):
+                    print(
+                        f"UDP server-list pings acked for {self.client_address[0]}:{self.client_address[1]} "
+                        f"count={discovery.pings} last_msg={discovery.client_message}"
+                    )
+                return
             if server.log_packets:
                 message_summary = ", ".join(
                     f"{msg.opcode_name or hex(msg.message_type)}" for msg in packet.messages
@@ -156,7 +190,8 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 msg.opcode == 0x0001 for msg in packet.messages
             ):
                 instance_id = packet.instance_id or 0
-                server.discovery.pop(self.client_address, None)
+                if self.client_address in server.discovery:
+                    server.discovery[self.client_address].on_server_list = False
                 session = GameSession(packet.client_endpoint, instance_id)
                 server.sessions[self.client_address] = session
                 account = server.store.latest_account()
@@ -640,7 +675,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             for address, discovery in list(self.discovery.items()):
                 if now - discovery.last_client_packet > DISCOVERY_SESSION_TIMEOUT:
                     del self.discovery[address]
-                elif now - discovery.last_send >= SERVER_LIST_INTERVAL:
+                elif discovery.on_server_list and now - discovery.last_send >= SERVER_LIST_INTERVAL:
                     self.send_server_list(address, discovery)
             for address, session in list(self.sessions.items()):
                 if session.phase3_started and (

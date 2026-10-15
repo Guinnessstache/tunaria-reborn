@@ -10,7 +10,7 @@ from unittest import mock
 import eqoa_server.game_udp as game_udp
 from eqoa_server.config import ServerConfig
 from eqoa_server.game_udp import DiscoverySession, GameSession, GameUDPServer
-from eqoa_server.protocol import OLD_WORLD_SERVER_ENDPOINT, build_phase2_best_effort_ping, parse_udp_packet, rdp_crc
+from eqoa_server.protocol import OLD_WORLD_SERVER_ENDPOINT, build_phase2_best_effort_ping, parse_udp_packet, rdp_crc, write_varuint
 
 ENDPOINT = 0x0AD0
 INSTANCE = 0x00020AD1
@@ -76,6 +76,25 @@ class CharacterSelectKeepaliveTests(unittest.TestCase):
             while server.discovery and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertEqual(server.discovery, {})
+
+
+    def test_server_list_pings_are_acked(self):
+        server = GameUDPServer(("127.0.0.1", 0), ServerConfig(public_host="192.168.1.65"), mock.MagicMock(), log_packets=False)
+        threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(client.close)
+        client.bind(("127.0.0.1", 0))
+        client.settimeout(2)
+        server.discovery[client.getsockname()] = DiscoverySession(ENDPOINT, 0x00020AD0)
+        body = struct.pack("<I", 0x00020AD0) + b"\x20" + struct.pack("<H", 7) + b"\xF9\x01\x05\x00\x12"
+        ping = struct.pack("<HH", ENDPOINT, 0x73B0) + write_varuint(0x3000 + len(body) - 4) + body
+        client.sendto(ping + struct.pack("<I", rdp_crc(ping)), server.server_address)
+        reply = parse_udp_packet(client.recvfrom(4096)[0])
+        self.assertEqual(reply.client_endpoint, 0x73B0)
+        self.assertEqual(int(reply.bundle_flags), 0x23)
+        self.assertEqual((reply.client_bundle_ack, reply.client_message_ack), (7, 5))
 
 
 if __name__ == "__main__":
