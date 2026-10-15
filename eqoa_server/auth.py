@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import socketserver
 import string
@@ -30,6 +29,16 @@ LOGIN_NEEDS_ACCOUNT_KEY = 0x06
 LOGIN_NO_ACCOUNT = 0x0E
 ACCOUNT_STATUS_NORMAL = 0x01
 
+# EQOAGameServer's auth server answers a failed login with this text message.
+WRONG_PASSWORD_MESSAGE = "Wrong password for this account. Ask the server admin to reset it if you forgot it."
+LOGIN_OUTCOMES = {
+    "created": "new account created",
+    "set": "password set for this account",
+    "ok": "password ok",
+    "wrong": "WRONG PASSWORD, refused",
+    "not checked": "wrong password, allowed (password checking is off)",
+}
+
 
 def _fixed_ascii(value: str, size: int) -> bytes:
     return value.encode("ascii", "ignore")[:size].ljust(size, b"\x00")
@@ -43,10 +52,6 @@ def _read_fixed_ascii(data: bytes, offset: int, size: int) -> tuple[str, int]:
 
 def _with_length(body: bytes) -> bytes:
     return struct.pack(">I", len(body) + 4) + body
-
-
-def _fingerprint(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()[:8] if data else "-"
 
 
 def build_challenge() -> bytes:
@@ -199,21 +204,15 @@ class AuthServer(socketserver.ThreadingTCPServer):
 
     def process_auth_request(self, request: AuthRequest, challenge: bytes = b"") -> bytes:
         if request.message_type == LOGIN_REQUEST:
-            key = request.username.strip().lower()
-            account = self.store.accounts.get(key)
-            if account is None:
-                account = self.store.create_account(request.username, request.password_token)
+            account, outcome = self.store.check_login(request.username, request.password_token)
+            if outcome == "wrong" and not self.config.check_passwords:
+                account = self.store.accounts.get(request.username.strip().lower())
+                outcome = "not checked"
+            print(f"AUTH login {request.username!r}: {LOGIN_OUTCOMES.get(outcome, outcome)}")
+            if outcome == "wrong":
+                return build_disabled_response(WRONG_PASSWORD_MESSAGE)
             if account is None:
                 return build_login_response(0, LOGIN_NO_ACCOUNT, 0)
-            # Passwords are not checked yet: the client's token appears to be derived
-            # from the per-connection challenge, so it differs on every login. These
-            # one-way fingerprints let us confirm that without logging the token.
-            print(
-                f"AUTH login {account.username!r} challenge={_fingerprint(challenge)} "
-                f"token={_fingerprint(request.password_token.encode('ascii', 'ignore'))}"
-            )
-            account.last_login_at = time.time()
-            self.store.save()
             self._last_username_by_client["last"] = account.username
             return build_login_response(account.account_id)
 

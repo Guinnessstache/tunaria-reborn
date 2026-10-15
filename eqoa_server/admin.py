@@ -399,6 +399,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             account = ctx.store.get_account(account_id)
             if action == "delete":
                 ok = ctx.store.delete_account(account_id)
+            elif action == "reset-password":
+                ok = ctx.store.reset_password(account_id)
             else:
                 raise KeyError(action)
             print(f"ADMIN {action} account {account.username if account else account_id} -> {'ok' if ok else 'failed'}")
@@ -511,6 +513,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if "motd" in body:
             motd = str(body["motd"] or "").replace("\r\n", "\n")
             config.motd = motd or None
+        if "check_passwords" in body:
+            config.check_passwords = bool(body["check_passwords"])
         save_settings(config)
         print("ADMIN settings updated")
         self._json(self._settings())
@@ -524,6 +528,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "default_motd": default_motd_text(config),
             "motd_limit": MOTD_BODY_SIZE,
             "public_host": config.public_host,
+            "check_passwords": config.check_passwords,
         }
 
     def _status(self) -> dict:
@@ -605,12 +610,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         with store._lock:
             accounts = sorted(store.accounts.values(), key=lambda a: a.account_id)
             return {
+                "check_passwords": self.ctx.config.check_passwords,
                 "accounts": [
                     {
                         "id": account.account_id,
                         "username": account.username,
                         "created_at": account.created_at,
                         "last_login_at": account.last_login_at,
+                        "password_set": bool(account.password_token),
                         "characters": [
                             {
                                 "id": c.character_id,

@@ -176,6 +176,7 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
     <div data-panel="accounts" hidden>
       <section class="card">
         <h2>Accounts</h2>
+        <label class="check"><input type="checkbox" id="check-passwords"> Check game passwords</label>
         <p class="hint" id="password-mode"></p>
         <div id="accounts"></div>
       </section>
@@ -436,7 +437,9 @@ document.addEventListener("click", async (e) => {
       await api("/api/sessions/kick", { address: t.dataset.kick }); toast("Session dropped"); refresh();
     } else if (t.dataset.account) {
       const { account, action, name } = t.dataset;
-      const question = `Delete account ${name} and all its characters? This cannot be undone.`;
+      const question = action === "delete"
+        ? `Delete account ${name} and all its characters? This cannot be undone.`
+        : `Reset the password of ${name}? The next login, with any password, sets the new one.`;
       if (!confirm(question)) return;
       await api(`/api/accounts/${account}/${action}`, {}); toast("Done"); refresh();
     } else if (t.dataset.character) {
@@ -476,15 +479,27 @@ $("#shutdown").onclick = async () => {
   await api("/api/shutdown", {}).catch(() => {}); toast("Server shutting down"); clearInterval(pollTimer);
 };
 
+$("#check-passwords").addEventListener("change", async (e) => {
+  const on = e.target.checked;
+  if (!on && !confirm("Turn off password checking? Anyone who knows an account name can then log in to it.")) { e.target.checked = true; return; }
+  try { await api("/api/settings", { check_passwords: on }); toast(on ? "Passwords are checked" : "Passwords are not checked"); refresh(); }
+  catch (err) { if (err.message !== "login required") { toast(err.message); e.target.checked = !on; } }
+});
+
 function renderAccounts(data) {
-  $("#password-mode").textContent = "Passwords are not checked yet: any password logs in to an existing account, and a new name creates an account.";
+  const box = $("#check-passwords");
+  if (document.activeElement !== box) box.checked = data.check_passwords;
+  $("#password-mode").textContent = data.check_passwords
+    ? "A new name creates an account. An account's password is set the first time it logs in (or after a reset); a different password is refused after that."
+    : "Off: any password logs in to an existing account (wrong ones are only noted in the log). A new name creates an account.";
   $("#accounts").innerHTML = data.accounts.length ? data.accounts.map((a) => `
     <div class="account">
       <div class="account-head">
         <strong>${esc(a.username)}</strong>
-        <span class="muted">#${a.id} · last login ${esc(date(a.last_login_at))}</span>
+        <span class="muted">#${a.id} · last login ${esc(date(a.last_login_at))} · ${a.password_set ? "password set" : "password not set: the next login sets it"}</span>
         <span class="spacer" style="flex:1"></span>
         <div class="row-actions">
+          <button class="btn" data-account="${a.id}" data-name="${esc(a.username)}" data-action="reset-password">Reset password</button>
           <button class="btn danger" data-account="${a.id}" data-name="${esc(a.username)}" data-action="delete">Delete</button>
         </div>
       </div>

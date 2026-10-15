@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import threading
@@ -10,10 +11,20 @@ from time import time
 from . import game_data
 
 
+TOKEN_HASH_PREFIX = "sha256:"
+
+
+def _hash_token(username_key: str, token: str) -> str:
+    """The client already sends a hashed password; never keep it as is."""
+    digest = hashlib.sha256(f"tunaria-reborn:{username_key}:{token}".encode("utf-8")).hexdigest()
+    return TOKEN_HASH_PREFIX + digest
+
+
 @dataclass(slots=True)
 class Account:
     account_id: int
     username: str
+    # Salted hash of the client's password token ("" = not set: the next login sets it).
     password_token: str
     created_at: float = field(default_factory=time)
     last_login_at: float | None = None
@@ -72,6 +83,11 @@ class JsonStore:
                 row["username"].lower(): Account(**{k: v for k, v in row.items() if k in Account.__dataclass_fields__})
                 for row in payload.get("accounts", [])
             }
+            for account in self.accounts.values():
+                if not account.password_token.startswith(TOKEN_HASH_PREFIX):
+                    # Stored by an older version as the client's raw token, which earlier
+                    # clients (other memory cards) sent differently: let the next login set it.
+                    account.password_token = ""
             self.characters = {
                 int(row["character_id"]): Character(**{k: v for k, v in row.items() if k in Character.__dataclass_fields__})
                 for row in payload.get("characters", [])
@@ -97,29 +113,54 @@ class JsonStore:
         if not key or key in self.accounts:
             return None
         with self._lock:
-            account = Account(self._next_account_id, username.strip(), password_token)
+            account = Account(self._next_account_id, username.strip(), _hash_token(key, password_token))
             self._next_account_id += 1
             self.accounts[key] = account
             self.save()
             return account
 
-    def authenticate(self, username: str, password_token: str) -> Account | None:
+    def check_login(self, username: str, password_token: str) -> tuple[Account | None, str]:
+        """Log in, creating the account on first use.
+
+        Returns (account, outcome): outcome is "created", "set" (no password stored
+        yet, this one is now the account's password), "ok" or "wrong" (account None).
+        """
+        key = username.strip().lower()
         with self._lock:
-            account = self.accounts.get(username.strip().lower())
+            account = self.accounts.get(key)
             if account is None:
-                account = self.create_account(username, password_token)
-            if account and secrets.compare_digest(account.password_token, password_token):
-                account.last_login_at = time()
-                self.save()
-                return account
-            return None
+                return self.create_account(username, password_token), "created"
+            given = _hash_token(key, password_token)
+            if not account.password_token:
+                account.password_token = given
+                outcome = "set"
+            elif secrets.compare_digest(account.password_token, given):
+                outcome = "ok"
+            else:
+                return None, "wrong"
+            account.last_login_at = time()
+            self.save()
+            return account, outcome
 
     def change_password(self, username: str, old_token: str, new_token: str) -> bool:
+        key = username.strip().lower()
         with self._lock:
-            account = self.accounts.get(username.strip().lower())
-            if account is None or not secrets.compare_digest(account.password_token, old_token):
+            account = self.accounts.get(key)
+            if account is None:
                 return False
-            account.password_token = new_token
+            if account.password_token and not secrets.compare_digest(account.password_token, _hash_token(key, old_token)):
+                return False
+            account.password_token = _hash_token(key, new_token)
+            self.save()
+            return True
+
+    def reset_password(self, account_id: int) -> bool:
+        """Forget an account's password; the next login sets a new one."""
+        with self._lock:
+            account = self.get_account(account_id)
+            if account is None:
+                return False
+            account.password_token = ""
             self.save()
             return True
 

@@ -24,13 +24,15 @@ class ServerConfig:
     motd: str | None = None
     # Services not listed here start automatically; False keeps one stopped at startup.
     autostart: dict[str, bool] = field(default_factory=dict)
+    # Refuse logins whose password differs from the one the account was first used with.
+    check_passwords: bool = True
 
     @property
     def settings_path(self) -> Path:
         return self.data_path.parent / "settings.json"
 
 
-EDITABLE_SETTINGS = ("shard_name", "motd", "public_host", "autostart")
+EDITABLE_SETTINGS = ("shard_name", "motd", "public_host", "autostart", "check_passwords")
 
 
 def load_settings(config: ServerConfig) -> None:

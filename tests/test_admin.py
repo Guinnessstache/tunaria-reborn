@@ -1,4 +1,5 @@
 import json
+import struct
 import os
 import socket
 import tempfile
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from eqoa_server.admin import AdminContext, AdminCredentials, AdminServer
-from eqoa_server.auth import LOGIN_GOOD, LOGIN_REQUEST, AuthRequest
+from eqoa_server.auth import LOGIN_REQUEST, AuthRequest
 from eqoa_server.config import ServerConfig, load_settings
 from eqoa_server.netconfig import NetworkHelper
 from eqoa_server.patch_tcp import MOTD_BODY_SIZE, fixed_motd_body
@@ -133,14 +134,25 @@ class AdminPanelTests(unittest.TestCase):
         load_settings(reloaded)
         self.assertEqual((reloaded.shard_name, reloaded.motd), ("Test Shard", "Hello\nworld"))
 
-    def test_login_accepts_changing_tokens_and_ignores_old_enforce_setting(self):
-        self.config.settings_path.write_text('{"enforce_passwords": true}', encoding="utf-8")
-        load_settings(self.config)
+    def test_reset_password_and_toggle_checking(self):
         auth = self.services.services["auth"].server
         login = lambda token: auth.process_auth_request(AuthRequest(148, LOGIN_REQUEST, "tester", token), b"c" * 32)
-        result_code = lambda response: int.from_bytes(response[8:12], "big")
-        self.assertEqual(result_code(login("aa")), LOGIN_GOOD)
-        self.assertEqual(result_code(login("bb")), LOGIN_GOOD)
+        good = lambda response: struct.unpack_from(">I", response, 4)[0] == 0x25
+        self.assertTrue(good(login("aa")))
+        self.assertFalse(good(login("bb")))
+        self.login()
+        account = self.store.accounts["tester"]
+        _, accounts = self.request("/api/accounts")
+        self.assertTrue(accounts["accounts"][0]["password_set"])
+        self.assertEqual(self.request(f"/api/accounts/{account.account_id}/reset-password", {})[0], 200)
+        self.assertTrue(good(login("bb")))  # sets the new password
+        self.assertFalse(good(login("aa")))
+
+        self.request("/api/settings", {"check_passwords": False})
+        self.assertTrue(good(login("aa")))
+        reloaded = ServerConfig(data_path=self.config.data_path)
+        load_settings(reloaded)
+        self.assertFalse(reloaded.check_passwords)
 
     def test_delete_account_removes_characters(self):
         account = self.store.create_account("deleteme", "x")
