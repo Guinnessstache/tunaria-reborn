@@ -415,6 +415,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             print(f"ADMIN gave {entry['stack']} x {name} to character {character_id}"
                   f"{' (equipped)' if entry['equip'] != items.NOT_EQUIPPED else ''}")
             self._json({"ok": True})
+        elif len(parts) == 3 and parts[:1] == ["characters"] and parts[2] == "level":
+            character_id, level = int(parts[1]), int(body["level"])
+            learned = ctx.store.set_level(character_id, level, bool(body.get("learn_abilities", True)))
+            print(f"ADMIN set character {character_id} to level {level}"
+                  f"{f', learned {len(learned)} abilities' if learned else ''}")
+            self._json({"ok": True, "learned": len(learned)})
         elif len(parts) == 5 and parts[0] == "characters" and parts[2] == "items":
             character_id, index, action = int(parts[1]), int(parts[3]), parts[4]
             if action in ("equip", "unequip"):

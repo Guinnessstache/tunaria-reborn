@@ -250,6 +250,22 @@ class JsonStore:
                 character.inventory[index]["equip"] = items.NOT_EQUIPPED
             self.save()
 
+    def set_level(self, character_id: int, level: int, learn_abilities: bool = True) -> list[int]:
+        """Set a character's level (1-60); optionally learn the class's abilities up to it.
+        Returns the newly learned ability ids."""
+        if not MIN_LEVEL <= level <= MAX_LEVEL:
+            raise InventoryError(f"level must be {MIN_LEVEL} to {MAX_LEVEL}")
+        with self._lock:
+            character = self._character_or_error(character_id)
+            character.level = level
+            learned = []
+            if learn_abilities:
+                known = {entry["spell"] for entry in character.spells}
+                learned = [spell_id for spell_id in items.abilities_up_to(character.klass, level) if spell_id not in known]
+                character.spells += [{"spell": spell_id, "hotbar": -1} for spell_id in learned]
+            self.save()
+            return learned
+
     def remove_item(self, character_id: int, index: int) -> None:
         with self._lock:
             character = self._character_or_error(character_id)
@@ -346,6 +362,9 @@ class JsonStore:
 
 class InventoryError(ValueError):
     pass
+
+
+MIN_LEVEL, MAX_LEVEL = 1, 60
 
 
 def _give_starting_kit(character: Character) -> None:

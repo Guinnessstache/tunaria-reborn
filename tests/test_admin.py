@@ -178,6 +178,23 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request(f"{base}/items/2/remove", {})[0], 200)
         self.assertEqual(len(self.store.get_character(character.character_id).inventory), 2)
 
+    def test_set_level_learns_abilities(self):
+        from eqoa_server import items
+
+        account = self.store.create_account("leveler", "x")
+        warrior = self.store.create_character(account.account_id, "Brute", klass=0)
+        self.login()
+        base = f"/api/characters/{warrior.character_id}/level"
+        status, result = self.request(base, {"level": 5, "learn_abilities": True})
+        self.assertEqual(status, 200)
+        names = [items.spell_patterns()[s["spell"]]["name"] for s in self.store.get_character(warrior.character_id).spells]
+        for expected in ("Kick", "Concentration", "Tough Skin", "Taunt"):  # warrior levels 3-5 in the guide
+            self.assertIn(expected, names)
+        self.assertEqual(result["learned"], len(names) - 3)
+        self.assertEqual(self.store.get_character(warrior.character_id).level, 5)
+        self.assertEqual(self.request(base, {"level": 61})[0], 409)
+        self.assertEqual(self.request(base, {"level": 30, "learn_abilities": False})[1]["learned"], 0)
+
     def test_delete_account_removes_characters(self):
         account = self.store.create_account("deleteme", "x")
         self.store.create_character(account.account_id, "Gone")

@@ -194,6 +194,14 @@ def starting_spells(klass: int) -> list[dict]:
     ] + [{"spell": RETURN_HOME, "hotbar": -1}]
 
 
+def abilities_up_to(klass: int, level: int) -> list[int]:
+    """Ability ids of the class from level 1 to ``level``, in the guide's order."""
+    ids: list[int] = []
+    for each in range(1, level + 1):
+        ids += [spell_id for spell_id in _class_spell_ids(klass, each) if spell_id not in ids]
+    return ids
+
+
 def _class_spell_ids(klass: int, level: int) -> list[int]:
     if not 0 <= klass < len(CLASS_NAMES):
         return []
@@ -214,7 +222,7 @@ def _class_spell_ids(klass: int, level: int) -> list[int]:
 
 ITEM_SLOT_NAMES = {
     -1: "", 1: "Head", 2: "Robe", 3: "Earring", 4: "Neck", 5: "Chest", 6: "Bracelet", 7: "Bracers",
-    8: "Ring", 9: "Belt", 10: "Legs", 11: "Feet", 12: "One hand", 13: "Shield", 14: "Off hand",
+    8: "Ring", 9: "Belt", 10: "Legs", 11: "Feet", 12: "One hand", 13: "Shield", 14: "Either hand",
     15: "Two hands", 16: "Bow", 17: "Thrown", 18: "Held", 19: "Hands", 20: "Fishing", 21: "Bait",
 }
 

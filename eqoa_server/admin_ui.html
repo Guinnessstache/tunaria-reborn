@@ -77,6 +77,9 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
 .account-head strong { font-size: 15px; }
 .chars { margin: 8px 0 0 0; }
 .inv-row td { border-top: 0; padding-top: 0; }
+.level-edit { display: inline-flex; gap: 4px; align-items: center; }
+.level-edit input { width: 58px; padding: 3px 6px; }
+.level-edit button.btn { padding: 2px 8px; font-size: 12px; }
 .inv { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .item { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px 3px 8px; font-size: 13px; }
 .item.equipped { border-color: var(--accent); }
@@ -185,6 +188,7 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         <h2>Accounts</h2>
         <label class="check"><input type="checkbox" id="check-passwords"> Check game passwords</label>
         <p class="hint" id="password-mode"></p>
+        <label class="check"><input type="checkbox" id="learn-abilities" checked> Setting a level also teaches the class's abilities up to it</label>
         <div id="accounts"></div>
       </section>
     </div>
@@ -380,7 +384,8 @@ async function refresh() {
   try {
     if (activeTab === "dashboard" || activeTab === "players") renderStatus(await api("/api/status"));
     // Don't redraw the accounts list under someone typing in a give-item box.
-    const giving = [...document.querySelectorAll(".give-search")].some((i) => i.value || i === document.activeElement);
+    const giving = [...document.querySelectorAll(".give-search, .level-input")].some(
+      (i) => i === document.activeElement || (i.classList.contains("give-search") && i.value));
     if (activeTab === "accounts" && !giving) renderAccounts(await api("/api/accounts"));
     if (activeTab === "logs") await pollLogs();
   } catch (err) { if (err.message !== "login required") console.warn(err); }
@@ -513,10 +518,16 @@ document.addEventListener("input", (e) => {
   }, 250);
 });
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest && e.target.closest("button[data-give-item], button[data-inv-action]");
+  const t = e.target.closest && e.target.closest("button[data-give-item], button[data-inv-action], button[data-level-set]");
   if (!t) return;
   try {
-    if (t.dataset.giveItem) {
+    if (t.dataset.levelSet) {
+      const character = t.dataset.levelSet;
+      const level = Number(document.querySelector(`.level-input[data-level-char="${character}"]`).value);
+      const learn = $("#learn-abilities").checked;
+      const res = await api(`/api/characters/${character}/level`, { level, learn_abilities: learn });
+      toast(`${t.dataset.name} is level ${level}${res.learned ? `, learned ${res.learned} abilities` : ""}. Shows the next time they enter the world.`);
+    } else if (t.dataset.giveItem) {
       const character = t.dataset.giveTo;
       const equip = document.querySelector(`.give-equip[data-give-char="${character}"]`).checked;
       const stack = 1e9;  // the server caps it at the item's stack size
@@ -554,7 +565,7 @@ function renderAccounts(data) {
         <thead><tr><th>Character</th><th>Level</th><th>Race / class</th><th>Zone</th><th>Position</th><th></th></tr></thead>
         <tbody>${a.characters.map((c) => `<tr>
           <td><strong>${esc(c.name)}</strong> <span class="muted">#${c.id}</span></td>
-          <td class="num">${c.level}</td>
+          <td class="num"><span class="level-edit"><input type="number" min="1" max="60" value="${c.level}" class="level-input" data-level-char="${c.id}"><button class="btn" data-level-set="${c.id}" data-name="${esc(c.name)}">Set</button></span></td>
           <td>${esc(RACES[c.race] ?? "?")} <span class="muted">(${c.race})</span> / ${esc(CLASSES[c.class] ?? "?")} <span class="muted">(${c.class})</span></td>
           <td class="num">${c.zone}</td>
           <td class="num">${c.position.join(", ")}</td>
