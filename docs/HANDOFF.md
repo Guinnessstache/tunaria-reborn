@@ -140,7 +140,7 @@ Hide an entity by resending its update with byte 0 set to 0.
 | 99–104 | Armor colors |
 | 105–108 | Hair and face |
 | 109 | Robe |
-| 58 | Animation: 0/1 standing, 3 running, 4 creature attack, 11 Kick, 14 lying dead |
+| 58 | Animation: 0 standing, 1 walking (small velocity), 3 running, 4 creature attack, 11 Kick, 14 lying dead |
 | 40–42 | Velocity x, y, z as signed bytes, ~8 per unit/s (a running creature: −54, −10, 27). Without it the run animation plays in place |
 | 116 | Name (24 bytes) |
 | 140 | Level |

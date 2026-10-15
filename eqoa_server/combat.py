@@ -36,10 +36,11 @@ MOB_ATTACK_EFFECT = 0xDA9BEA11
 
 ALIVE, CORPSE, GONE = "alive", "corpse", "gone"
 
-# Byte 58 of an object update is its animation (Sandstorm capture): 0 / 1 standing, 3
-# running, 4 a creature's attack, 11 the player's Kick, 14 lying dead (with byte 26 = 3).
+# Byte 58 of an object update is its animation (Sandstorm capture): 0 standing, 1 walking
+# (with a small velocity, -5, -1, 3), 3 running, 4 a creature's attack, 11 the player's
+# Kick, 14 lying dead (with byte 26 = 3). Standing with 1 walks in place.
 ANIMATION = 58
-STAND, RUN, ATTACK, DEAD = 1, 3, 4, 14
+STAND, WALK, RUN, ATTACK, DEAD = 0, 1, 3, 4, 14
 # Bytes 40-42: velocity x, y, z as signed bytes, about 8 per unit/s (a Sandstorm creature
 # running at ~7.5 units/s sent -54, -10, 27). Without it the client plays the run in place.
 VELOCITY = 40

@@ -598,3 +598,12 @@ class MovementTests(unittest.TestCase):
         self.assertGreater(vz, 0)
         self.assertFalse(combat.step_toward(mob, mob.x, mob.z, 0.1))
         self.assertEqual(combat.update_bytes(mob)[40], 0)
+
+
+class AnimationTests(unittest.TestCase):
+    mob = MovementTests.mob
+
+    def test_standing_still_is_animation_zero(self):
+        combat, mob = self.mob()
+        mob.animation = combat.STAND
+        self.assertEqual(combat.update_bytes(mob)[58], 0)  # 1 is walking: it walked in place
