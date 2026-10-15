@@ -25,6 +25,8 @@ from .protocol import (
     build_minimal_ack,
     build_old_world_ack,
     build_old_world_list,
+    build_discovery_bundle,
+    build_game_servers_message,
     build_phase3_guaranteed_ack,
     build_phase3_client_update_ack,
     build_phase3_memory_dump_packets,
@@ -92,6 +94,18 @@ class GameSession:
     last_client_packet: float = field(default_factory=time.monotonic)
 
 
+@dataclass(slots=True)
+class DiscoverySession:
+    """A client on the server list, talking to the discovery endpoint (0x73B0)."""
+
+    client_endpoint: int
+    instance_id: int
+    # The world list is bundle 1 and its follow-up bundle 2.
+    next_bundle: int = 3
+    last_send: float = field(default_factory=time.monotonic)
+    last_client_packet: float = field(default_factory=time.monotonic)
+
+
 class GameUDPHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         data = self.request[0]
@@ -115,9 +129,10 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                             f"UDP {self.client_address[0]}:{self.client_address[1]} "
                             f"{msg.opcode_name} payload={_masked_handshake(msg.payload)}"
                         )
-            existing = server.sessions.get(self.client_address)
-            if existing is not None:
-                existing.last_client_packet = time.monotonic()
+            for table in (server.sessions, server.discovery):
+                existing = table.get(self.client_address)
+                if existing is not None:
+                    existing.last_client_packet = time.monotonic()
             if any(msg.opcode == 0x0904 for msg in packet.messages):
                 world_list = build_old_world_list(
                     packet.client_endpoint,
@@ -127,6 +142,10 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 )
                 sock.sendto(world_list, self.client_address)
                 sock.sendto(build_old_world_ack(packet.client_endpoint), self.client_address)
+                with server.lock:
+                    server.discovery[self.client_address] = DiscoverySession(
+                        packet.client_endpoint, packet.instance_id or (0x20000 | packet.client_endpoint)
+                    )
                 if server.log_packets:
                     print(
                         f"UDP world-list sent to {self.client_address[0]}:{self.client_address[1]} "
@@ -136,6 +155,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 msg.opcode == 0x0001 for msg in packet.messages
             ):
                 instance_id = packet.instance_id or 0
+                server.discovery.pop(self.client_address, None)
                 session = GameSession(packet.client_endpoint, instance_id)
                 server.sessions[self.client_address] = session
                 account = server.store.latest_account()
@@ -442,6 +462,9 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
             session = server.sessions.get(self.client_address)
             if session is not None:
                 session.phase3_last_client_arrival = session.phase3_last_client_arrival + 1
+            if short.dst_endpoint == DISCOVERY_ENDPOINT:
+                # The client closes its server-list connection once it has picked a server.
+                server.discovery.pop(self.client_address, None)
             if server.log_packets:
                 print(
                     f"UDP phase3 bare-control absorbed from {self.client_address[0]}:{self.client_address[1]} "
@@ -456,9 +479,18 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
         reliable = parse_reliable_control(data)
         if reliable is not None and reliable.to_server:
             session = server.sessions.get(self.client_address)
-            server_seq = session.phase3_next_arrival if session is not None else 1
-            if session is not None:
-                session.phase3_next_arrival += 1
+            discovery = server.discovery.get(self.client_address)
+            if reliable.dst_endpoint == DISCOVERY_ENDPOINT and discovery is not None:
+                # Continue the server-list bundle numbers (1 and 2 went out with the list);
+                # repeating 1 looks like an old bundle to the client.
+                discovery.last_client_packet = time.monotonic()
+                server_seq = discovery.next_bundle
+                discovery.next_bundle += 1
+                discovery.last_send = time.monotonic()
+            else:
+                server_seq = session.phase3_next_arrival if session is not None else 1
+                if session is not None:
+                    session.phase3_next_arrival += 1
             reply = build_reliable_ack(reliable, server_seq, checksum_fn=rdp_crc)
             sock.sendto(reply, self.client_address)
             if server.log_packets:
@@ -517,6 +549,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.server_endpoint = server_endpoint
         self.log_packets = log_packets
         self.sessions: dict[tuple[str, int], GameSession] = {}
+        self.discovery: dict[tuple[str, int], DiscoverySession] = {}
         self.lock = threading.RLock()
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
@@ -586,11 +619,26 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         session.phase2_last_send = time.monotonic()
         self.socket.sendto(packet, session.phase2_address)
 
+    def send_server_list(self, address: tuple[str, int], discovery: DiscoverySession) -> None:
+        """Resend the server list, as EQOAGameServer's ServerListManager does every 5 s."""
+        message = build_game_servers_message(self.config.public_host, self.config.game_port, self.config.shard_name)
+        packet = build_discovery_bundle(discovery.client_endpoint, discovery.instance_id, discovery.next_bundle, message)
+        discovery.next_bundle += 1
+        discovery.last_send = time.monotonic()
+        self.socket.sendto(packet, address)
+        if self.log_packets:
+            print(f"UDP server-list resent to {address[0]}:{address[1]} bundle={discovery.next_bundle - 1}")
+
     def service_actions(self) -> None:
         """Called by serve_forever between requests: keep idle phase3 sessions alive."""
         super().service_actions()
         now = time.monotonic()
         with self.lock:
+            for address, discovery in list(self.discovery.items()):
+                if now - discovery.last_client_packet > DISCOVERY_SESSION_TIMEOUT:
+                    del self.discovery[address]
+                elif now - discovery.last_send >= SERVER_LIST_INTERVAL:
+                    self.send_server_list(address, discovery)
             for address, session in list(self.sessions.items()):
                 if session.phase3_started and (
                     session.phase3_closed
@@ -778,6 +826,9 @@ PHASE3_PING_INTERVAL = 2.0
 # character select if the server says nothing for too long.
 PHASE2_PING_INTERVAL = 5.0
 PHASE2_SESSION_TIMEOUT = 600.0
+DISCOVERY_ENDPOINT = 0x73B0
+SERVER_LIST_INTERVAL = 5.0
+DISCOVERY_SESSION_TIMEOUT = 600.0
 
 
 def _next_phase3_arrival(session: GameSession) -> int:

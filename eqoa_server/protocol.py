@@ -411,20 +411,8 @@ def build_minimal_ack(packet: UdpPacket, server_endpoint: int = 0xFFFE) -> bytes
     return bytes(body)
 
 
-def build_old_world_list(
-    client_endpoint: int,
-    public_host: str,
-    game_port: int,
-    shard_name: str,
-) -> bytes:
-    """GameServers (0x07B3) list, laid out like Sandstorm's (one entry per language).
-
-    Each entry: name as int32 character count + that many UTF-16 characters (variable
-    length, as in EQOAGameServer's ServerListManager), recommended flag, server
-    endpoint, port, IPv4 address, language. A name padded to a fixed width shifts the
-    following fields and the client shows an empty list; that only went unnoticed
-    because "Sandstorm" and "Local EQOA" (cut to 9) are both 9 characters.
-    """
+def build_game_servers_message(public_host: str, game_port: int, shard_name: str) -> bytes:
+    """Unreliable GameServers (0x07B3) message: the shard once per language."""
     ip_bytes = bytes(int(part) for part in public_host.split(".")[:4])
     if len(ip_bytes) != 4:
         raise ValueError(f"public host must be an IPv4 address, got {public_host!r}")
@@ -445,6 +433,24 @@ def build_old_world_list(
         + bytes([OLD_WORLD_VISIBLE_COUNT])
         + bytes(entries)
     )
+    return list_message
+
+
+def build_old_world_list(
+    client_endpoint: int,
+    public_host: str,
+    game_port: int,
+    shard_name: str,
+) -> bytes:
+    """GameServers (0x07B3) list, laid out like Sandstorm's (one entry per language).
+
+    Each entry: name as int32 character count + that many UTF-16 characters (variable
+    length, as in EQOAGameServer's ServerListManager), recommended flag, server
+    endpoint, port, IPv4 address, language. A name padded to a fixed width shifts the
+    following fields and the client shows an empty list; that only went unnoticed
+    because "Sandstorm" and "Local EQOA" (cut to 9) are both 9 characters.
+    """
+    list_message = build_game_servers_message(public_host, game_port, shard_name)
     ps2_endpoint = struct.pack("<H", client_endpoint)
     rest = (
         bytes([0x63])  # bundle flags
@@ -455,6 +461,14 @@ def build_old_world_list(
     )
     body = b"\xb0\x73" + ps2_endpoint + write_varuint(0x1000 + len(rest)) + rest
     return body + struct.pack("<I", rdp_crc(body))
+
+
+def build_discovery_bundle(client_endpoint: int, instance_id: int, bundle: int, messages: bytes) -> bytes:
+    """A later bundle from the discovery endpoint (0x73B0) while the client sits on the server list."""
+    body = bytes([PacketBundleFlags.PROCESS_MESSAGES]) + struct.pack("<H", bundle & 0xFFFF) + messages
+    header = b"\xb0\x73" + struct.pack("<H", client_endpoint)
+    packet = header + write_varuint(0x3000 + len(body)) + struct.pack("<I", instance_id) + body
+    return packet + struct.pack("<I", rdp_crc(packet))
 
 
 def build_old_world_ack(client_endpoint: int, auth_byte: int = 0x01) -> bytes:
