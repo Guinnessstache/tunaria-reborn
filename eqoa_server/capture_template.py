@@ -256,3 +256,41 @@ def memory_dump_without_belongings(
         + spells
         + payload[offset:]
     )
+
+
+@lru_cache(maxsize=1)
+def sandstorm_entity_updates(path: Path = SANDSTORM_CAPTURE) -> dict[int, bytes]:
+    """First full object update the Sandstorm server sent on each entity channel (1-0x17)."""
+    from .protocol import rle_zero_decode
+
+    found: dict[int, bytes] = {}
+    if not path.is_file():
+        return found
+    for packet in _server_udp_payloads(path):
+        inner = _phase3_inner(packet)
+        if not inner or len(inner) < 4:
+            continue
+        offset = 3 + (4 if inner[0] & 0x03 else 0) + (4 if inner[0] & 0x40 else 0)
+        while offset + 4 < len(inner):
+            channel = inner[offset]
+            if channel > 0x17:
+                if channel not in (0xF9, 0xFA, 0xFB, 0xFC):
+                    break
+                size, start = inner[offset + 1], offset + 2
+                if size == 0xFF:
+                    size, start = struct.unpack_from("<H", inner, start)[0], start + 2
+                offset = start + (0 if channel == 0xFC else 2) + size
+                continue
+            reference = inner[offset + 4 + (2 if inner[offset + 1] == 0xFF else 0)]
+            start = offset + 5 + (2 if inner[offset + 1] == 0xFF else 0)
+            end = start
+            while end < len(inner):  # skip the run-length data
+                control = inner[end]
+                end += 1
+                if control == 0:
+                    break
+                end += (control & 0x7F) + 1 if control & 0x80 else control >> 4
+            if reference == 0 and channel and channel not in found:
+                found[channel] = rle_zero_decode(inner[start:end])
+            offset = end
+    return found

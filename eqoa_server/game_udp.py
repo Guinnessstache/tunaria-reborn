@@ -13,7 +13,7 @@ from .capture_template import (
     memory_dump_without_belongings,
     sandstorm_memory_dump_payload,
 )
-from . import game_data, items
+from . import game_data, items, npcs
 from .config import ServerConfig
 from .memory_dump import build_memory_dump_core, build_object_update
 from .protocol import (
@@ -95,6 +95,10 @@ class GameSession:
     last_position_save: float = 0.0
     # Model browser in the admin panel: {"primary" / "secondary" / "shield": model id} drawn live.
     appearance_preview: dict[str, int] | None = None
+    # Entity channels 1-0x17: who is drawn on each and the state last sent.
+    entity_channels: dict[int, "EntityChannel"] = field(default_factory=dict)
+    last_entity_refresh: float = 0.0
+    world: int = 0
     phase3_self_update_acked: bool = False
     phase3_last_self_update: float = 0.0
     phase3_address: tuple[str, int] | None = None
@@ -106,6 +110,18 @@ class GameSession:
     phase2_address: tuple[str, int] | None = None
     phase2_last_send: float = 0.0
     last_client_packet: float = field(default_factory=time.monotonic)
+
+
+@dataclass(slots=True)
+class EntityChannel:
+    """One client object channel: an entity (NPC) and the latest full update for it.
+    The update is resent (with its sequence) until the client acks that sequence."""
+
+    object_id: int
+    update: bytes
+    sequence: int = 1
+    acked: bool = False
+    last_sent: float = 0.0
 
 
 @dataclass(slots=True)
@@ -379,6 +395,10 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
 
             if packet.client_message_ack is not None:
                 session.phase3_acked_message = max(session.phase3_acked_message, packet.client_message_ack)
+            for channel, sequence in packet.channel_acks.items():
+                entity = session.entity_channels.get(channel)
+                if entity is not None and _sequence_reached(sequence, entity.sequence):
+                    entity.acked = True
             if packet.channel_acks.get(SELF_CHANNEL, 0) >= session.phase3_self_update_sequence:
                 session.phase3_self_update_acked = True
 
@@ -432,6 +452,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 and session.phase3_in_world
             ):
                 sent += server.send_self_update(session)
+            sent += server.service_entities(session)
             sent += server.service_phase3(session, idle_only=False)
 
             if server.log_packets:
@@ -630,6 +651,68 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if session.phase3_address is not None:
             self.socket.sendto(packet, session.phase3_address)
 
+    def service_entities(self, session: GameSession) -> list[str]:
+        """Keep the nearest NPCs on the client's object channels 1-0x17 and (re)send their
+        updates until acked, as the Sandstorm server does."""
+        character = session.selected_character
+        if not session.phase3_in_world or session.phase3_closed or character is None or session.phase3_address is None:
+            return []
+        now = time.monotonic()
+        notes = []
+        if now - session.last_entity_refresh >= ENTITY_REFRESH_INTERVAL:
+            session.last_entity_refresh = now
+            notes += self._assign_entity_channels(session, character)
+        due = [
+            (channel, entity) for channel, entity in sorted(session.entity_channels.items())
+            if not entity.acked and now - entity.last_sent >= PHASE3_RESEND_INTERVAL
+        ]
+        bundle, count = b"", 0
+        for channel, entity in due:
+            message = (
+                bytes([channel, len(entity.update)]) + struct.pack("<H", entity.sequence & 0xFFFF) + b"\x00"
+                + _rle_zero_encode(entity.update)
+            )
+            if len(bundle) + len(message) > ENTITY_BUNDLE_BYTES and bundle:
+                self.send_phase3(session, bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00" + bundle)
+                bundle = b""
+            bundle += message
+            entity.last_sent = now
+            count += 1
+        if bundle:
+            self.send_phase3(session, bytes([PacketBundleFlags.PROCESS_MESSAGES]) + b"\x00\x00" + bundle)
+        if count:
+            notes.append(f"entity-updates={count}")
+        return notes
+
+    def _assign_entity_channels(self, session: GameSession, character: Character) -> list[str]:
+        wanted = npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS, ENTITY_RANGE)
+        wanted_ids = {npc.object_id: npc for npc in wanted}
+        current = {entity.object_id: channel for channel, entity in session.entity_channels.items() if entity.update[0]}
+        free = [channel for channel in range(1, ENTITY_CHANNELS + 1) if channel not in current.values()]
+        added = removed = 0
+        for object_id, channel in current.items():
+            if object_id not in wanted_ids:
+                free.append(channel)
+        free.sort()
+        for npc in wanted:
+            if npc.object_id in current:
+                continue
+            channel = free.pop(0)
+            self._set_channel(session, channel, npc.object_id, npcs.build_npc_update(npc))
+            added += 1
+        for channel in free:
+            entity = session.entity_channels.get(channel)
+            if entity is not None and entity.update[0]:
+                self._set_channel(session, channel, entity.object_id, npcs.hidden(entity.update))
+                removed += 1
+        return [f"npcs +{added} -{removed}"] if added or removed else []
+
+    @staticmethod
+    def _set_channel(session: GameSession, channel: int, object_id: int, update: bytes) -> None:
+        entity = session.entity_channels.get(channel)
+        sequence = entity.sequence + 1 if entity is not None else 1
+        session.entity_channels[channel] = EntityChannel(object_id, update, sequence)
+
     def send_reliable(self, session: GameSession, opcode: int, payload: bytes) -> int:
         """One reliable message (resent until the client acks it); returns its number."""
         number = session.phase3_next_message
@@ -713,6 +796,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         if not (-4000 <= position.x <= 32000 and -1000 <= position.y <= 1000 and -4000 <= position.z <= 32000):
             return
         character.x, character.y, character.z = position.x, position.y, position.z
+        session.world = position.world
         character.heading = position.heading
         now = time.monotonic()
         if now - session.last_position_save >= POSITION_SAVE_INTERVAL:
@@ -804,7 +888,8 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                     elif now - session.phase2_last_send >= PHASE2_PING_INTERVAL:
                         self.send_phase2_ping(session)
                     continue
-                sent = self.service_phase3(session, idle_only=True)
+                sent = self.service_entities(session)
+                sent += self.service_phase3(session, idle_only=True)
                 if sent and self.log_packets:
                     print(f"UDP phase3 keepalive {address[0]}:{address[1]} -> {', '.join(sent)}")
 
@@ -978,6 +1063,14 @@ DISCONNECT_CLIENT_OPCODE = 0x09B0
 PHASE3_SESSION_ID = read_varuint(b"\xB8" + PHASE3_MAGIC, 0)[0]
 SELF_CHANNEL = 0
 POSITION_SAVE_INTERVAL = 15.0
+ENTITY_CHANNELS = 0x17  # client object channels 1-0x17; 0 is the player's own character
+ENTITY_RANGE = 200.0
+ENTITY_REFRESH_INTERVAL = 1.0
+ENTITY_BUNDLE_BYTES = 1000
+
+
+def _sequence_reached(acked: int, sent: int) -> bool:
+    return ((acked - sent) & 0xFFFF) < 0x8000
 INTERACT_ITEM_OPCODE = 0x003E
 EQUIP_ITEM_OPCODE = 0x003F
 UNEQUIP_ITEM_OPCODE = 0x0040

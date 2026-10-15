@@ -45,7 +45,8 @@ Early but playable to the point of logging in and walking around.
   the same shape. Armor shows as cloth / leather / chain / plate by the item's
   name or classes (values checked in game: 1 cloth, 2 leather, 3 chain, 4 plate,
   5 and 6 heavier plate looks).
-- No other players, NPCs, combat or quests in the world yet.
+- NPCs stand where they belong (the 23 nearest are drawn, as on Sandstorm) but
+  don't move, talk or fight yet. No other players, combat or quests yet.
 
 ## Quick start
 
@@ -193,8 +194,8 @@ preservation community:
   packet header and bundle flags, message types, opcode IDs and parts of the
   protocol handling were learned from or modelled on it, including the character
   creation and character list formats; the character models and starting
-  characters in `eqoa_server/game_data.py` and the item and spell patterns in
-  `eqoa_server/reference_data/` come from its database.
+  characters in `eqoa_server/game_data.py` and the item and spell patterns and
+  NPC placements in `eqoa_server/reference_data/` come from its database.
 - **Sandstorm** (https://eqoa.live/), whose live server traffic in
   `captures/from_sandstorm.pcapng` is the reference this server is checked
   against.
