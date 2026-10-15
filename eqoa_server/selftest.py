@@ -709,7 +709,10 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
                             "the admin panel's Self-test tab (a pcap from Sandstorm or similar).")
         return
     def consistent(opcode: int) -> list[int]:
-        """Replies the official server sent after more than half of this client message."""
+        """Replies the official server sent after more than half of this client message (seen
+        at least twice: one sighting can't tell a reply from a coincidence)."""
+        if asked[opcode] < 2:
+            return []
         return [reply for reply, times in theirs[opcode].most_common() if times * 2 > asked[opcode]]
 
     for opcode, count in sorted(ignored.items(), key=lambda kv: -kv[1]):
