@@ -618,11 +618,43 @@ def audit(report: Report) -> None:
 # ---- 3. capture comparison ----
 
 TARGET_OFFSETS = {0x0F: 0, 0x10: 4, 0x32: 5, 0x15: 0, 0x4C: 0}  # where the u32 target sits
+MERCHANT_OPCODES = {0x4C: 0, 0x4A: -4, 0x4B: -4}  # where the merchant's id sits (-4: the last 4 bytes)
+ITEM_KEY_OPCODES = {0x3E, 0x4B}  # item key in the first 4 bytes
+
+
+def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character) -> bytes:
+    """Point a captured message at our world: the official server's creatures and merchants
+    become ours (the same one each time), item keys become our character's items."""
+    from . import npcs
+
+    merchant_at = MERCHANT_OPCODES.get(opcode)
+    offset = TARGET_OFFSETS.get(opcode) if merchant_at is None else merchant_at % max(1, len(payload))
+    if offset is not None and len(payload) >= offset + 4:
+        original = struct.unpack_from("<I", payload, offset)[0]
+        ours = npcs.by_object_id(original)
+        fits = ours is not None and (ours.is_merchant if merchant_at is not None else ours.creature)
+        if original not in (0, 0xFFFFFFFF) and (original in targets or not fits):
+            if original not in targets:
+                if merchant_at is not None:
+                    taken = set(targets.values())
+                    npc = next(n for n in npcs.all_npcs() if n.is_merchant and n.object_id not in taken)
+                else:
+                    npc = _creature_near(character.level, set(targets.values()))
+                targets[original] = npc.object_id
+            struct.pack_into("<I", payload, offset, targets[original])
+            npc = npcs.by_object_id(targets[original])
+            if npc is not None:
+                character.x, character.z = npc.x + 2, npc.z
+    if opcode in ITEM_KEY_OPCODES and len(payload) >= 4 and character.inventory:
+        keys = {entry.get("key") for entry in character.inventory}
+        if struct.unpack_from("<i", payload, 0)[0] not in keys:
+            struct.pack_into("<i", payload, 0, character.inventory[-1].get("key", 0))
+    return bytes(payload)
 REPLY_WINDOW = 2.0  # seconds after a client message that the server's messages count as its reply
 
 
 def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
-    from . import capture_reader, npcs
+    from . import capture_reader
     from .protocol import GAME_OPCODES
 
     name = lambda op: GAME_OPCODES.get(op, f"0x{op:04X}")  # noqa: E731
@@ -678,22 +710,8 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
             theirs[message.opcode].update(following)
             bot.tick(max(0.0, min(30.0, message.time - last)), session)
             last = message.time
-            payload = bytearray(message.payload)
-            offset = TARGET_OFFSETS.get(message.opcode)
-            if offset is not None and len(payload) >= offset + 4:
-                original = struct.unpack_from("<I", payload, offset)[0]
-                if original not in (0, 0xFFFFFFFF) and npcs.by_object_id(original) is None:
-                    if original not in targets:
-                        if message.opcode == 0x4C:
-                            npc = next(n for n in npcs.all_npcs() if n.is_merchant)
-                        else:
-                            npc = _creature_near(character.level, set(targets.values()))
-                        targets[original] = npc.object_id
-                    struct.pack_into("<I", payload, offset, targets[original])
-                    mob = bot.server.mobs.get(targets[original])
-                    npc = npcs.by_object_id(targets[original])
-                    if npc is not None:
-                        character.x, character.z = (mob.x if mob else npc.x) + 2, (mob.z if mob else npc.z)
+            payload = _remap(bytearray(message.payload), message.opcode, targets, character)
+            character.tunar = 10_000_000
             start = len(bot.sent)
             result = bot.send(session, message.opcode, bytes(payload), "capture replay", name(message.opcode))
             if result is None:
