@@ -276,6 +276,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 )
                 session.next_arrival += 1
                 fields = parse_create_character(create_msg.payload)
+                server.dialogue.refresh()  # starting abilities a capture showed for the class
                 account = server.store.latest_account()
                 account_id = account.account_id if account is not None else 1
                 character = server.store.create_character(
@@ -674,8 +675,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.last_combat_tick = 0.0
         # Client opcodes the server got in the world but doesn't handle: {opcode: {count, sample}}.
         self.ignored_opcodes: dict[int, dict] = {}
-        # NPC conversations and quests learned from the captures in data/captures (dialogue.py).
+        # NPC conversations, quests, items, merchant stock and starting abilities learned from
+        # the captures in data/captures (dialogue.py); learned in the background at start.
         self.dialogue = dialogue.Library(Path(config.data_path).parent / "captures")
+        threading.Thread(target=self.dialogue.refresh, name="learn-captures", daemon=True).start()
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
         """Send one phase3 bundle (flags, arrival placeholder, messages) with the next bundle number."""
@@ -2051,8 +2054,9 @@ LOOT_NOT_YOURS = 3
 # Client messages that need nothing from the server (not counted as ignored).
 # 0xC9 / 0xCA: the client's faction and loot message settings (0 on, 1 off); 0x49 EnableChannel
 # (chat); 0x7E1 the client's debug text, its answer to the server's 0x7E0. Sandstorm sent no
-# steady reply to any of them.
-QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE, 0x00C9, 0x00CA, 0x0049, 0x07E1}
+# steady reply to any of them. 0x14 CharacterInWorld (the client is in) and 0x0E ChangeChatMode
+# got none either.
+QUIET_OPCODES = {DISCONNECT_CLIENT_OPCODE, 0x00C9, 0x00CA, 0x0049, 0x07E1, 0x0014, 0x000E}
 MAX_INVENTORY = 40  # EQOAReturnHome's inventory limit
 SELECT_TARGET_OPCODE = 0x0010
 INTERACT_OPCODE = 0x0004

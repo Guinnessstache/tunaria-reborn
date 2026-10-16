@@ -169,3 +169,19 @@ class LearnedGoodsTests(unittest.TestCase):
         items.set_learned([record])
         self.assertTrue(items.is_scroll(20743))
         self.assertIsNotNone(items.scroll_spell(20743, 7))
+
+
+class LearnedStartTests(unittest.TestCase):
+    def tearDown(self):
+        items.set_learned_start({})
+
+    def test_a_captured_class_starts_with_what_the_capture_showed(self):
+        from eqoa_server import merchants
+
+        everything = [items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(7)]
+        self.assertGreater(len(everything), 2)
+        items.set_learned_start({7: ["Minor Healing"]})
+        merchants.set_learned({}, {})
+        self.assertEqual([items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(7)],
+                         ["Minor Healing", "Return Home"])
+        self.assertEqual(len(items.starting_spells(0)), len(items.starting_spells(0)))  # others unchanged

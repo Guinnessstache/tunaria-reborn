@@ -623,7 +623,7 @@ ITEM_KEY_OPCODES = {0x3E, 0x4B}  # item key in the first 4 bytes
 
 
 def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character, names: dict[int, str] | None = None,
-           session=None) -> bytes:
+           session=None, keys: dict[int, int] | None = None) -> bytes:
     """Point a captured message at our world: the official server's NPCs become ours of the
     same name (the capture's entity updates name them) or, failing that, any creature or
     merchant (the same one each time); item keys become our character's items; a picked
@@ -658,13 +658,40 @@ def _remap(payload: bytearray, opcode: int, targets: dict[int, int], character, 
             if npc is not None:
                 character.x, character.z = npc.x + 2, npc.z
     if opcode in ITEM_KEY_OPCODES and len(payload) >= 4 and character.inventory:
-        keys = {entry.get("key") for entry in character.inventory}
-        if struct.unpack_from("<i", payload, 0)[0] not in keys:
+        theirs = struct.unpack_from("<i", payload, 0)[0]
+        if keys and theirs in keys:
+            struct.pack_into("<i", payload, 0, keys[theirs])
+        elif theirs not in {entry.get("key") for entry in character.inventory}:
             struct.pack_into("<i", payload, 0, character.inventory[-1].get("key", 0))
     return bytes(payload)
 
 
+def _mirror_item(payload: bytes, character, keys: dict[int, int], ours_gave: bool = False) -> None:
+    """Match an item the official server gave (AddInventoryItem) with ours: the one our
+    server just gave for the same message (a purchase), else a copy; remember the key so a
+    later InteractItem / MerchantSell names the same item."""
+    from . import capture_reader, items
+
+    try:
+        record = capture_reader.item_record(payload, 0)[0]
+    except (IndexError, struct.error, UnicodeDecodeError):
+        return
+    if ours_gave and character.inventory:
+        keys[record["key"]] = character.inventory[-1].get("key", 0)
+        return
+    item_id = record["id"] if record["id"] in items.item_patterns() else items.item_by_name(record["name"], character.klass)
+    if item_id is None:
+        return
+    entry = {"item": item_id, "stack": max(1, record["stack"]), "equip": items.NOT_EQUIPPED,
+             "key": items.next_item_key(character.inventory)}
+    character.inventory.append(entry)
+    keys[record["key"]] = entry["key"]
+
+
 REPLY_WINDOW = 2.0  # seconds after a client message that the server's messages count as its reply
+# Server messages sent on a timer, whatever the client does (Time; 0x07E0 every ~16 s, which
+# the client answers with its debug text 0x07E1): never counted as a reply.
+AMBIENT = {0x0013, 0x07E0}
 
 
 def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
@@ -701,17 +728,25 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
         from . import dialogue
 
         klass = dialogue._captured_class(messages[entered].payload)
-        character = bot.character(klass if klass is not None and 0 <= klass < 15 else 0, level=10)
+        # A new character of the captured class (captures so far start fresh), knowing only
+        # its starting spells, so scrolls bought in the capture can be scribed.
         bot.server.dialogue = dialogue.Library(path.parent)
+        bot.server.dialogue.refresh()
+        character = bot.character(klass if klass is not None and 0 <= klass < 15 else 0, level=1)
         names = capture_reader.entity_names(path)
         session = bot.session(character)
         for order in range(min(10, len(bot.server._spell_book(character)))):
             bot.server._spell_book(character)[order]["hotbar"] = order
         targets: dict = {}
+        keys: dict[int, int] = {}  # the official server's item keys -> ours
+        ours_gave = False  # our server answered the last client message with an item
         last = world[0].time if world else 0.0
         for index, message in enumerate(world):
             if not message.from_client:
                 official[message.opcode] += 1
+                if message.opcode == 0x3B:  # an item the official server gave: give ours the same
+                    _mirror_item(message.payload, character, keys, ours_gave)
+                    ours_gave = False
                 continue
             asked[message.opcode] += 1
             # The server's messages until the client's next packet (a later time) answer
@@ -724,12 +759,12 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
                     break
                 if later.time > until:
                     break
-                if not later.from_client:
+                if not later.from_client and later.opcode not in AMBIENT:
                     following.add(later.opcode)
             theirs[message.opcode].update(following)
             bot.tick(max(0.0, min(30.0, message.time - last)), session)
             last = message.time
-            payload = _remap(bytearray(message.payload), message.opcode, targets, character, names, session)
+            payload = _remap(bytearray(message.payload), message.opcode, targets, character, names, session, keys)
             character.tunar = 10_000_000
             start = len(bot.sent)
             result = bot.send(session, message.opcode, bytes(payload), "capture replay", name(message.opcode))
@@ -738,7 +773,9 @@ def compare_captures(bot: Bot, report: Report, paths: list[Path]) -> None:
             waited = max(0.0, until - message.time)
             bot.tick(waited, session)
             last = message.time + waited
-            ours[message.opcode].update(set(bot.replies(session, start)))
+            replied = set(bot.replies(session, start))
+            ours[message.opcode].update(replied)
+            ours_gave = 0x3B in replied
         bot.leave(session)
     report.stats["captures compared"] = used
     if not used:

@@ -240,9 +240,30 @@ def starting_inventory(race: int) -> list[dict]:
     return [{"item": ration, "stack": item_patterns()[ration]["max_stack"], "equip": NOT_EQUIPPED}]
 
 
+# Class -> names of the abilities a new character started with in a capture of an
+# official-style server (Sandstorm: a druid had only Minor Healing, a warrior Quick Strike,
+# besides Return Home; the rest came from scrolls). Set by dialogue.Library.
+_learned_start: dict[int, list[str]] = {}
+
+
+def set_learned_start(by_class: dict[int, list[str]]) -> None:
+    _learned_start.clear()
+    _learned_start.update(by_class)
+
+
+def starting_ability_names(klass: int) -> set[str] | None:
+    """Lower-case names a new character of the class starts with, if a capture showed it."""
+    names = _learned_start.get(klass)
+    return {name.lower() for name in names} if names else None
+
+
 def starting_spells(klass: int) -> list[dict]:
-    """All of the class's level 1 abilities, then Return Home (kept in the spell book, as on Sandstorm)."""
+    """The class's starting abilities as a capture showed them, else all its level 1
+    abilities; then Return Home (kept in the spell book, as on Sandstorm)."""
     ids = [spell_id for spell_id in _class_spell_ids(klass, level=1) if spell_id != RETURN_HOME]
+    learned = starting_ability_names(klass)
+    if learned is not None:
+        ids = [spell_id for spell_id in ids if spell_patterns()[spell_id]["name"].lower() in learned]
     return [
         {"spell": spell_id, "hotbar": index if index < HOTBAR_SLOTS else -1} for index, spell_id in enumerate(ids)
     ] + [{"spell": RETURN_HOME, "hotbar": -1}]

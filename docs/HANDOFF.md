@@ -383,7 +383,14 @@ table lacks is added (Sandstorm's ids match ours where both have the item; it
 has more, e.g. Evergreen Tunic 13456 and its spell scrolls 20743+, marked as
 scrolls by the scroll icon since their descriptions are the spell's), and what
 each merchant sold (by NPC name) replaces our fitted stock, at the captured
-price (Sandstorm's MerchantBox sent 100/100 with the price as cost). A player
+price (Sandstorm's MerchantBox sent 100/100 with the price as cost). New characters'
+abilities too: a capture of a level 1 character's world entry shows its spell
+book (`capture_template.memory_dump_spells`); on Sandstorm a new druid had only
+Minor Healing and a warrior (level 4) only Quick Strike, besides Return Home.
+Classes a capture shows start with just those (`items.set_learned_start`), and
+fitted spell merchants then sell their other level 1 scrolls; other classes
+still start with every level 1 ability. Only captures of an official-style
+server (public address) are learned from, never our own. A player
 deleting a quest from the log sends DeleteQuest 0x7D (int32 0, byte 0): the
 quest is dropped and the steps that gave it can be done again.
 

@@ -71,6 +71,8 @@ def set_learned(stock_by_name: dict[str, list[int]], costs: dict[int, int]) -> N
     _learned_stock.update({name: tuple(i for i in ids if i in items.item_patterns()) for name, ids in stock_by_name.items()})
     _learned_cost.clear()
     _learned_cost.update(costs)
+    _fitted_stock.cache_clear()  # level 1 scrolls depend on the learned starting abilities
+    _stock_for.cache_clear()
 
 
 def stock(merchant_name: str) -> tuple[int, ...]:
@@ -104,10 +106,12 @@ def _stock_for(description: str) -> tuple[int, ...]:
             # One scroll per spell of the class in the level range, except level 1: every
             # character starts with those (items.starting_spells).
             every = items.item_patterns()
+            # Level 1 scrolls only for abilities a new character doesn't start with.
+            starting = items.starting_ability_names(klass)
             found = [every[items.scroll_for(klass, position)]
                      for position, ability in enumerate(items.class_abilities()[items.CLASS_NAMES[klass]])
-                     if max(low, 2) <= ability["level"] <= high and ability["power"]
-                     and ability["name"] != "Return Home"]
+                     if low <= ability["level"] <= high and ability["power"] and ability["name"] != "Return Home"
+                     and (ability["level"] > 1 or (starting is not None and ability["name"].lower() not in starting))]
     elif words & set(MATERIALS) and words & {"armor", "mail", "chainmail"}:
         keys = {key for word in words & set(MATERIALS) for key in MATERIALS[word]}
         found = [item for item in patterns if item["slot"] in items.ARMOR_ITEM_SLOTS + (2,) and in_range(item)

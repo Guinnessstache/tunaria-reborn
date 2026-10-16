@@ -294,3 +294,38 @@ def sandstorm_entity_updates(path: Path = SANDSTORM_CAPTURE) -> dict[int, bytes]
                 found[channel] = rle_zero_decode(inner[start:end])
             offset = end
     return found
+
+
+def memory_dump_spells(payload: bytes) -> list[tuple[int, str]]:
+    """(spell id, name) of the spells in a captured MemoryDump, in spell book order."""
+    offset = memory_dump_core_length(payload)
+    hotkeys, offset = _read_zigzag(payload, offset)
+    for _ in range(hotkeys):
+        _, offset = read_varuint(payload, offset)
+        for _ in range(4):
+            offset = _skip_string(payload, _skip_string(payload, offset + 1))
+    offset += 8
+    quests = struct.unpack_from("<i", payload, offset)[0]
+    offset += 4
+    for _ in range(quests):
+        offset = _skip_string(payload, offset)
+    for _ in range(2):
+        count, offset = _read_zigzag(payload, offset)
+        offset += 4
+        for _ in range(count):
+            offset = _skip_item(payload, offset)
+    offset += 4
+    count, offset = _read_zigzag(payload, offset)
+    spells = []
+    for _ in range(count):
+        spell_id, start = _read_zigzag(payload, offset)
+        position = start
+        for _ in range(8):
+            _, position = read_varuint(payload, position)
+        position += 2
+        for _ in range(7):
+            _, position = read_varuint(payload, position)
+        length = struct.unpack_from("<i", payload, position)[0]
+        spells.append((spell_id, payload[position + 4:position + 4 + 2 * length].decode("utf-16-le", "replace")))
+        offset = _skip_spell(payload, offset)
+    return spells

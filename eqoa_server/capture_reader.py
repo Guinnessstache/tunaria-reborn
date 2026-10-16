@@ -309,3 +309,11 @@ def merchant_box(payload: bytes) -> tuple[int, int, int, list[dict]]:
     sell, offset = _zigzag(payload, 4)
     buy, offset = _zigzag(payload, offset)
     return merchant, sell, buy, item_list(payload, offset)
+
+
+def of_local_server(path: Path, game_port: int = GAME_PORT) -> bool:
+    """True when the capture's game server has a private address (ours, not an official one)."""
+    import ipaddress
+
+    servers = {src for _, src, port, _, _, _ in udp_packets(path) if port == game_port}
+    return bool(servers) and all(ipaddress.ip_address(ip).is_private for ip in servers)

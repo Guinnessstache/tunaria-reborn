@@ -234,6 +234,43 @@ def learn_goods(path: Path) -> tuple[list[dict], dict[str, list[int]]]:
     return records, stock
 
 
+def learn_start(path: Path) -> tuple[int, list[str]] | None:
+    """(class, ability names) a new character (level 1, no XP) started with in a capture."""
+    from . import capture_reader
+    from .capture_template import memory_dump_spells
+
+    dump = next((m.payload for m in capture_reader.read_capture(path) if not m.from_client and m.opcode == 0x0D), None)
+    klass = _captured_class(dump) if dump else None
+    if klass is None or not 0 <= klass < 15 or _captured_level(dump) != (1, 0):
+        return None
+    return klass, [name for _, name in memory_dump_spells(dump) if name != "Return Home"]
+
+
+def _captured_level(memory_dump: bytes) -> tuple[int, int] | None:
+    """(level, XP) from a MemoryDump core: after the class, zigzag race, level, XP."""
+    try:
+        offset = 1
+        offset += 4 + struct.unpack_from("<i", memory_dump, offset)[0]
+        while memory_dump[offset] & 0x80:
+            offset += 1
+        offset += 1
+        offset += 4 + struct.unpack_from("<i", memory_dump, offset)[0]
+        values = []
+        for _ in range(4):  # class, race, level, XP
+            value = shift = 0
+            while True:
+                byte = memory_dump[offset]
+                offset += 1
+                value |= (byte & 0x7F) << shift
+                shift += 7
+                if not byte & 0x80:
+                    break
+            values.append((value >> 1) ^ -(value & 1))
+        return values[2], values[3]
+    except (IndexError, struct.error):
+        return None
+
+
 class Library:
     """What the captures in a folder teach: NPC exchanges, items the server lacks and what
     merchants sell. Relearned when the folder changes; items and stock go to items.py and
@@ -260,6 +297,10 @@ class Library:
             learned: dict[str, Exchange] = {}
             records: list[dict] = []
             stock: dict[str, list[int]] = {}
+            starts: dict[int, list[str]] = {}
+            from . import capture_reader
+
+            files = [f for f in files if not capture_reader.of_local_server(f)]  # learn from official servers only
             for path in files:
                 try:
                     for exchange in learn(path):
@@ -267,9 +308,13 @@ class Library:
                     found, sold = learn_goods(path)
                     records += found
                     stock.update(sold)
+                    start = learn_start(path)
+                    if start:
+                        starts.setdefault(*start)
                 except Exception as exc:  # noqa: BLE001 - one bad capture shouldn't stop the rest
                     print(f"DIALOGUE couldn't learn from {path.name}: {exc}")
             items.set_learned(records)
+            items.set_learned_start(starts)
             merchants.set_learned(stock, {r["id"]: r["cost"] for r in records})
             self._exchanges, self._stamp = list(learned.values()), stamp
             if files:
