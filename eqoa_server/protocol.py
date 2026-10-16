@@ -463,6 +463,9 @@ class ClientPosition:
     y: float
     z: float
     heading: float
+    velocity_x: float = 0.0  # world units per second
+    velocity_z: float = 0.0
+    animation: int = 0  # 0 standing, 3 running, 1 walking (the user's own-server captures)
 
 
 def rle_zero_decode(data: bytes) -> bytes:
@@ -507,7 +510,14 @@ def decode_client_update(update: bytes) -> ClientPosition | None:
     # Facing is 1/256 of a turn measured from the opposite direction to the server's heading
     # (the capture's spawn: byte 0x16, heading 3.706).
     heading = (update[22] * 2 * math.pi / 256 + math.pi) % (2 * math.pi)
-    return ClientPosition(update[0], x, y, z, heading - 2 * math.pi if heading > math.pi else heading)
+    # Velocity: big-endian u16s at 10 (x), 12 (y), 14 (z), -15.3..15.3 units/s; they match the
+    # distance a running client covers between updates. Animation at 35.
+    velocity = lambda offset: VELOCITY_RANGE * 2 * int.from_bytes(update[offset : offset + 2], "big") / 0xFFFF - VELOCITY_RANGE
+    return ClientPosition(update[0], x, y, z, heading - 2 * math.pi if heading > math.pi else heading,
+                          velocity(10), velocity(14), update[35] if len(update) > 35 else 0)
+
+
+VELOCITY_RANGE = 15.3
 
 
 def build_minimal_ack(packet: UdpPacket, server_endpoint: int = 0xFFFE) -> bytes:

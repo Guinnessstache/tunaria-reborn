@@ -413,6 +413,16 @@ own-character template (model, gear, name) and animates the moves. With 100 bots
 crowded together this cost about a third more server CPU (40% of a core) and the bots'
 answers slowed (median 20 ms), mostly the bot process decoding 8 players each.
 
+Movement as others see it: the client update carries velocity as big-endian u16s at 10
+(x), 12 (y), 14 (z) mapping -15.3..15.3 units/s, and the animation at 35 (0 standing, 3
+running, 1 walking; checked against the user's own-server captures, where a running
+client's velocity matched the distance it covered and peaked near 9). `track_position`
+keeps (vx, vz, animation) on the session and `seen_as` writes them into the object
+update others get (velocity x/z x6.25 as signed bytes at 41/43, animation at 58:
+EQOAReturnHome's layout one byte on), so clients can run a player between updates
+instead of hopping. Bots send the same fields, run at 9 units/s (travel too: 150 looked
+like skipping) and send a standing update when they stop.
+
 Bots have no terrain, so each update's height is guessed from things standing on the
 ground: the nearest three creatures / townsfolk in view and in the NPC table (within 400
 units), weighted by distance (`BotClient.ground_y`). Before, a bot kept the height it

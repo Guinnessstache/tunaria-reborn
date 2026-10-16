@@ -108,6 +108,8 @@ class GameSession:
     # This character as others see it (an object update), and when it was built.
     seen_update: bytes = b""
     seen_update_at: float = -1.0
+    # From the latest client update: (velocity x, velocity z, animation), shown to others.
+    motion: tuple[float, float, int] = (0.0, 0.0, 0)
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
@@ -768,7 +770,15 @@ class GameUDPServer(socketserver.UDPServer):
         PLAYER_REFRESH_INTERVAL, however many are watching)."""
         if now - session.seen_update_at >= PLAYER_REFRESH_INTERVAL or not session.seen_update:
             character = session.selected_character
-            session.seen_update = build_object_update(character, player_object_id(character))
+            update = bytearray(build_object_update(character, player_object_id(character)))
+            # Moving: velocity and animation, so other clients run it between updates instead
+            # of hopping (EQOAReturnHome's object update: velocity x / z bytes x6.25 at 40 / 42
+            # and animation at 57, one byte later in ours).
+            vx, vz, animation = session.motion
+            update[OBJECT_VELOCITY_X] = round(max(-128, min(127, vx * VELOCITY_SCALE))) & 0xFF
+            update[OBJECT_VELOCITY_Z] = round(max(-128, min(127, vz * VELOCITY_SCALE))) & 0xFF
+            update[OBJECT_ANIMATION] = animation & 0xFF
+            session.seen_update = bytes(update)
             session.seen_update_at = now
         return session.seen_update
 
@@ -1855,6 +1865,7 @@ class GameUDPServer(socketserver.UDPServer):
         character.x, character.y, character.z = position.x, position.y, position.z
         session.world = position.world
         character.heading = position.heading
+        session.motion = (position.velocity_x, position.velocity_z, position.animation)
         now = time.monotonic()
         if now - session.last_position_save >= POSITION_SAVE_INTERVAL:
             session.last_position_save = now
@@ -2137,6 +2148,8 @@ PLAYER_REFRESH_INTERVAL = 0.5  # other players' positions on a client's channels
 PLAYER_SLOTS = 8  # of the 23 channels, at most this many show other players
 PLAYER_OBJECT_ID_BASE = 0x01000000  # other players' object ids (NPCs' start at 0x10000)
 TELEPORT_OFFSET = 3.0
+OBJECT_VELOCITY_X, OBJECT_VELOCITY_Z, OBJECT_ANIMATION = 41, 43, 58
+VELOCITY_SCALE = 6.25
 
 
 def player_object_id(character: Character) -> int:

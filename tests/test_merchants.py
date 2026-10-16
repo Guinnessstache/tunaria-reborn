@@ -595,6 +595,15 @@ class OtherPlayersTests(InWorldCase):
         self.server._assign_entity_channels(self.session, self.character)
         self.assertNotIn(them, self.shown(self.session))
 
+    def test_others_see_a_running_player_run(self):
+        from eqoa_server import game_udp
+
+        self.other_session.motion = (6.0, -4.0, 3)
+        update = self.server.seen_as(self.other_session, 1e9)
+        self.assertEqual(update[game_udp.OBJECT_VELOCITY_X], round(6.0 * 6.25))
+        self.assertEqual(update[game_udp.OBJECT_VELOCITY_Z], (-25) & 0xFF)
+        self.assertEqual(update[game_udp.OBJECT_ANIMATION], 3)
+
     def test_teleport_next_to_another_player(self):
         self.other.x, self.other.z = self.character.x + 5000, self.character.z - 3000
         self.other_session.world = 2

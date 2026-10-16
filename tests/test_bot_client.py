@@ -98,6 +98,18 @@ class AccountTests(BotSessionTests):
         self.assertEqual([c.name for c in self.store.list_characters(other.account_id)], ["Someone"])
 
 
+class MotionTests(unittest.TestCase):
+    def test_a_running_update_carries_velocity_and_animation(self):
+        from eqoa_server.protocol import decode_client_update, rle_zero_decode
+
+        message = bot_client.client_update(0, 18000.0, 53.6, 10400.0, 1.0, 7, (6.0, -4.5), bot_client.RUNNING)
+        position = decode_client_update(rle_zero_decode(message[5:]))
+        self.assertAlmostEqual(position.x, 18000.0, delta=0.01)
+        self.assertAlmostEqual(position.velocity_x, 6.0, delta=0.01)
+        self.assertAlmostEqual(position.velocity_z, -4.5, delta=0.01)
+        self.assertEqual(position.animation, 3)
+
+
 class FleetTests(BotSessionTests):
     test_logs_in_makes_a_character_enters_walks_and_leaves = None
 

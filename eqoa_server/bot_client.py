@@ -73,7 +73,9 @@ FRONTIERS = 0x12
 # as the PS2 client sent it standing still.
 UPDATE_TEMPLATE = bytes.fromhex("009eee7088e256506f678000f7398000800080008000ce8080808080ce8000010100000000ffffffff")
 UPDATE_INTERVAL = 0.2  # the client sent about five a second while moving
-WALK_SPEED = 10.0  # world units per second (Sandstorm's run speed is 11.48)
+WALK_SPEED = 9.0  # world units per second: a running PS2 client's velocity peaked at 9
+GROUND_VELOCITY_Y = 14.25  # what a client on the ground sends as its y velocity
+RUNNING, STANDING = 3, 0  # animation bytes in the client's updates
 
 
 class BotError(Exception):
@@ -166,14 +168,20 @@ def close_packet(source: int, target: int, instance: int) -> bytes:
     return data + struct.pack("<I", rdp_crc(data))
 
 
-def client_update(world: int, x: float, y: float, z: float, heading: float, number: int) -> bytes:
-    """Channel 0x40: the full (not XORed) 41-byte update, zero-RLE encoded."""
+def client_update(world: int, x: float, y: float, z: float, heading: float, number: int,
+                  velocity: tuple[float, float] = (0.0, 0.0), animation: int = 0) -> bytes:
+    """Channel 0x40: the full (not XORed) 41-byte update, zero-RLE encoded. Velocity (units/s)
+    and animation (0 standing, 3 running) as the PS2 client sends them while it runs."""
     data = bytearray(UPDATE_TEMPLATE)
     data[0] = world & 0xFF
     for offset, value, span, low in ((1, x, 36000.0, -4000.0), (4, y, 2000.0, -1000.0), (7, z, 36000.0, -4000.0)):
         fraction = max(0, min(0xFFFFFF, round((value - low) / span * 0xFFFFFF)))
         data[offset:offset + 3] = fraction.to_bytes(3, "big")
+    for offset, value in ((10, velocity[0]), (12, GROUND_VELOCITY_Y), (14, velocity[1])):
+        raw = round((max(-15.3, min(15.3, value)) + 15.3) / 30.6 * 0xFFFF)
+        data[offset:offset + 2] = raw.to_bytes(2, "big")
     data[22] = round(((heading - math.pi) % (2 * math.pi)) * 256 / (2 * math.pi)) & 0xFF
+    data[35] = animation & 0xFF
     rle = _rle_encode(bytes(data))
     return bytes([CLIENT_UPDATE, len(data)]) + struct.pack("<H", number & 0xFFFF) + b"\x00" + rle
 
@@ -236,7 +244,7 @@ CAST_EVERY = 20.0  # seconds between ability uses while staying in the world
 FIGHT_EVERY = 120.0  # and between fights (playing)
 WANDER = 40.0  # how far it wanders from where it stays
 QUIET_LIMIT = 30.0  # the server sends pings; this long without anything is a problem
-TRAVEL_SPEED = 150.0  # units/s when crossing the map to find creatures (the server doesn't check speed)
+TRAVEL_SPEED = WALK_SPEED  # crossing the map runs like a player (150 looked like skipping in game)
 
 
 @dataclass
@@ -529,10 +537,12 @@ class BotClient:
                 self.position[3] = z + step * math.cos(heading)
                 self.position[4] = heading
                 travelled += step
-                self._send_update()
+                pace = step / UPDATE_INTERVAL
+                self._send_update((pace * math.sin(heading), pace * math.cos(heading)), RUNNING)
                 end = time.monotonic() + UPDATE_INTERVAL
                 while time.monotonic() < end:
                     self._pump()
+        self._send_update()  # stopped
         self.report.end = self.position[1:4]
         return f"{travelled:.0f} units, {self.update_number} updates; saw {len(self.seen)} things"
 
@@ -584,6 +594,8 @@ class BotClient:
             _, px, _, pz, _ = self.position
             gap = math.hypot(x - px, z - pz) - stop
             if gap <= 0.05:
+                if walked:
+                    self._send_update()  # stopped: standing, no velocity
                 return walked
             step = min(gap, speed * UPDATE_INTERVAL)
             heading = math.atan2(x - px, z - pz)
@@ -591,7 +603,8 @@ class BotClient:
             self.position[3] += step * math.cos(heading)
             self.position[4] = heading
             walked += step
-            self._send_update()
+            pace = step / UPDATE_INTERVAL
+            self._send_update((pace * math.sin(heading), pace * math.cos(heading)), RUNNING)
             end = time.monotonic() + UPDATE_INTERVAL
             while time.monotonic() < end:
                 self._pump()
@@ -863,7 +876,7 @@ class BotClient:
         weights = [1.0 / d for d, _ in near if d <= GROUND_RANGE]
         return sum(w * py for w, (_, py) in zip(weights, near)) / sum(weights)
 
-    def _send_update(self) -> None:
+    def _send_update(self, velocity: tuple[float, float] = (0.0, 0.0), animation: int = STANDING) -> None:
         self.update_number += 1
         _, x, _, z, _ = self.position
         if math.hypot(x - self._ground_at[0], z - self._ground_at[1]) > 5.0:
@@ -874,7 +887,8 @@ class BotClient:
         world, x, y, z, heading = self.position
         self.world.bundle += 1
         data = packet(self.endpoint, self.endpoint, self.instance, 0, self.world.bundle,
-                      messages=client_update(int(world), x, y, z, heading, self.update_number), world=True)
+                      messages=client_update(int(world), x, y, z, heading, self.update_number, velocity, animation),
+                      world=True)
         self.sock.sendto(data, self.address)
 
     def _pump(self, ack: bool = True) -> list[tuple[int, bytes]]:
