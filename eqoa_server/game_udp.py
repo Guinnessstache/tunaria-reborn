@@ -772,10 +772,10 @@ class GameUDPServer(socketserver.UDPServer):
             character = session.selected_character
             update = bytearray(build_object_update(character, player_object_id(character)))
             # Moving: velocity and animation, so other clients run it between updates instead
-            # of hopping (EQOAReturnHome's object update: velocity x / z bytes x6.25 at 40 / 42
-            # and animation at 57, one byte later in ours).
+            # of hopping.
             vx, vz, animation = session.motion
             update[OBJECT_VELOCITY_X] = round(max(-128, min(127, vx * VELOCITY_SCALE))) & 0xFF
+            update[OBJECT_VELOCITY_Y] = 0
             update[OBJECT_VELOCITY_Z] = round(max(-128, min(127, vz * VELOCITY_SCALE))) & 0xFF
             update[OBJECT_ANIMATION] = animation & 0xFF
             session.seen_update = bytes(update)
@@ -2148,8 +2148,11 @@ PLAYER_REFRESH_INTERVAL = 0.5  # other players' positions on a client's channels
 PLAYER_SLOTS = 8  # of the 23 channels, at most this many show other players
 PLAYER_OBJECT_ID_BASE = 0x01000000  # other players' object ids (NPCs' start at 0x10000)
 TELEPORT_OFFSET = 3.0
-OBJECT_VELOCITY_X, OBJECT_VELOCITY_Z, OBJECT_ANIMATION = 41, 43, 58
-VELOCITY_SCALE = 6.25
+# Velocity in an object update: signed bytes x 6 at 40 (x), 41 (y), 42 (z) - from the
+# Sandstorm captures, where creatures walking 5 units/s carried 30 (EQOAReturnHome's
+# 40 / 42 and x6.25 put z in our y byte: bots sank through the ground).
+OBJECT_VELOCITY_X, OBJECT_VELOCITY_Y, OBJECT_VELOCITY_Z, OBJECT_ANIMATION = 40, 41, 42, 58
+VELOCITY_SCALE = 6.0
 
 
 def player_object_id(character: Character) -> int:

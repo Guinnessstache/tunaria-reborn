@@ -600,8 +600,9 @@ class OtherPlayersTests(InWorldCase):
 
         self.other_session.motion = (6.0, -4.0, 3)
         update = self.server.seen_as(self.other_session, 1e9)
-        self.assertEqual(update[game_udp.OBJECT_VELOCITY_X], round(6.0 * 6.25))
-        self.assertEqual(update[game_udp.OBJECT_VELOCITY_Z], (-25) & 0xFF)
+        self.assertEqual(update[40], 36)  # x: 6 units/s x 6, as Sandstorm's 5 units/s -> 30
+        self.assertEqual(update[41], 0)
+        self.assertEqual(update[42], (-24) & 0xFF)
         self.assertEqual(update[game_udp.OBJECT_ANIMATION], 3)
 
     def test_teleport_next_to_another_player(self):

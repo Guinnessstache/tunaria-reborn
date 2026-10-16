@@ -418,9 +418,12 @@ Movement as others see it: the client update carries velocity as big-endian u16s
 running, 1 walking; checked against the user's own-server captures, where a running
 client's velocity matched the distance it covered and peaked near 9). `track_position`
 keeps (vx, vz, animation) on the session and `seen_as` writes them into the object
-update others get (velocity x/z x6.25 as signed bytes at 41/43, animation at 58:
-EQOAReturnHome's layout one byte on), so clients can run a player between updates
-instead of hopping. Bots send the same fields, run at 9 units/s (travel too: 150 looked
+update others get, so clients can run a player between updates instead of hopping:
+velocity as signed bytes x6 at 40 (x), 41 (y), 42 (z), animation at 58. The velocity
+bytes come from the Sandstorm captures (creatures walking 5 units/s carry 30 there, on
+every axis checked); EQOAReturnHome's offsets (40 / 42 in its layout, 41 / 43 in ours)
+and x6.25 were tried first and put the z speed in the y byte: in a video of the bots
+they slid, jumped and sank through the ground. Bots send the same fields, run at 9 units/s (travel too: 150 looked
 like skipping) and send a standing update when they stop.
 
 A client update's size byte counts the XOR byte plus the compressed bytes; the bot used
