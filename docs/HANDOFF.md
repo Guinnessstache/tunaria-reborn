@@ -345,7 +345,7 @@ to learn them."
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
 
-### Bot player (`bot_client.py`, stage 1 of 4)
+### Bot player (`bot_client.py`, stages 1-2 of 4)
 
 A headless client: auth over TCP, server list, character select (makes its character
 if needed), world entry, walking (client updates), logout, with the packet shapes of a
@@ -356,8 +356,16 @@ tab, "Bot player", account bot1) or `python3 -m eqoa_server.bot_client --host
 192.168.1.65 --walk 30`. Only private addresses unless `--allow-remote` (only for
 servers whose rules allow bots; Sandstorm's rule 12 forbids automation). The server
 picks the character list by the latest login (`store.latest_account`), so a bot logging
-in while a person is at character select can switch their list. Planned: 2 playing
-(fight, loot, shop, quests), 3 many bots / soak, 4 a Bots tab.
+in while a person is at character select can switch their list. Stage 2 (`play`,
+panel checkbox, `--play`): it casts its first ability, talks to the nearest plain NPC
+(first choice of a choice box), buys the cheapest thing from the nearest merchant
+(scribes a scroll, else sells it back), finds a creature (SelectTarget reply 00 04 01;
+if none in view it travels at 150 units/s to the nearest one of its level in the NPC
+table) and fights it to the death, then loots. It tracks entities from its channels
+(position, alive, level, NPC type), its stats from 0x42, its spells and items from the
+MemoryDump. Local run: Botty the druid walked from Tethelin to a level 5 rook ~3,000
+units away and killed it in 31 s (11 hits landed, 10 taken). Planned: 3 many bots /
+soak, 4 a Bots tab.
 
 ### Talking to NPCs and quests (Sandstorm capture of a new druid in Tethelin, 2026-10-15)
 

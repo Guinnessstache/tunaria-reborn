@@ -329,10 +329,11 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
       </section>
       <section class="card" style="margin-top:16px">
         <h2>Bot player <span class="actions"><button class="btn primary" id="bot-run">Run a bot session</button></span></h2>
-        <p class="hint">A bot logs in over the network like the PS2 game (account "bot1"), makes or picks its character, enters the world, walks for the time below and logs out, then reports any step that failed. It plays on this live server, so you may see it in game.</p>
+        <p class="hint">A bot logs in over the network like the PS2 game (account "bot1"), makes or picks its character, enters the world and walks for the time below. With "Play" on it also uses an ability, talks to an NPC, shops, travels to a creature of its level and fights it, and loots it, then logs out and reports every step (a fight can take a minute or two). It plays on this live server, so you may see it in game.</p>
         <div class="inline">
           <label>Walk for <input type="text" id="bot-walk" value="20" style="width:60px"> s</label>
           <label>Character <input type="text" id="bot-name" value="Botty" style="width:120px"></label>
+          <label><input type="checkbox" id="bot-play" checked> Play: cast, talk, shop, fight and loot</label>
         </div>
         <pre id="bot-report" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:10px">No bot session yet.</pre>
       </section>
@@ -973,7 +974,7 @@ function renderBot(b) {
 }
 async function loadBot() { try { renderBot(await api("/api/bot")); } catch (err) { /* shown elsewhere */ } }
 $("#bot-run").onclick = async () => {
-  try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty" })); }
+  try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty", play: $("#bot-play").checked })); }
   catch (err) { toast(err.message); }
 };
 $("#selftest-run").onclick = () => startSelfTest(false);

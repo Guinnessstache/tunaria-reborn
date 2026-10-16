@@ -494,7 +494,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         elif parts == ["bot", "run"]:
             walk = max(1.0, min(600.0, float(body.get("walk", 20))))
             started = ctx.bot().start(walk, str(body.get("character") or "Botty")[:20], int(body.get("klass", 7)),
-                                      int(body.get("race", 1)))
+                                      int(body.get("race", 1)), bool(body.get("play")))
             print(f"ADMIN bot session {'started' if started else 'already running'}")
             self._json({"ok": started, **ctx.bot().status()})
         elif parts == ["selftest", "reset-live"]:

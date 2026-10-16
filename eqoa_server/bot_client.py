@@ -24,7 +24,15 @@ of a capture of the real client talking to this server (2026-10-15):
 By default it only connects to servers on a private network (yours): connecting anywhere
 else takes ``allow_remote``, and is only for servers whose rules allow bots.
 
-    python3 -m eqoa_server.bot_client --host 192.168.1.65 --walk 30
+    python3 -m eqoa_server.bot_client --host 192.168.1.65 --walk 30 [--play]
+
+Playing (stage 2, ``play``): it uses its first ability on itself (AssignHotbar, UseAbility:
+expects AbilityCooldown), talks to the nearest NPC that isn't a merchant or a creature
+(Interact; picks the first choice of a choice box), opens the nearest merchant and buys the
+cheapest thing (scribes it if it's a scroll, else sells it back), finds a creature of its
+level (SelectTarget answering 00 04 01; if none is in view it travels to the nearest one in
+the server's NPC table) and fights it to the death (Attack), then loots the corpse. Each
+step reports what came back, and fails when an expected answer doesn't.
 """
 from __future__ import annotations
 
@@ -208,6 +216,50 @@ def parse_character_list(payload: bytes) -> list[tuple[str, int]]:
     return found
 
 
+STATS_CHANNEL = 0x42
+SCROLL_ICON = -607649328
+# Opcodes the playing steps use (see GameUDPServer for their payloads).
+SELECT_TARGET, ATTACK, USE_ABILITY, ASSIGN_HOTBAR = 0x0010, 0x000F, 0x0032, 0x0033
+LOOT_REQUEST, LOOT_CLOSE, LOOT_BOX, LOOT_ITEM = 0x0015, 0x0016, 0x0018, 0x0019
+MERCHANT_DIALOG, MERCHANT_BUY, MERCHANT_SELL, MERCHANT_BOX = 0x004C, 0x004A, 0x004B, 0x00B7
+INTERACT_ITEM, ADD_ITEM, REMOVE_ITEM, PLAYER_TUNAR, ADD_SPELL = 0x003E, 0x003B, 0x003C, 0x0052, 0x00B3
+DIALOGUE_BOX, OPTION_BOX, OPTION_PICKED, QUEST_ADD = 0x0046, 0x0034, 0x0035, 0x007C
+HIT, TARGET_DIED, GRANT_XP, SET_POSITION, ABILITY_COOLDOWN, CLIENT_MESSAGE = 0x00DB, 0x00D9, 0x0020, 0x00B2, 0x00CD, 0x0A7A
+HOTBAR_ASSIGNED, CAST_EFFECT = 0x00B4, 0x00B1
+FIGHT_LIMIT = 120.0  # seconds before a fight counts as stuck
+SEARCH_LEGS = 6  # how far to wander looking for a creature (legs of SEARCH_STEP units)
+SEARCH_STEP = 120.0
+REACH = 3.0  # how close it walks to what it acts on
+TRAVEL_SPEED = 150.0  # units/s when crossing the map to find creatures (the server doesn't check speed)
+
+
+@dataclass
+class Entity:
+    """Something drawn on an entity channel (the 162-byte object update)."""
+
+    object_id: int
+    name: str
+    x: float
+    y: float
+    z: float
+    alive: bool
+    level: int
+    kind: int  # NPC type (0x81 merchant)
+
+    @classmethod
+    def from_update(cls, object_id: int, name: str, data: bytes) -> "Entity":
+        def axis(offset: int) -> float:
+            raw = int.from_bytes(data[offset:offset + 3], "big")
+            return (raw - (1 << 24) if raw & 0x800000 else raw) / 128.0
+
+        return cls(object_id, name, axis(6), axis(9), axis(12), data[26] != 3, data[140],
+                   struct.unpack_from("<H", data, 146)[0])
+
+    @property
+    def merchant(self) -> bool:
+        return self.kind & 0x80 != 0 and self.kind & 0x0F == 0x01
+
+
 class Connection:
     """One logical connection: our bundle numbers and the server's messages we've acked."""
 
@@ -288,7 +340,11 @@ class Connection:
         if 1 <= channel <= 0x17 and len(data) >= capture_reader.NAME + 24 and data[0]:
             name = data[capture_reader.NAME:capture_reader.NAME + 24].split(b"\0", 1)[0].decode("ascii", "replace")
             if name:
-                self.bot.seen[struct.unpack_from("<I", data, 1)[0]] = name
+                object_id = struct.unpack_from("<I", data, 1)[0]
+                self.bot.seen[object_id] = name
+                self.bot.entities[object_id] = Entity.from_update(object_id, name, data)
+        elif channel == STATS_CHANNEL and len(data) >= 58 * 4:
+            self.bot.stats = list(struct.unpack_from("<58i", data, 0))
 
 
 class BotClient:
@@ -308,6 +364,12 @@ class BotClient:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(0.1)
         self.seen: dict[int, str] = {}
+        self.entities: dict[int, Entity] = {}
+        self.stats: list[int] = []
+        self.inbox: list[tuple[int, bytes]] = []  # world messages not yet looked at
+        self.spells: list[tuple[int, str]] = []
+        self.level = 1
+        self.items: dict[int, dict] = {}  # key -> item record
         self.report = Report(host)
         self.world: Connection | None = None
         self.position: list[float] = []  # world, x, y, z, heading
@@ -315,15 +377,22 @@ class BotClient:
 
     # -- steps ----------------------------------------------------------------------------
 
-    def run(self, walk_seconds: float = 20.0) -> Report:
-        """Log in, select, enter the world, walk, leave. Stops at the first failed step."""
+    def run(self, walk_seconds: float = 20.0, play: bool = False) -> Report:
+        """Log in, select, enter the world, walk, (play,) leave. Getting in stops at the first
+        failed step; each playing step runs whatever the one before did."""
         try:
             for name, step in (("log in (auth)", self.login), ("server list", self.server_list),
                                ("character select", self.select_character), ("enter the world", self.enter_world),
-                               (f"walk for {walk_seconds:.0f} s", lambda: self.walk(walk_seconds)),
-                               ("leave", self.leave)):
+                               (f"walk for {walk_seconds:.0f} s", lambda: self.walk(walk_seconds))):
                 if not self._step(name, step):
                     break
+            else:
+                if play:
+                    for name, step in (("cast an ability", self.cast), ("talk to an NPC", self.talk),
+                                       ("shop", self.shop), ("fight a creature", self.fight),
+                                       ("loot the corpse", self.loot)):
+                        self._step(name, step)
+                self._step("leave", self.leave)
         finally:
             self.sock.close()
         self.report.seen = sorted(set(self.seen.values()))
@@ -399,6 +468,16 @@ class BotClient:
         self._select_connection.close()
         world.send(session_ack=True)
         self.position = list(_dump_position(dump[1]))
+        from .dialogue import _captured_level
+
+        self.level = (_captured_level(dump[1]) or (1, 0))[0]
+        from .capture_template import memory_dump_items, memory_dump_spells
+
+        try:
+            self.spells = memory_dump_spells(dump[1])
+            self.items = {item["key"]: item for item in memory_dump_items(dump[1])}
+        except (IndexError, struct.error, UnicodeDecodeError) as exc:
+            self.report.notes.append(f"couldn't read the MemoryDump's spells / items: {exc}")
         self.report.start = self.position[1:4]
         # The first client update puts the character in the world on the server.
         self._send_update()
@@ -434,6 +513,212 @@ class BotClient:
         self.report.end = self.position[1:4]
         return f"{travelled:.0f} units, {self.update_number} updates; saw {len(self.seen)} things"
 
+    # -- playing (stage 2) ------------------------------------------------------------------
+
+    def send(self, opcode: int, payload: bytes = b"") -> None:
+        """A reliable message; what arrived before it isn't an answer to it."""
+        self.settle(0.05)
+        self.world.send(messages=self.world.reliable(opcode, payload))
+
+    def expect(self, wanted: set[int], seconds: float = 4.0, until=None) -> list[tuple[int, bytes]]:
+        """The world messages that arrive until one of ``wanted`` does (or ``until(op, payload)``
+        holds); raises BotError if none in ``seconds``."""
+        got, deadline = [], time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self._pump()
+            while self.inbox:
+                opcode, payload = self.inbox.pop(0)
+                got.append((opcode, payload))
+                if opcode in wanted or (until is not None and until(opcode, payload)):
+                    return got
+        names = ", ".join(GAME_OPCODES.get(op, f"0x{op:04X}") for op in sorted(wanted))
+        raise BotError(f"no {names} within {seconds:.0f} s (got: {self._names(got) or 'nothing'})")
+
+    @staticmethod
+    def _names(messages) -> str:
+        return ", ".join(GAME_OPCODES.get(op, f"0x{op:04X}") for op, _ in messages)
+
+    def settle(self, seconds: float = 0.5) -> list[tuple[int, bytes]]:
+        end, got = time.monotonic() + seconds, []
+        while time.monotonic() < end:
+            self._pump()
+        got, self.inbox = self.inbox, []
+        return got
+
+    def walk_to(self, x: float, z: float, stop: float = REACH, speed: float = WALK_SPEED) -> float:
+        """Walk (client updates) until within ``stop`` of (x, z); returns the distance walked."""
+        walked = 0.0
+        while True:
+            _, px, _, pz, _ = self.position
+            gap = math.hypot(x - px, z - pz) - stop
+            if gap <= 0.05:
+                return walked
+            step = min(gap, speed * UPDATE_INTERVAL)
+            heading = math.atan2(x - px, z - pz)
+            self.position[1] += step * math.sin(heading)
+            self.position[3] += step * math.cos(heading)
+            self.position[4] = heading
+            walked += step
+            self._send_update()
+            end = time.monotonic() + UPDATE_INTERVAL
+            while time.monotonic() < end:
+                self._pump()
+
+    def nearest(self, test) -> list[Entity]:
+        _, px, _, pz, _ = self.position
+        return sorted((e for e in self.entities.values() if test(e)), key=lambda e: math.hypot(e.x - px, e.z - pz))
+
+    def select(self, entity: Entity) -> bytes:
+        """SelectTarget; returns the reply's first bytes (00 04 01: a creature)."""
+        self.send(SELECT_TARGET, struct.pack("<II", 0, entity.object_id))
+        reply = self.expect({SELECT_TARGET}, 3)
+        return reply[-1][1][:3]
+
+    def cast(self) -> str:
+        """Put the first ability (not Return Home) on the hotbar and use it on yourself."""
+        usable = [(order, name) for order, (_, name) in enumerate(self.spells) if name != "Return Home"]
+        if not usable:
+            raise BotError("no ability in the spell book")
+        order, name = usable[0]
+        self.send(ASSIGN_HOTBAR, struct.pack("<i", 0) + bytes([order, 0]))
+        self.expect({HOTBAR_ASSIGNED})
+        self.send(USE_ABILITY, struct.pack("<i", 0) + bytes([0]) + struct.pack("<I", 0xFFFFFFFF))
+        got = self.expect({ABILITY_COOLDOWN})
+        got += self.settle(1.0)
+        return f"{name}: {self._names(got)}"
+
+    def talk(self) -> str:
+        """Talk to the nearest NPC that isn't a merchant or a creature; pick the first choice
+        of a choice box."""
+        for npc in self.nearest(lambda e: not e.merchant and e.alive)[:8]:
+            if self.select(npc)[1:2] == b"\x04":
+                continue  # a creature
+            self.walk_to(npc.x, npc.z)
+            self.send(INTERACT, struct.pack("<I", npc.object_id))
+            got = self.expect({DIALOGUE_BOX, OPTION_BOX, CLIENT_MESSAGE})
+            got += self.settle()
+            said = [_text(p, 4) for op, p in got if op == DIALOGUE_BOX]
+            boxes = [p for op, p in got if op == OPTION_BOX]
+            detail = f"{npc.name}: {said[0][:60] if said else ''}"
+            if boxes:
+                number = struct.unpack_from("<I", boxes[-1], 0)[0]
+                self.send(OPTION_PICKED, struct.pack("<IB", number, 0))
+                more = self.settle(1.5)
+                quests = [_text(p, 4) for op, p in more if op == QUEST_ADD]
+                detail += f" [chose option 1: {self._names(more) or 'no answer'}]"
+                if quests:
+                    detail += f" quest: {quests[0]}"
+            return detail
+        raise BotError("no NPC to talk to in view")
+
+    def shop(self) -> str:
+        """Open the nearest merchant, buy the cheapest item; scribe it if it's a scroll, else
+        sell it back."""
+        merchants = self.nearest(lambda e: e.merchant)
+        if not merchants:
+            raise BotError("no merchant in view")
+        merchant = merchants[0]
+        self.walk_to(merchant.x, merchant.z)
+        self.send(MERCHANT_DIALOG, struct.pack("<I", merchant.object_id))
+        box = self.expect({MERCHANT_BOX})[-1][1]
+        _, _sell, buy, goods = capture_reader.merchant_box(box)
+        if not goods:
+            raise BotError(f"{merchant.name} sells nothing")
+        slot = min(range(len(goods)), key=lambda i: goods[i]["cost"])
+        item = goods[slot]
+        self.send(MERCHANT_BUY, _zigzag(slot) + _zigzag(1) + struct.pack("<I", merchant.object_id))
+        got = self.expect({ADD_ITEM}, until=lambda op, p: op == CLIENT_MESSAGE)
+        if ADD_ITEM not in {op for op, _ in got}:
+            raise BotError(f"buying {item['name']}: {self._names(got)}")
+        bought = capture_reader.item_record([p for op, p in got if op == ADD_ITEM][-1], 0)[0]
+        detail = f"{merchant.name}: bought {item['name']} for {item['cost'] * buy // 100}"
+        if bought["icon"] == SCROLL_ICON and bought["slot"] == -1:
+            self.send(INTERACT_ITEM, struct.pack("<II", bought["key"], 0) + b"\x00")
+            got = self.expect({ADD_SPELL, CLIENT_MESSAGE})
+            return detail + (", scribed it" if ADD_SPELL in {op for op, _ in got}
+                             else f", scribing said: {_text([p for op, p in got if op == CLIENT_MESSAGE][-1], 0)}")
+        self.send(MERCHANT_SELL, struct.pack("<i", bought["key"]) + _zigzag(1) + struct.pack("<I", merchant.object_id))
+        self.expect({REMOVE_ITEM})
+        return detail + ", sold it back"
+
+    def fight(self) -> str:
+        """Find a creature (wandering if none is in view), attack it until it dies."""
+        creature = self._find_creature()
+        self.target = creature
+        self.walk_to(creature.x, creature.z)
+        self.send(ATTACK, struct.pack("<I", creature.object_id))
+        start, hits, taken, deadline = time.monotonic(), 0, 0, time.monotonic() + FIGHT_LIMIT
+        while time.monotonic() < deadline:
+            current = self.entities.get(creature.object_id, creature)
+            if math.hypot(current.x - self.position[1], current.z - self.position[3]) > REACH + 1:
+                self.walk_to(current.x, current.z)
+            self._pump()
+            while self.inbox:
+                opcode, payload = self.inbox.pop(0)
+                if opcode == HIT and len(payload) >= 9:
+                    target = struct.unpack_from("<I", payload, len(payload) - 4)[0]
+                    if target == creature.object_id:
+                        hits += 1
+                    else:
+                        taken += 1
+                elif opcode == SET_POSITION:
+                    raise BotError(f"died fighting {creature.name} (L{creature.level}) after {time.monotonic() - start:.0f} s")
+                elif opcode == TARGET_DIED:
+                    return (f"killed {creature.name} (L{creature.level}) in {time.monotonic() - start:.0f} s: "
+                            f"{hits} hits landed, {taken} taken")
+        raise BotError(f"{creature.name} still alive after {FIGHT_LIMIT:.0f} s ({hits} hits landed, {taken} taken)")
+
+    def _find_creature(self) -> Entity:
+        """A creature in view; else travel to where the server's NPC table puts the nearest
+        one of about our level (this bot is for our own server, so it may know that)."""
+        tried: set[int] = set()
+        level = max(1, self.level)
+
+        def look() -> Entity | None:
+            for entity in self.nearest(lambda e: e.alive and not e.merchant and e.object_id not in tried
+                                       and e.level <= level + 3)[:10]:
+                tried.add(entity.object_id)
+                if self.select(entity)[1:2] == b"\x04":
+                    return entity
+            return None
+
+        found = look()
+        if found is not None:
+            return found
+        from . import npcs
+
+        _, px, _, pz, _ = self.position
+        places = sorted((math.hypot(n.x - px, n.z - pz), n.x, n.z) for n in npcs.all_npcs()
+                        if n.creature and n.level <= level + 3 and n.world == int(self.position[0]) and npcs.placeable(n))
+        if not places:
+            raise BotError(f"no creature of level {level + 3} or less in this world")
+        distance, x, z = places[0]
+        self.walk_to(x, z, 15, TRAVEL_SPEED)
+        self.settle(2.0)  # the server fills our entity channels with what's here
+        found = look()
+        if found is None:
+            raise BotError(f"travelled {distance:.0f} units to creatures but none answered as one "
+                           f"(looked at {len(tried)} things)")
+        return found
+
+    def loot(self) -> str:
+        """Ask for the corpse's loot, take every item, close the box."""
+        corpse = getattr(self, "target", None)
+        if corpse is None:
+            raise BotError("nothing killed to loot")
+        self.send(LOOT_REQUEST, struct.pack("<I", corpse.object_id))
+        got = self.expect({LOOT_BOX})
+        box = [p for op, p in got if op == LOOT_BOX][-1]
+        goods = capture_reader.item_list(box, 0)
+        taken = []
+        for item in goods:
+            self.send(LOOT_ITEM, struct.pack("<ii", item["key"], 1))
+            self.expect({LOOT_ITEM})
+            taken.append(item["name"])
+        self.send(LOOT_CLOSE)
+        self.expect({LOOT_CLOSE}, 3)
+        return f"took {', '.join(taken)}" if taken else "nothing on it"
+
     def leave(self) -> str:
         self.world.send(messages=self.world.reliable(DISCONNECT))
         end = time.monotonic() + 0.5
@@ -468,9 +753,16 @@ class BotClient:
             return got
         before = (connection.server_message, dict(connection.channel_acks))
         got = connection.take(data)
-        for opcode, _ in got:
+        for opcode, payload in got:
             name = GAME_OPCODES.get(opcode, f"0x{opcode:04X}")
             self.report.received[name] = self.report.received.get(name, 0) + 1
+            self.inbox.append((opcode, payload))
+            if opcode == ADD_ITEM:
+                try:
+                    item = capture_reader.item_record(payload, 0)[0]
+                    self.items[item["key"]] = item
+                except (IndexError, struct.error, UnicodeDecodeError):
+                    pass
         if ack and (connection.server_message, connection.channel_acks) != before:
             connection.send()
         return got
@@ -496,6 +788,12 @@ class BotClient:
                             connection.send()
                         return opcode, payload
         raise BotError(f"didn't get {what} within {self.timeout:.0f} s")
+
+
+def _text(payload: bytes, offset: int) -> str:
+    """An int32 length + UTF-16 text."""
+    length = struct.unpack_from("<i", payload, offset)[0]
+    return payload[offset + 4:offset + 4 + 2 * length].decode("utf-16-le", "replace")
 
 
 def _dump_position(dump: bytes) -> tuple[float, float, float, float, float]:
@@ -534,7 +832,8 @@ class BotRunner:
         self.report: dict | None = None
         self.text = ""
 
-    def start(self, walk_seconds: float = 20.0, character: str = "Botty", klass: int = 7, race: int = 1) -> bool:
+    def start(self, walk_seconds: float = 20.0, character: str = "Botty", klass: int = 7, race: int = 1,
+              play: bool = False) -> bool:
         import threading
 
         if self.running:
@@ -545,7 +844,7 @@ class BotRunner:
             try:
                 bot = BotClient("127.0.0.1", "bot1", "bot1", character, race, klass, auth_port=self.auth_port,
                                 game_port=self.game_port)
-                report = bot.run(walk_seconds)
+                report = bot.run(walk_seconds, play)
                 self.report, self.text = asdict(report) | {"ok": report.ok}, report.text()
             except Exception as exc:  # noqa: BLE001 - shown in the panel
                 self.report, self.text = {"ok": False}, f"Bot couldn't run: {exc}"
@@ -568,13 +867,14 @@ def main() -> None:
     parser.add_argument("--race", type=int, default=1)
     parser.add_argument("--klass", type=int, default=7, help="class number (7 = druid)")
     parser.add_argument("--walk", type=float, default=20.0, help="seconds to walk")
+    parser.add_argument("--play", action="store_true", help="also cast, talk, shop, fight and loot")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-remote", action="store_true",
                         help="connect to a non-private address (only where the server allows bots)")
     args = parser.parse_args()
     bot = BotClient(args.host, args.user, args.password, args.character, args.race, args.klass,
                     allow_remote=args.allow_remote, log=lambda line: None if args.json else print(line))
-    report = bot.run(args.walk)
+    report = bot.run(args.walk, args.play)
     print(json.dumps(asdict(report), indent=1) if args.json else report.text())
     sys.exit(0 if report.ok else 1)
 

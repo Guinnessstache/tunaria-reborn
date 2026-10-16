@@ -80,5 +80,21 @@ class BotSessionTests(unittest.TestCase):
         self.assertEqual(len(self.store.characters), 1)
 
 
+class BotPlayTests(BotSessionTests):
+    def test_casts_talks_shops_fights_and_loots(self):
+        from unittest import mock
+
+        with mock.patch.object(bot_client, "TRAVEL_SPEED", 3000.0):
+            report = self.bot().run(walk_seconds=1, play=True)
+        self.assertTrue(report.ok, report.text())
+        names = [step.name for step in report.steps]
+        self.assertIn("fight a creature", names)
+        fight = next(step for step in report.steps if step.name == "fight a creature")
+        self.assertIn("killed", fight.detail)
+        self.assertGreater(self.store.characters[1].experience, 0)
+
+    test_logs_in_makes_a_character_enters_walks_and_leaves = None
+
+
 if __name__ == "__main__":
     unittest.main()
