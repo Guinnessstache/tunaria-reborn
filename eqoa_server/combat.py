@@ -44,10 +44,11 @@ ALIVE, CORPSE, GONE = "alive", "corpse", "gone"
 # Kick, 14 lying dead (with byte 26 = 3). Standing with 1 walks in place.
 ANIMATION = 58
 STAND, WALK, RUN, ATTACK, DEAD = 0, 1, 3, 4, 14
-# Bytes 40-42: velocity x, y, z as signed bytes, about 8 per unit/s (a Sandstorm creature
-# running at ~7.5 units/s sent -54, -10, 27). Without it the client plays the run in place.
+# Bytes 40-42: velocity x, y, z as signed bytes, 6 per unit/s (176 moves of walking
+# creatures in the Sandstorm captures: median 6.02; one running creature at ~7.5 units/s
+# had suggested 8). Without it the client plays the run in place.
 VELOCITY = 40
-VELOCITY_SCALE = 8.0
+VELOCITY_SCALE = 6.0
 
 
 @dataclass
