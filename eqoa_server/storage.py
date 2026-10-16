@@ -6,7 +6,7 @@ import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from time import time
+from time import monotonic, time
 
 from . import game_data, items
 
@@ -74,6 +74,9 @@ class Character:
         return game_data.model_id(self.race, self.gender)
 
 
+SAVE_EVERY = 5.0  # seconds between saves of save_soon() changes
+
+
 class JsonStore:
     def __init__(self, path: Path):
         self.path = path
@@ -82,6 +85,7 @@ class JsonStore:
         self.characters: dict[int, Character] = {}
         self._next_account_id = 1
         self._next_character_id = 1
+        self._dirty, self._last_save = False, 0.0
         self.load()
 
     def load(self) -> None:
@@ -119,6 +123,17 @@ class JsonStore:
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             tmp.replace(self.path)
+            self._dirty, self._last_save = False, monotonic()
+
+    def save_soon(self) -> None:
+        """Note a change that can wait for flush() (positions, XP): with many players online,
+        writing the whole file on every one of them was a tenth of the server's time."""
+        self._dirty = True
+
+    def flush(self, every: float = SAVE_EVERY) -> None:
+        """Save changes noted with save_soon() if the last save is ``every`` s old."""
+        if self._dirty and monotonic() - self._last_save >= every:
+            self.save()
 
     def create_account(self, username: str, password_token: str) -> Account | None:
         key = username.strip().lower()

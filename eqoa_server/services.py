@@ -113,6 +113,7 @@ class ServiceManager:
             service.server = None
             service.thread = None
             service.started_at = None
+            self.store.save()  # what the game noted with save_soon()
             print(f"SERVICE {name} stopped")
             return True
 

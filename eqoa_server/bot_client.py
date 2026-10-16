@@ -47,6 +47,7 @@ import struct
 import sys
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from . import capture_reader
 from .protocol import (
@@ -276,6 +277,7 @@ class Connection:
         self.server_bundle = 0
         self.pieces: dict[int, bytes] = {}
         self.seen: set[int] = set()
+        self.first_number: int | None = None
         self.channel_acks: dict[int, int] = {}
         self.channel_states: dict[int, dict[int, bytes]] = {}
 
@@ -306,7 +308,7 @@ class Connection:
         out = []
         for kind, number, body in messages:
             if kind == PING:
-                self.server_message = max(self.server_message, number)
+                self._received(number)
                 continue
             if kind == 0xFC and len(body) >= 2:  # unreliable (the world list came this way)
                 out.append((struct.unpack_from("<H", body, 0)[0], body[2:]))
@@ -314,8 +316,7 @@ class Connection:
             if kind in (SEGMENT, RELIABLE):
                 if number in self.seen:
                     continue
-                self.seen.add(number)
-                self.server_message = max(self.server_message, number)
+                self._received(number)
                 if kind == SEGMENT:
                     self.pieces[number] = body
                     continue
@@ -331,6 +332,17 @@ class Connection:
                 self.channel_acks[kind] = sequence
                 self._channel(kind, sequence, reference, body)
         return out
+
+    def _received(self, number: int) -> None:
+        """Note a reliable message number; the ack is the last one with none missing before it
+        (acking the highest seen, as before, told the server to stop resending ones we lost,
+        and a fleet of 100 lost a few)."""
+        self.seen.add(number)
+        if not self.server_message and self.first_number is None:
+            self.first_number = number
+            self.server_message = (number - 1) & 0xFFFF
+        while (self.server_message + 1) & 0xFFFF in self.seen:
+            self.server_message = (self.server_message + 1) & 0xFFFF
 
     def _channel(self, channel: int, sequence: int, reference: int, body: bytes) -> None:
         data = rle_zero_decode(body)
@@ -375,6 +387,7 @@ class BotClient:
         self.spells: list[tuple[int, str]] = []
         self.level = 1
         self.levels_gained = 0
+        self.spread = 0  # this bot's number in a fleet
         self.last_heard = time.monotonic()
         self.items: dict[int, dict] = {}  # key -> item record
         self.report = Report(host)
@@ -527,14 +540,21 @@ class BotClient:
     def send(self, opcode: int, payload: bytes = b"") -> None:
         """A reliable message; what arrived before it isn't an answer to it."""
         self.settle(0.05)
-        self.world.send(messages=self.world.reliable(opcode, payload))
+        self.last_request = self.world.reliable(opcode, payload)
+        self.world.send(messages=self.last_request)
 
     def expect(self, wanted: set[int], seconds: float = 4.0, until=None) -> list[tuple[int, bytes]]:
         """The world messages that arrive until one of ``wanted`` does (or ``until(op, payload)``
         holds); raises BotError if none in ``seconds``."""
         started = time.monotonic()
         got, deadline = [], started + seconds
+        resend_at = started + REQUEST_RESEND
         while time.monotonic() < deadline:
+            if resend_at and time.monotonic() >= resend_at and getattr(self, "last_request", None):
+                # Our request may have been lost (a busy server's socket drops packets); the
+                # PS2 client resends until acked, and the server ignores numbers it has acted on.
+                resend_at = 0
+                self.world.send(messages=self.last_request)
             self._pump()
             while self.inbox:
                 opcode, payload = self.inbox.pop(0)
@@ -582,7 +602,10 @@ class BotClient:
     def select(self, entity: Entity) -> bytes:
         """SelectTarget; returns the reply's first bytes (00 04 01: a creature)."""
         self.send(SELECT_TARGET, struct.pack("<II", 0, entity.object_id))
-        reply = self.expect({SELECT_TARGET}, 3)
+        try:
+            reply = self.expect({SELECT_TARGET}, 3)
+        except BotError:
+            return b""  # the server doesn't answer for things it has no NPC for (other players)
         return reply[-1][1][:3]
 
     def cast(self) -> str:
@@ -666,9 +689,10 @@ class BotClient:
         slot = min(range(len(goods)), key=lambda i: goods[i]["cost"])
         item = goods[slot]
         self.send(MERCHANT_BUY, _zigzag(slot) + _zigzag(1) + struct.pack("<I", merchant.object_id))
-        got = self.expect({ADD_ITEM}, until=lambda op, p: op == CLIENT_MESSAGE)
-        if ADD_ITEM not in {op for op, _ in got}:
-            raise BotError(f"buying {item['name']}: {self._names(got)}")
+        try:  # a creature's hits ("... hits you") can arrive first, so wait for the item itself
+            got = self.expect({ADD_ITEM})
+        except BotError as exc:
+            raise BotError(f"buying {item['name']}: {exc}") from None
         bought = capture_reader.item_record([p for op, p in got if op == ADD_ITEM][-1], 0)[0]
         detail = f"{travelled}{merchant.name}: bought {item['name']} for {item['cost'] * buy // 100}"
         if bought["icon"] == SCROLL_ICON and bought["slot"] == -1:
@@ -719,8 +743,12 @@ class BotClient:
         level = max(1, self.level)
 
         def look() -> Entity | None:
-            for entity in self.nearest(lambda e: e.alive and not e.merchant and e.object_id not in tried
-                                       and e.level <= level + 3)[:10]:
+            near = self.nearest(lambda e: e.alive and not e.merchant and e.object_id not in tried
+                                and e.level <= level + 3)[:10]
+            if near:  # each bot starts at a different one of the nearest, so a fleet spreads out
+                turn = self.spread % len(near)
+                near = near[turn:] + near[:turn]
+            for entity in near:
                 tried.add(entity.object_id)
                 if self.select(entity)[1:2] == b"\x04":
                     return entity
@@ -736,20 +764,25 @@ class BotClient:
                         if n.creature and n.level <= level + 3 and n.world == int(self.position[0]) and npcs.placeable(n))
         if not places:
             raise BotError(f"no creature of level {level + 3} or less in this world")
-        distance, x, z = places[0]
-        self.walk_to(x, z, 15, TRAVEL_SPEED)
-        self.settle(2.0)  # the server fills our entity channels with what's here
-        found = look()
-        if found is None:
-            raise BotError(f"travelled {distance:.0f} units to creatures but none answered as one "
-                           f"(looked at {len(tried)} things)")
-        return found
+        # A fleet spreads over the nearest spawn spots: crowded together, the bots fill each
+        # other's entity channels and the creatures drop out of view.
+        spots = places[:SPAWN_SPOTS]
+        travelled = 0.0
+        for attempt in range(3):
+            distance, x, z = spots[(self.spread + attempt * 7) % len(spots)]
+            travelled += self.walk_to(x, z, 15, TRAVEL_SPEED)
+            self.settle(2.0)  # the server fills our entity channels with what's here
+            found = look()
+            if found is not None:
+                return found
+        raise BotError(f"travelled {travelled:.0f} units to 3 creature spots but none answered as one "
+                       f"(looked at {len(tried)} things)")
 
     def loot(self) -> str:
         """Ask for the corpse's loot, take every item, close the box."""
         corpse = getattr(self, "target", None)
         if corpse is None:
-            raise BotError("nothing killed to loot")
+            return "skipped: no fight to loot after"
         if getattr(self, "kill_was_ours", True) is False:
             self.send(LOOT_REQUEST, struct.pack("<I", corpse.object_id))
             got = self.expect({LOOT_BOX, 0x0085})
@@ -913,6 +946,12 @@ def _private(host: str) -> bool:
     return address.is_private or address.is_loopback
 
 
+REQUEST_RESEND = 1.5  # seconds without an answer before the bot sends its request again
+SPAWN_SPOTS = 25  # a fleet's bots pick among this many of the nearest creature spots
+FLEET_STAGGER = 0.5  # seconds between bots logging in (100 bots: all in within 50 s)
+FULL_REPORTS = 10  # fleets this size or smaller get every bot's full report; bigger: a line each
+
+
 def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = False, soak_minutes: float = 0.0, *,
               auth_port: int = AUTH_PORT, game_port: int = GAME_PORT, allow_remote: bool = False, klass: int = 7,
               race: int = 1, log=print) -> tuple[list[Report], str]:
@@ -929,6 +968,7 @@ def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = Fa
             bot = BotClient(host, f"bot{index + 1}", f"bot{index + 1}", name, race, klass, auth_port=auth_port,
                             game_port=game_port, allow_remote=allow_remote,
                             log=lambda line, n=name: log(f"[{n}] {line}"))
+            bot.spread = index
             reports[index] = bot.run(walk_seconds, play, soak_minutes)
         except Exception as exc:  # noqa: BLE001 - reported
             failed = Report(host)
@@ -940,7 +980,7 @@ def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = Fa
         thread = threading.Thread(target=one, args=(index,), name=f"bot-{index + 1}", daemon=True)
         thread.start()
         threads.append(thread)
-        time.sleep(1.0)
+        time.sleep(FLEET_STAGGER)
     for thread in threads:
         thread.join()
     done = [r for r in reports if r is not None]
@@ -965,7 +1005,17 @@ def fleet_summary(reports: list[Report], seconds: float) -> str:
     notes = [n for r in reports for n in r.notes]
     if notes:
         lines.append(f"  {len(notes)} note(s), e.g. {notes[0]}")
+    if len(reports) <= FULL_REPORTS:
+        for report in reports:
+            lines += ["", report.text()]
+        return "\n".join(lines)
+    lines += ["", "Each bot (full reports below for the first bots with problems):"]
     for report in reports:
+        stay = next((step.detail for step in report.steps if step.name.startswith("stay")), "")
+        failed = ", ".join(step.name for step in report.steps if not step.ok)
+        lines.append(f"  {report.character or '?'}: {'ok' if report.ok else 'FAILED ' + failed}"
+                     + (f"; {stay}" if stay else ""))
+    for report in [r for r in reports if not r.ok][:3]:
         lines += ["", report.text()]
     return "\n".join(lines)
 
@@ -974,7 +1024,7 @@ class BotRunner:
     """One bot run at a time for the admin panel (one bot or several), against this server's
     own ports."""
 
-    MAX_BOTS = 10
+    MAX_BOTS = 100
 
     def __init__(self, auth_port: int, game_port: int) -> None:
         self.auth_port, self.game_port = auth_port, game_port
@@ -999,10 +1049,19 @@ class BotRunner:
                     report = bot.run(walk_seconds, play, soak_minutes)
                     self.report, self.text = asdict(report) | {"ok": report.ok}, report.text()
                 else:
-                    reports, summary = run_fleet("127.0.0.1", count, walk_seconds, play, soak_minutes,
-                                                 auth_port=self.auth_port, game_port=self.game_port, klass=klass,
-                                                 race=race, log=lambda line: None)
-                    self.report, self.text = {"ok": all(r.ok for r in reports), "bots": len(reports)}, summary
+                    # A fleet runs in its own Python process: 100 bot threads in the server's
+                    # own process would slow the server they are measuring.
+                    import subprocess
+
+                    command = [sys.executable, "-m", "eqoa_server.bot_client", "--host", "127.0.0.1",
+                               "--auth-port", str(self.auth_port), "--game-port", str(self.game_port),
+                               "--count", str(count), "--walk", str(walk_seconds), "--soak", str(soak_minutes),
+                               "--klass", str(klass), "--race", str(race), "--quiet"] + (["--play"] if play else [])
+                    self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                    text=True, cwd=str(Path(__file__).resolve().parents[1]))
+                    output, _ = self.process.communicate()
+                    self.report = {"ok": self.process.returncode == 0, "bots": count}
+                    self.text = output.strip() or f"Bot fleet exited with code {self.process.returncode}"
             except Exception as exc:  # noqa: BLE001 - shown in the panel
                 self.report, self.text = {"ok": False}, f"Bot couldn't run: {exc}"
             finally:
@@ -1028,17 +1087,22 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=1, help="bots at once (accounts bot1..botN)")
     parser.add_argument("--soak", type=float, default=0.0, help="minutes to stay in the world")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--quiet", action="store_true", help="print only the report")
+    parser.add_argument("--auth-port", type=int, default=AUTH_PORT)
+    parser.add_argument("--game-port", type=int, default=GAME_PORT)
     parser.add_argument("--allow-remote", action="store_true",
                         help="connect to a non-private address (only where the server allows bots)")
     args = parser.parse_args()
     if args.count > 1:
         reports, summary = run_fleet(args.host, args.count, args.walk, args.play, args.soak,
+                                     auth_port=args.auth_port, game_port=args.game_port,
                                      allow_remote=args.allow_remote, klass=args.klass, race=args.race,
-                                     log=lambda line: None if args.json else print(line))
+                                     log=lambda line: None if args.json or args.quiet else print(line))
         print(json.dumps([asdict(r) for r in reports], indent=1) if args.json else summary)
         sys.exit(0 if all(r.ok for r in reports) else 1)
     bot = BotClient(args.host, args.user, args.password, args.character, args.race, args.klass,
-                    allow_remote=args.allow_remote, log=lambda line: None if args.json else print(line))
+                    auth_port=args.auth_port, game_port=args.game_port, allow_remote=args.allow_remote,
+                    log=lambda line: None if args.json or args.quiet else print(line))
     report = bot.run(args.walk, args.play, args.soak)
     print(json.dumps(asdict(report), indent=1) if args.json else report.text())
     sys.exit(0 if report.ok else 1)

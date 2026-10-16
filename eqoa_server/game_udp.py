@@ -656,7 +656,11 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
         return True
 
 
-class GameUDPServer(socketserver.ThreadingUDPServer):
+class GameUDPServer(socketserver.UDPServer):
+    """One thread handles every packet in turn (a thread per packet, as before, cost a third
+    more CPU with 100 players and let answers wait up to a second while threads queued for
+    the lock); nothing a packet does blocks."""
+
     allow_reuse_address = True
 
     def __init__(
@@ -870,7 +874,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         """Add XP, level up when it's enough (new max HP and power, full HP and power), and
         send GrantXP with the new level. Returns the levels reached, for announce_levels."""
         reached = gain_experience(session.selected_character, xp)
-        self.store.save()
+        self.store.save() if reached else self.store.save_soon()
         self.send_experience(session)
         return reached
 
@@ -1778,7 +1782,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         now = time.monotonic()
         if now - session.last_position_save >= POSITION_SAVE_INTERVAL:
             session.last_position_save = now
-            self.store.save()
+            self.store.save_soon()
 
     def send_self_update(self, session: GameSession) -> list[str]:
         now = time.monotonic()
@@ -1847,6 +1851,7 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         super().service_actions()
         now = time.monotonic()
         with self.lock:
+            self.store.flush()
             self.combat_tick(now)
             for address, discovery in list(self.discovery.items()):
                 if now - discovery.last_client_packet > DISCOVERY_SESSION_TIMEOUT:

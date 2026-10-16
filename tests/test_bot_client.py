@@ -117,6 +117,29 @@ class FleetTests(BotSessionTests):
         self.assertEqual(len(self.store.accounts), 3)
         self.assertEqual(self.game.sessions, {})
 
+    def test_the_panel_runs_a_fleet_in_its_own_process(self):
+        runner = bot_client.BotRunner(self.auth.server_address[1], self.game.server_address[1])
+        self.assertEqual(runner.MAX_BOTS, 100)
+        self.assertTrue(runner.start(walk_seconds=1, count=2))
+        deadline = time.monotonic() + 90
+        while runner.running and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertTrue(runner.status()["report"]["ok"], runner.text)
+        self.assertIn("2 bot(s)", runner.text)
+        self.assertIsNotNone(runner.process.pid)  # not threads in the server's own process
+
+    def test_a_big_fleet_gets_a_line_per_bot(self):
+        reports = []
+        for number in range(1, 13):
+            report = bot_client.Report("127.0.0.1")
+            report.character = f"Botty{number} #{number}"
+            report.steps.append(bot_client.Step("stay in the world 1 min", True, 60.0, "3 walks; level 1 (0 gained)"))
+            reports.append(report)
+        reports[4].steps.append(bot_client.Step("shop", False, 1.0, "BotError: no merchant"))
+        summary = bot_client.fleet_summary(reports, 60)
+        self.assertIn("  Botty5 #5: FAILED shop; 3 walks", summary)
+        self.assertEqual(summary.count("Bot session on"), 1)  # only the failed bot in full
+
 
 class BotPlayTests(BotSessionTests):
     def test_casts_talks_shops_fights_and_loots(self):

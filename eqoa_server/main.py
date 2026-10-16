@@ -103,6 +103,7 @@ def main() -> None:
         pass
     print("Shutting down...")
     services.stop_all()
+    store.save()  # positions and XP noted since the last save
     if admin is not None:
         admin.shutdown()
         admin.server_close()

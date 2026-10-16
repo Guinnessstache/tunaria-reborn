@@ -380,6 +380,24 @@ soak line ends with the bot's level and levels gained. First 4-hour 10-bot soak 
 real server (2026-10-16): no crashes, stalls or problems in 2,300+ walks, 580+ casts and
 116 fights per bot; answers median 6 ms, 95% 18 ms, slowest 355 ms; memory flat at
 ~132 MB. It found that kills never levelled anyone up (now fixed, see "Levels").
+Up to 100 bots (2026-10-16). The panel runs a fleet in its own Python process
+(`python -m eqoa_server.bot_client --count N --quiet --auth-port/--game-port`): 100 bot
+threads inside the server's process slowed the server they were measuring. Bots log in
+0.5 s apart, each starts on a different one of the nearest creatures and spreads over
+the 25 nearest creature spots (crowded together they filled each other's 24 entity
+channels and the creatures dropped out of view). Fleets over 10 get a line per bot plus
+the full reports of the first 3 with problems. The bot now acks only the last reliable
+message with none missing before it (acking the highest seen told the server to stop
+resending ones it lost) and resends a request once after 1.5 s without an answer.
+
+What 100 bots found in the server (local, 2 cores): `GameUDPServer` was a
+ThreadingUDPServer (a thread per packet); as a plain UDPServer it used a third less CPU
+and logins stopped timing out. Whole-file saves on every position update and kill were a
+tenth of the server's time: those now go through `store.save_soon()` and `flush()` (every
+5 s from `service_actions`, and when a service stops or the server shuts down). With
+100 bots playing: the server at ~30% of one core, 93 MB, 92 of 100 bots with every step
+ok (the rest: creature spots far out, an occasional unanswered hotbar request), answers
+median 3 ms (the slow tail is mostly the bot process itself, 100 threads on 2 cores).
 Planned: 4 a Bots tab.
 
 ### Levels
