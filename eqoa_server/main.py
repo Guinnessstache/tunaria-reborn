@@ -38,6 +38,7 @@ def parse_args() -> ServerConfig:
     )
     args = parser.parse_args()
     return ServerConfig(
+        learn_from_captures=True,
         host=args.host,
         public_host=args.public_host,
         auth_port=args.auth_port,

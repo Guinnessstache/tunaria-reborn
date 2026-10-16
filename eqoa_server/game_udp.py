@@ -677,8 +677,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         self.ignored_opcodes: dict[int, dict] = {}
         # NPC conversations, quests, items, merchant stock and starting abilities learned from
         # the captures in data/captures (dialogue.py); learned in the background at start.
-        self.dialogue = dialogue.Library(Path(config.data_path).parent / "captures")
-        threading.Thread(target=self.dialogue.refresh, name="learn-captures", daemon=True).start()
+        captures = Path(config.data_path).parent / "captures" if config.learn_from_captures else None
+        self.dialogue = dialogue.Library(captures)
+        if captures is not None:
+            threading.Thread(target=self.dialogue.refresh, name="learn-captures", daemon=True).start()
 
     def send_phase3(self, session: GameSession, body: bytes, *, reliable_message: int | None = None) -> None:
         """Send one phase3 bundle (flags, arrival placeholder, messages) with the next bundle number."""

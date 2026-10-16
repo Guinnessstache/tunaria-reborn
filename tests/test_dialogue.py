@@ -185,3 +185,12 @@ class LearnedStartTests(unittest.TestCase):
         self.assertEqual([items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(7)],
                          ["Minor Healing", "Return Home"])
         self.assertEqual(len(items.starting_spells(0)), len(items.starting_spells(0)))  # others unchanged
+
+
+class LearningSwitchTests(unittest.TestCase):
+    def test_only_the_real_server_learns_from_the_data_folder(self):
+        server = GameUDPServer(("127.0.0.1", 0), ServerConfig(), JsonStore(Path(tempfile.mkdtemp()) / "s.json"),
+                               log_packets=False)
+        self.addCleanup(server.server_close)
+        self.assertIsNone(server.dialogue.folder)  # tests and tools never read data/captures
+        self.assertTrue(ServerConfig(learn_from_captures=True).learn_from_captures)

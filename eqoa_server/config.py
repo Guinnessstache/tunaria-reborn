@@ -26,6 +26,10 @@ class ServerConfig:
     autostart: dict[str, bool] = field(default_factory=dict)
     # Refuse logins whose password differs from the one the account was first used with.
     check_passwords: bool = True
+    # Learn NPC talk, items, merchant stock and starting abilities from the captures in
+    # data/captures (dialogue.Library). On for the real server (main.py); off by default so
+    # tests and tools don't pick up whatever captures sit in the working folder.
+    learn_from_captures: bool = False
 
     @property
     def settings_path(self) -> Path:
