@@ -423,6 +423,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"ok": ok, "services": ctx.services.status()})
         elif parts == ["sessions", "kick"]:
             self._json({"ok": self._kick(body["address"])})
+        elif parts == ["sessions", "teleport"]:
+            self._json(self._teleport(str(body.get("mover", "")), str(body.get("target", ""))))
         elif len(parts) == 3 and parts[0] == "accounts":
             account_id, action = int(parts[1]), parts[2]
             account = ctx.store.get_account(account_id)
@@ -594,6 +596,23 @@ class AdminHandler(BaseHTTPRequestHandler):
         if result["restarting"]:
             self.ctx.request_restart()
         return result
+
+    def _teleport(self, mover: str, target: str) -> dict:
+        """Move the character of one in-world session next to another's (watching the bots
+        from in game)."""
+        game = self.ctx.services.game_server
+        if game is None:
+            return {"ok": False, "message": "The game service isn't running."}
+        with game.lock:
+            by_address = {f"{key[0]}:{key[1]}": session for key, session in game.sessions.items()}
+            if mover not in by_address or target not in by_address:
+                return {"ok": False, "message": "That session is gone; refresh and try again."}
+            try:
+                message = game.summon_to(by_address[mover], by_address[target])
+            except ValueError as exc:
+                return {"ok": False, "message": str(exc)}
+        print(f"ADMIN teleport: {message}")
+        return {"ok": True, "message": message}
 
     def _kick(self, address: str) -> bool:
         game = self.ctx.services.game_server

@@ -104,6 +104,10 @@ class GameSession:
     # Entity channels 1-0x17: who is drawn on each and the state last sent.
     entity_channels: dict[int, "EntityChannel"] = field(default_factory=dict)
     last_entity_refresh: float = 0.0
+    last_player_refresh: float = 0.0
+    # This character as others see it (an object update), and when it was built.
+    seen_update: bytes = b""
+    seen_update_at: float = -1.0
     world: int = 0
     # An ability being cast: (monotonic time it lands, spell id). Return Home only for now.
     pending_cast: tuple[float, int, int] | None = None  # (lands at, spell id, target)
@@ -717,8 +721,11 @@ class GameUDPServer(socketserver.UDPServer):
         now = time.monotonic()
         notes = []
         if now - session.last_entity_refresh >= ENTITY_REFRESH_INTERVAL:
-            session.last_entity_refresh = now
+            session.last_entity_refresh = session.last_player_refresh = now
             notes += self._assign_entity_channels(session, character)
+        elif now - session.last_player_refresh >= PLAYER_REFRESH_INTERVAL:
+            session.last_player_refresh = now
+            self._refresh_players(session, now)
         due = [
             (channel, entity) for channel, entity in sorted(session.entity_channels.items())
             if not entity.acked and now - entity.last_sent >= PHASE3_RESEND_INTERVAL
@@ -741,12 +748,52 @@ class GameUDPServer(socketserver.UDPServer):
             notes.append(f"entity-updates={count}")
         return notes
 
+    def players_near(self, session: GameSession, now: float) -> list[GameSession]:
+        """Other characters in the world near this one, nearest first (at most PLAYER_SLOTS,
+        so creatures and townsfolk keep most of the channels)."""
+        character = session.selected_character
+        near = []
+        for other in self.sessions.values():
+            them = other.selected_character
+            if (other is session or them is None or not other.phase3_in_world or other.phase3_closed
+                    or other.world != session.world):
+                continue
+            distance = math.hypot(them.x - character.x, them.z - character.z)
+            if distance <= ENTITY_RANGE:
+                near.append((distance, other))
+        return [other for _, other in sorted(near, key=lambda pair: pair[0])[:PLAYER_SLOTS]]
+
+    def seen_as(self, session: GameSession, now: float) -> bytes:
+        """The object update others get for this character (built at most every
+        PLAYER_REFRESH_INTERVAL, however many are watching)."""
+        if now - session.seen_update_at >= PLAYER_REFRESH_INTERVAL or not session.seen_update:
+            character = session.selected_character
+            session.seen_update = build_object_update(character, player_object_id(character))
+            session.seen_update_at = now
+        return session.seen_update
+
+    def _refresh_players(self, session: GameSession, now: float) -> None:
+        """Move the other players already on this client's channels to where they are now."""
+        by_id = {player_object_id(s.selected_character): s for s in self.sessions.values() if s.selected_character}
+        for channel, entity in list(session.entity_channels.items()):
+            other = by_id.get(entity.object_id)
+            if other is None or not entity.update[0] or other is session:
+                continue
+            if other.phase3_closed or not other.phase3_in_world:
+                continue  # the next full refresh hides it
+            update = self.seen_as(other, now)
+            if update != entity.update:
+                self._set_channel(session, channel, entity.object_id, update)
+
     def _assign_entity_channels(self, session: GameSession, character: Character) -> list[str]:
+        now = time.monotonic()
         pets_near = [s.pet.npc for s in self.sessions.values()
                      if s.pet is not None and s.pet.state == combat.ALIVE and not s.phase3_closed
                      and combat.distance(character.x, character.z, s.pet) <= ENTITY_RANGE]
-        wanted = (pets_near + [npc for npc in npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS + 8, ENTITY_RANGE)
-                               if self.mobs.get(npc.object_id) is None or self.mobs[npc.object_id].state != combat.GONE]
+        players = self.players_near(session, now)
+        others = [_PlayerOnChannel(player_object_id(p.selected_character), p) for p in players]
+        wanted = (others + pets_near + [npc for npc in npcs.nearest(session.world, character.x, character.z, ENTITY_CHANNELS + 8, ENTITY_RANGE)
+                                        if self.mobs.get(npc.object_id) is None or self.mobs[npc.object_id].state != combat.GONE]
                   )[:ENTITY_CHANNELS]
         wanted_ids = {npc.object_id: npc for npc in wanted}
         current = {entity.object_id: channel for channel, entity in session.entity_channels.items() if entity.update[0]}
@@ -758,8 +805,17 @@ class GameUDPServer(socketserver.UDPServer):
         free.sort()
         for npc in wanted:
             if npc.object_id in current:
+                if isinstance(npc, _PlayerOnChannel):  # moved since: send where it is now
+                    update = self.seen_as(npc.session, now)
+                    channel = current[npc.object_id]
+                    if session.entity_channels[channel].update != update:
+                        self._set_channel(session, channel, npc.object_id, update)
                 continue
             channel = free.pop(0)
+            if isinstance(npc, _PlayerOnChannel):
+                self._set_channel(session, channel, npc.object_id, self.seen_as(npc.session, now))
+                added += 1
+                continue
             mob = self.mobs.get(npc.object_id) or self._pet_by_id(npc.object_id)
             update = combat.update_bytes(mob) if mob is not None else npcs.build_npc_update(npc)
             self._set_channel(session, channel, npc.object_id, update)
@@ -857,7 +913,13 @@ class GameUDPServer(socketserver.UDPServer):
             return ["target cleared"]
         npc = npcs.by_object_id(target) or (self._pet_by_id(target).npc if self._pet_by_id(target) else None)
         if npc is None:
-            return [f"target {target:#x}: unknown"]
+            other = next((s.selected_character for s in self.sessions.values() if s.selected_character
+                          and player_object_id(s.selected_character) == target), None)
+            if other is None:
+                return [f"target {target:#x}: unknown"]
+            # Another player: answered like a townsperson (Sandstorm's answer for players isn't captured).
+            self.send_reliable(session, SELECT_TARGET_OPCODE, bytes((0x02, 0x00, 0x01)) + bytes(TARGET_REPLY_SIZE - 3))
+            return [f"target {other.name} (player)"]
         flags = (0x00, 0x04, 0x01) if npc.creature else (0x02, 0x00, 0x01)
         self.send_reliable(session, SELECT_TARGET_OPCODE, bytes(flags) + bytes(TARGET_REPLY_SIZE - 3))
         return [f"target {npc.name}"]
@@ -1732,6 +1794,20 @@ class GameUDPServer(socketserver.UDPServer):
         self.store.save()
         self.send_reliable(session, SET_POSITION_OPCODE, bytes([world & 0xFF]) + struct.pack("<4f", x, y, z, facing) + bytes(12))
 
+    def summon_to(self, mover: GameSession, target: GameSession) -> str:
+        """Move one in-world character next to another (the admin panel's Teleport): a few
+        steps beside it, facing the same way, in its world."""
+        who, where = mover.selected_character, target.selected_character
+        if who is None or where is None or not mover.phase3_in_world or not target.phase3_in_world:
+            raise ValueError("both characters must be in the world")
+        if mover is target:
+            raise ValueError("pick two different characters")
+        mover.world = target.world
+        self.teleport(mover, target.world, where.x + TELEPORT_OFFSET, where.y, where.z, where.heading)
+        mover.last_entity_refresh = 0.0  # what's around the new spot, now
+        self.send_client_message(mover, f"You have been moved to {where.name}.")
+        return f"{who.name} moved to {where.name} ({where.x:.0f}, {where.z:.0f})"
+
     def send_client_message(self, session: GameSession, text: str) -> None:
         """A line of text in the player's chat window (ClientMessage, as EQOAGameServer:
         int32 length, then UTF-16)."""
@@ -2057,6 +2133,23 @@ POSITION_SAVE_INTERVAL = 15.0
 ENTITY_CHANNELS = 0x17  # client object channels 1-0x17; 0 is the player's own character
 ENTITY_RANGE = 200.0
 ENTITY_REFRESH_INTERVAL = 1.0
+PLAYER_REFRESH_INTERVAL = 0.5  # other players' positions on a client's channels
+PLAYER_SLOTS = 8  # of the 23 channels, at most this many show other players
+PLAYER_OBJECT_ID_BASE = 0x01000000  # other players' object ids (NPCs' start at 0x10000)
+TELEPORT_OFFSET = 3.0
+
+
+def player_object_id(character: Character) -> int:
+    """The id other clients know a character by (its own client uses PHASE3_SESSION_ID)."""
+    return PLAYER_OBJECT_ID_BASE + character.character_id
+
+
+@dataclass
+class _PlayerOnChannel:
+    """Another player wanted on a client's channel, next to the NPCs there."""
+
+    object_id: int
+    session: "GameSession"
 ENTITY_BUNDLE_BYTES = 1000
 
 

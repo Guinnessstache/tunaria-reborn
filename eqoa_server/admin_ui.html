@@ -188,6 +188,15 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         </table></div>
         <p class="hint">Sessions appear once a client reaches character select; they are dropped after logout or 60 s of silence.</p>
       </section>
+      <section class="card">
+        <h2>Teleport</h2>
+        <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label>Move <select id="tp-mover"></select></label>
+          <label>to <select id="tp-target"></select></label>
+          <button class="btn" id="tp-go">Teleport</button>
+        </div>
+        <p class="hint">Puts the first character a few steps from the second, in its zone. Both must be in the world: pick your own character and a bot to watch it play. Other players (bots too) show up in game within 200 units, up to 8 at a time.</p>
+      </section>
     </div>
 
     <div data-panel="accounts" hidden>
@@ -488,6 +497,7 @@ function renderStatus(s) {
   $("#system").innerHTML = cells.map(([k, v]) => `<div class="stat"><div class="value" style="font-size:18px">${esc(v)}</div><div class="label">${esc(k)}</div></div>`).join("");
   $("#psutil-hint").hidden = sys.psutil;
 
+  renderTeleport(s.sessions);
   $("#sessions").innerHTML = s.sessions.length ? s.sessions.map((x) => `
     <tr>
       <td class="num">${esc(x.address)}</td>
@@ -497,6 +507,22 @@ function renderStatus(s) {
       <td class="num">${x.acked_message} / ${x.server_message}</td>
       <td><button class="btn danger" data-kick="${esc(x.address)}">Kick</button></td>
     </tr>`).join("") : `<tr><td colspan="6" class="muted">No game sessions.</td></tr>`;
+}
+
+function renderTeleport(sessions) {
+  // Rebuild the lists only when the characters change, so a refresh doesn't undo a choice.
+  const inWorld = sessions.filter((x) => x.stage === "In world" && x.character)
+    .sort((a, b) => a.character.localeCompare(b.character, undefined, { numeric: true }));
+  const key = inWorld.map((x) => x.address + x.character).join("|");
+  if (renderTeleport.key === key) return;
+  renderTeleport.key = key;
+  for (const id of ["#tp-mover", "#tp-target"]) {
+    const select = $(id), kept = select.value;
+    select.innerHTML = inWorld.length
+      ? inWorld.map((x) => `<option value="${esc(x.address)}">${esc(x.character)} (lvl ${x.level})</option>`).join("")
+      : `<option value="">nobody in the world</option>`;
+    if (inWorld.some((x) => x.address === kept)) select.value = kept;
+  }
 }
 
 document.addEventListener("click", async (e) => {
@@ -509,6 +535,12 @@ document.addEventListener("click", async (e) => {
       const res = await api(`/api/services/${service}/${action}`, {});
       toast(res.ok ? `${service === "all" ? "All services" : service}: ${action} done` : `${service}: ${action} failed`);
       refresh();
+    } else if (t.id === "tp-go") {
+      const mover = $("#tp-mover").value, target = $("#tp-target").value;
+      if (!mover || !target) return toast("Nobody in the world to move");
+      if (mover === target) return toast("Pick two different characters");
+      const res = await api("/api/sessions/teleport", { mover, target });
+      toast(res.message);
     } else if (t.dataset.kick) {
       await api("/api/sessions/kick", { address: t.dataset.kick }); toast("Session dropped"); refresh();
     } else if (t.dataset.account) {

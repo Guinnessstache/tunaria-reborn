@@ -384,8 +384,7 @@ Up to 100 bots (2026-10-16). The panel runs a fleet in its own Python process
 (`python -m eqoa_server.bot_client --count N --quiet --auth-port/--game-port`): 100 bot
 threads inside the server's process slowed the server they were measuring. Bots log in
 0.5 s apart, each starts on a different one of the nearest creatures and spreads over
-the 25 nearest creature spots (crowded together they filled each other's 24 entity
-channels and the creatures dropped out of view). Fleets over 10 get a line per bot plus
+the 25 nearest creature spots (so they don't all wait on the same few creatures). Fleets over 10 get a line per bot plus
 the full reports of the first 3 with problems. The bot now acks only the last reliable
 message with none missing before it (acking the highest seen told the server to stop
 resending ones it lost) and resends a request once after 1.5 s without an answer.
@@ -399,6 +398,24 @@ tenth of the server's time: those now go through `store.save_soon()` and `flush(
 ok (the rest: creature spots far out, an occasional unanswered hotbar request), answers
 median 3 ms (the slow tail is mostly the bot process itself, 100 threads on 2 cores).
 Planned: 4 a Bots tab.
+
+### Other players and Teleport (2026-10-16)
+
+Characters in the world now see each other: `_assign_entity_channels` puts up to
+`PLAYER_SLOTS` (8) other in-world characters within 200 units on a client's channels
+ahead of the NPCs, as `build_object_update(character, PLAYER_OBJECT_ID_BASE +
+character_id)` (0x01000000 up; NPCs are 0x10000 up; a client's own character stays
+PHASE3_SESSION_ID). Their positions go out every `PLAYER_REFRESH_INTERVAL` (0.5 s); each
+character's update is built once per interval however many watch it. SelectTarget on a
+player answers 02 00 01 like a townsperson (Sandstorm's answer for players isn't in a
+capture). Untested on the PS2 client: whether it draws another player from the
+own-character template (model, gear, name) and animates the moves. With 100 bots
+crowded together this cost about a third more server CPU (40% of a core) and the bots'
+answers slowed (median 20 ms), mostly the bot process decoding 8 players each.
+
+Players tab, "Teleport": move one in-world character next to another (`summon_to`: 3
+units to the side, same facing and zone, SetPosition 0xB2, then "You have been moved to
+<name>."); `/api/sessions/teleport {mover, target}` take session addresses.
 
 ### Levels
 

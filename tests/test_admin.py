@@ -242,6 +242,26 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request("/api/accounts")[1]["accounts"][0]["characters"][0]["tunar"], 5000)
         self.assertEqual(self.request(base, {"tunar": -1})[0], 409)
 
+    def test_teleport_moves_one_character_next_to_another(self):
+        from eqoa_server.game_udp import GameSession
+
+        account = self.store.create_account("watcher", "x")
+        me = self.store.create_character(account.account_id, "Jay", klass=0)
+        bot = self.store.create_character(account.account_id, "Botty7", klass=7)
+        bot.x, bot.z = 1234.0, 5678.0
+        game = self.services.game_server
+        game.sessions[("127.0.0.1", 40001)] = GameSession(0x0AD0, 0x20AD1, phase3_in_world=True, selected_character=me)
+        game.sessions[("127.0.0.1", 40002)] = GameSession(0x0BD0, 0x20BD1, phase3_in_world=True, selected_character=bot)
+        self.login()
+        status, result = self.request("/api/sessions/teleport", {"mover": "127.0.0.1:40001", "target": "127.0.0.1:40002"})
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((me.x, me.z), (1237.0, 5678.0))
+        _, result = self.request("/api/sessions/teleport", {"mover": "127.0.0.1:40001", "target": "127.0.0.1:9"})
+        self.assertFalse(result["ok"])
+        self.admin.shutdown()
+        self.admin.server_close()
+
     def test_model_browser_previews_live_and_saves_item_models(self):
         from eqoa_server import items
         from eqoa_server.game_udp import GameSession

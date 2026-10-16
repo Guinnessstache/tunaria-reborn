@@ -564,6 +564,57 @@ class SelfTestFixTests(CombatCase):
         self.assertAlmostEqual(struct.unpack("<f", body)[0], ability_effects.BASE_SPEED * 1.3, places=3)
 
 
+class OtherPlayersTests(InWorldCase):
+    """Characters see each other, and the admin panel can move one next to another."""
+
+    def setUp(self):
+        super().setUp()
+        account = self.store.create_account("watcher", "secret")
+        self.other = self.store.create_character(account.account_id, "Botty", race=0, klass=0)
+        self.other_session = GameSession(0x0BD0, 0x20BD1, phase3_started=True, phase3_in_world=True,
+                                          selected_character=self.other)
+        self.server.sessions[("127.0.0.1", 1)] = self.session
+        self.server.sessions[("127.0.0.1", 2)] = self.other_session
+        self.other.x, self.other.y, self.other.z = self.character.x + 20, self.character.y, self.character.z
+
+    def shown(self, session):
+        return {e.object_id: e for e in session.entity_channels.values() if e.update[0]}
+
+    def test_a_player_nearby_is_on_the_channels_and_moves(self):
+        from eqoa_server import game_udp
+
+        self.server._assign_entity_channels(self.session, self.character)
+        them = game_udp.player_object_id(self.other)
+        self.assertIn(them, self.shown(self.session))
+        self.assertIn(b"Botty", self.shown(self.session)[them].update)
+        before = self.shown(self.session)[them].sequence
+        self.other.x += 10
+        self.server._refresh_players(self.session, 1e9)  # well after the cached update
+        self.assertGreater(self.shown(self.session)[them].sequence, before)
+        self.other.x += 1000  # out of range: hidden on the next refresh
+        self.server._assign_entity_channels(self.session, self.character)
+        self.assertNotIn(them, self.shown(self.session))
+
+    def test_teleport_next_to_another_player(self):
+        self.other.x, self.other.z = self.character.x + 5000, self.character.z - 3000
+        self.other_session.world = 2
+        message = self.server.summon_to(self.session, self.other_session)
+        self.assertIn("Casty moved to Botty", message)
+        self.assertAlmostEqual(self.character.x, self.other.x + 3.0)
+        self.assertEqual(self.character.z, self.other.z)
+        self.assertEqual(self.session.world, 2)
+        op, body = next((op, body) for op, body in self.sent if op == 0xB2)
+        self.assertEqual(body[0], 2)
+        with self.assertRaises(ValueError):
+            self.server.summon_to(self.session, self.session)
+
+    def test_selecting_a_player_gets_an_answer(self):
+        from eqoa_server import game_udp
+
+        self.server.select_target(self.session, struct.pack("<II", 0, game_udp.player_object_id(self.other)))
+        self.assertEqual(self.sent[-1][0], 0x10)
+
+
 class CombatTests(CombatCase):
     """Fighting a creature, in the message shapes of the Sandstorm capture."""
 
