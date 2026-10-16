@@ -76,6 +76,7 @@ UPDATE_INTERVAL = 0.2  # the client sent about five a second while moving
 WALK_SPEED = 9.0  # world units per second: a running PS2 client's velocity peaked at 9
 GROUND_VELOCITY_Y = 14.25  # what a client on the ground sends as its y velocity
 RUNNING, STANDING = 3, 0  # animation bytes in the client's updates
+MAX_STEP_TIME = 0.6  # a bot stalled longer than this doesn't jump to catch up
 
 
 class BotError(Exception):
@@ -183,7 +184,9 @@ def client_update(world: int, x: float, y: float, z: float, heading: float, numb
     data[22] = round(((heading - math.pi) % (2 * math.pi)) * 256 / (2 * math.pi)) & 0xFF
     data[35] = animation & 0xFF
     rle = _rle_encode(bytes(data))
-    return bytes([CLIENT_UPDATE, len(data)]) + struct.pack("<H", number & 0xFFFF) + b"\x00" + rle
+    # The size counts the XOR byte and the compressed bytes (it was the uncompressed 41, so
+    # the server cut the update after 40 compressed bytes and lost the animation).
+    return bytes([CLIENT_UPDATE, len(rle) + 1]) + struct.pack("<H", number & 0xFFFF) + b"\x00" + rle
 
 
 def _rle_encode(data: bytes) -> bytes:
@@ -526,23 +529,7 @@ class BotClient:
         corners = [(x0 + side, z0), (x0 + side, z0 + side)]
         travelled = 0.0
         for cx, cz in corners:
-            while True:
-                _, x, y, z, _ = self.position
-                gap = math.hypot(cx - x, cz - z)
-                if gap < 0.5:
-                    break
-                step = min(gap, WALK_SPEED * UPDATE_INTERVAL)
-                heading = math.atan2(cx - x, cz - z)
-                self.position[1] = x + step * math.sin(heading)
-                self.position[3] = z + step * math.cos(heading)
-                self.position[4] = heading
-                travelled += step
-                pace = step / UPDATE_INTERVAL
-                self._send_update((pace * math.sin(heading), pace * math.cos(heading)), RUNNING)
-                end = time.monotonic() + UPDATE_INTERVAL
-                while time.monotonic() < end:
-                    self._pump()
-        self._send_update()  # stopped
+            travelled += self.walk_to(cx, cz, 0.0)
         self.report.end = self.position[1:4]
         return f"{travelled:.0f} units, {self.update_number} updates; saw {len(self.seen)} things"
 
@@ -588,8 +575,12 @@ class BotClient:
         return got
 
     def walk_to(self, x: float, z: float, stop: float = REACH, speed: float = WALK_SPEED) -> float:
-        """Walk (client updates) until within ``stop`` of (x, z); returns the distance walked."""
+        """Run (client updates) until within ``stop`` of (x, z); returns the distance covered.
+        Each step is the speed times the time that really passed since the last update, so the
+        velocity sent matches the ground covered (a busy bot process fell behind its claimed
+        speed, and watching clients ran it ahead and snapped it back)."""
         walked = 0.0
+        last = time.monotonic()
         while True:
             _, px, _, pz, _ = self.position
             gap = math.hypot(x - px, z - pz) - stop
@@ -597,17 +588,22 @@ class BotClient:
                 if walked:
                     self._send_update()  # stopped: standing, no velocity
                 return walked
-            step = min(gap, speed * UPDATE_INTERVAL)
             heading = math.atan2(x - px, z - pz)
+            if not walked:  # starting off: say we're running before the first step lands
+                self.position[4] = heading
+                self._send_update((speed * math.sin(heading), speed * math.cos(heading)), RUNNING)
+            end = time.monotonic() + UPDATE_INTERVAL
+            while time.monotonic() < end:
+                self._pump()
+            now = time.monotonic()
+            elapsed, last = min(now - last, MAX_STEP_TIME), now
+            step = min(gap, speed * elapsed)
             self.position[1] += step * math.sin(heading)
             self.position[3] += step * math.cos(heading)
             self.position[4] = heading
             walked += step
-            pace = step / UPDATE_INTERVAL
-            self._send_update((pace * math.sin(heading), pace * math.cos(heading)), RUNNING)
-            end = time.monotonic() + UPDATE_INTERVAL
-            while time.monotonic() < end:
-                self._pump()
+            pace = speed if step < gap else 0.0  # arriving: the next update stands still
+            self._send_update((pace * math.sin(heading), pace * math.cos(heading)), RUNNING if pace else STANDING)
 
     def nearest(self, test) -> list[Entity]:
         _, px, _, pz, _ = self.position
@@ -868,12 +864,14 @@ class BotClient:
         three (keeping the height it entered the world at left it floating once it travelled)."""
         points = [(e.x, e.y, e.z) for e in self.entities.values() if e.object_id < PLAYER_IDS]
         points += _npc_points(int(self.position[0]))
-        near = sorted(((math.hypot(px - x, pz - z), py) for px, py, pz in points), key=lambda pair: pair[0])[:3]
-        if not near or near[0][0] > GROUND_RANGE:
-            return None
+        near = sorted(((math.hypot(px - x, pz - z), py) for px, py, pz in points
+                       if abs(px - x) <= GROUND_RANGE and abs(pz - z) <= GROUND_RANGE), key=lambda pair: pair[0])
+        near = [(d, py) for d, py in near if d <= GROUND_RANGE][:4]
+        if not near:
+            return None  # nothing close enough to go by: keep the height we have
         if near[0][0] < 1.0:
             return near[0][1]
-        weights = [1.0 / d for d, _ in near if d <= GROUND_RANGE]
+        weights = [1.0 / (d * d) for d, _ in near]  # the nearest counts most: hills change fast
         return sum(w * py for w, (_, py) in zip(weights, near)) / sum(weights)
 
     def _send_update(self, velocity: tuple[float, float] = (0.0, 0.0), animation: int = STANDING) -> None:
@@ -982,7 +980,7 @@ def _private(host: str) -> bool:
 
 
 PLAYER_IDS = 0x01000000  # object ids from here up are other players (game_udp.PLAYER_OBJECT_ID_BASE)
-GROUND_RANGE = 400.0  # guess the ground's height only from things this close
+GROUND_RANGE = 120.0  # guess the ground's height only from things this close (400 was too far on hills)
 _NPC_POINTS: dict[int, list[tuple[float, float, float]]] = {}
 
 

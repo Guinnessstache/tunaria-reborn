@@ -423,9 +423,17 @@ EQOAReturnHome's layout one byte on), so clients can run a player between update
 instead of hopping. Bots send the same fields, run at 9 units/s (travel too: 150 looked
 like skipping) and send a standing update when they stop.
 
+A client update's size byte counts the XOR byte plus the compressed bytes; the bot used
+to send the uncompressed 41, so the server cut its updates after 40 compressed bytes and
+never saw its animation (a capture of bots, 2026-10-16, showed animation 0 throughout).
+Bots step by speed x the time that really passed, so the velocity they send matches the
+ground covered (in that capture a busy bot process covered 3-7 units/s while claiming 9,
+and watching clients ran it ahead and snapped it back).
+
 Bots have no terrain, so each update's height is guessed from things standing on the
-ground: the nearest three creatures / townsfolk in view and in the NPC table (within 400
-units), weighted by distance (`BotClient.ground_y`). Before, a bot kept the height it
+ground: the nearest four creatures / townsfolk in view and in the NPC table within 120
+units, weighted by 1/distance^2 (`BotClient.ground_y`); with none that close it keeps its
+height (guessing from 400 units away put bots under hills). Before, a bot kept the height it
 entered at and floated once it travelled (seen in game, 2026-10-16).
 
 Players tab, "Teleport": move one in-world character next to another (`summon_to`: 3
