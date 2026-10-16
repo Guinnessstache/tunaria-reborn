@@ -597,6 +597,31 @@ class CombatTests(CombatCase):
         self.server.combat_tick(gone + self.combat.RESPAWN - self.combat.CORPSE_TIME + 0.01)
         self.assertEqual(self.server.mobs[self.npc.object_id].state, self.combat.ALIVE)
 
+    def test_enough_xp_levels_up(self):
+        from eqoa_server import storage
+
+        self.character.level, self.character.experience = 1, storage.XP_TO_NEXT[1] - 10
+        self.attack()
+        mob = self.server.mob(self.npc.object_id)
+        mob.hp = 1
+        self.server.combat_tick(self.session.next_swing)
+        self.assertEqual(self.character.level, 2)
+        self.assertEqual(self.character.max_hp, storage.level_vitals(self.character.klass, 2)[0])
+        grant = next(body for op, body in reversed(self.sent) if op == 0x20)
+        in_level = self.combat.xp_for(1, 1) - 10  # XP past level 2, as Sandstorm's 10 at level 2
+        from eqoa_server.game_udp import _write_zigzag
+
+        self.assertEqual(grant, _write_zigzag(2) + _write_zigzag(in_level))
+        self.assertTrue(any(b"level 2" in body.replace(b"\x00", b"") for op, body in self.sent if op == 0x0A7A))
+
+    def test_xp_after_a_hand_set_level_counts_from_that_level(self):
+        from eqoa_server import storage
+
+        character = self.character
+        character.level, character.experience = 10, 0
+        self.assertEqual(storage.gain_experience(character, 100), [])
+        self.assertEqual(storage.xp_in_level(character), 100)
+
     def test_creature_chases_hits_and_can_kill(self):
         mob = self.server.mob(self.npc.object_id)
         mob.target = self.character.character_id

@@ -57,7 +57,7 @@ from .protocol import (
     read_varuint,
     write_varuint as _write_varuint,
 )
-from .storage import Character, JsonStore, bind_point, level_vitals
+from .storage import Character, JsonStore, bind_point, gain_experience, level_vitals, xp_in_level
 
 # Pcap-verified phase3 control handling (see docs/PROTOCOL.md, captures/).
 from eqoa_protocol import (
@@ -864,7 +864,22 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
         """GrantXP (0x20): zigzag level, zigzag XP (Sandstorm's first byte was 04, 06, 08 as a
         druid went from level 2 to 4, and 08 for a level 4 warrior)."""
         character = session.selected_character
-        self.send_reliable(session, EXPERIENCE_OPCODE, _write_zigzag(character.level) + _write_zigzag(character.experience))
+        self.send_reliable(session, EXPERIENCE_OPCODE, _write_zigzag(character.level) + _write_zigzag(xp_in_level(character)))
+
+    def award_xp(self, session: GameSession, xp: int) -> list[int]:
+        """Add XP, level up when it's enough (new max HP and power, full HP and power), and
+        send GrantXP with the new level. Returns the levels reached, for announce_levels."""
+        reached = gain_experience(session.selected_character, xp)
+        self.store.save()
+        self.send_experience(session)
+        return reached
+
+    def announce_levels(self, session: GameSession, reached: list[int]) -> list[str]:
+        for level in reached:
+            self.send_client_message(session, f"You have reached level {level}!")
+        if reached:
+            self.update_player_channels(session)
+        return [f"reached level {level}" for level in reached]
 
     def _say(self, session: GameSession, text: str, number: int | None = None) -> None:
         if number is None:
@@ -969,10 +984,10 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
                 self.send_reliable(session, ADD_INVENTORY_ITEM_OPCODE, items.item_record(entry, entry["key"]))
                 self._say(session, f"You have received {action[1]}.")
             elif kind == "xp":
-                character.experience += action[1]
-                self.send_experience(session)
+                reached = self.award_xp(session, action[1])
                 self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
                 self.send_client_message(session, f"You receive {action[1]} XP.")
+                notes += self.announce_levels(session, reached)
             elif kind == "message":
                 self.send_client_message(session, action[1])
             elif kind == "bind":
@@ -1393,13 +1408,12 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             if other.attack_target == mob.object_id:
                 other.attack_target = None
         xp = combat.xp_for(mob.npc.level, character.level)
-        character.experience += xp
-        self.store.save()
-        self.send_experience(session)
+        reached = self.award_xp(session, xp)
         self.send_reliable(session, TARGET_DIED_OPCODE, bytes(4))
         self.send_client_message(session, f"You receive {xp} XP.")
+        levels = self.announce_levels(session, reached)
         dropped = ", ".join(items.describe_item(entry["item"])["name"] for entry in mob.loot) or "no loot"
-        return [f"killed {mob.npc.name}: {xp} XP (total {character.experience}); {dropped}"]
+        return [f"killed {mob.npc.name}: {xp} XP (total {character.experience}); {dropped}"] + levels
 
     def ability_on_creature(self, session: GameSession, spell: dict, row: dict, target: int) -> list[str]:
         """An ability's harmful effects on a targeted creature: damage and damage over time."""

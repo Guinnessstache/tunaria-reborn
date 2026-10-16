@@ -374,7 +374,25 @@ each run the steps, then stay in the world for the soak: wander, cast every 20 s
 every 2 min, and flag a stall when the server says nothing for 30 s. The summary lists
 failed steps, stuck bots and server answer times (median, 95%, slowest). Local 5-bot
 soak: no crashes or stuck sessions, answers median 1-2 ms, 95% 3-5 ms, server ~95 MB.
+Talk and shop travel to the nearest townsperson / merchant in the NPC table when none
+is in view (bots log out wherever they fought, so the next run starts out there); the
+soak line ends with the bot's level and levels gained. First 4-hour 10-bot soak on the
+real server (2026-10-16): no crashes, stalls or problems in 2,300+ walks, 580+ casts and
+116 fights per bot; answers median 6 ms, 95% 18 ms, slowest 355 ms; memory flat at
+~132 MB. It found that kills never levelled anyone up (now fixed, see "Levels").
 Planned: 4 a Bots tab.
+
+### Levels
+
+`Character.experience` is the total XP. Each level needs `storage.XP_TO_NEXT[level]` more
+(EQOAReturnHome's CharXPDict: 424 for level 1 to 2, 2,187 for 2 to 3, ...);
+`gain_experience` levels up while the total reaches the next level, sets the class's new
+max HP and power and fills both. GrantXP (0x20) and the MemoryDump carry the XP earned
+within the current level (Sandstorm's went 10 at level 2 and 25 at level 3 right after
+levelling). A kill sends GrantXP, TargetDied, "You receive N XP.", then "You have reached
+level N!" and the new stat block. A level set by hand counts from the start of that
+level. Sandstorm levels much faster than this table (level 4 in under 7 minutes), so
+its curve is its own; abilities still come from scrolls and trainers, not levelling.
 
 ### Talking to NPCs and quests (Sandstorm capture of a new druid in Tethelin, 2026-10-15)
 

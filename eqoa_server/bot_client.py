@@ -374,6 +374,7 @@ class BotClient:
         self.inbox: list[tuple[int, bytes]] = []  # world messages not yet looked at
         self.spells: list[tuple[int, str]] = []
         self.level = 1
+        self.levels_gained = 0
         self.last_heard = time.monotonic()
         self.items: dict[int, dict] = {}  # key -> item record
         self.report = Report(host)
@@ -597,7 +598,31 @@ class BotClient:
         got += self.settle(1.0)
         return f"{name}: {self._names(got)}"
 
+    def _travel_to_npc(self, wanted, what: str) -> float:
+        """Go to where the server's NPC table puts the nearest NPC ``wanted(npc)`` in this
+        world (this bot is for our own server, so it may know that). Returns the distance."""
+        from . import npcs
+
+        _, px, _, pz, _ = self.position
+        places = sorted((math.hypot(n.x - px, n.z - pz), n.x, n.z) for n in npcs.all_npcs()
+                        if wanted(n) and n.world == int(self.position[0]) and npcs.placeable(n))
+        if not places:
+            raise BotError(f"no {what} in this world")
+        distance, x, z = places[0]
+        self.walk_to(x, z, 5, TRAVEL_SPEED)
+        self.settle(2.0)  # the server fills our entity channels with what's here
+        return distance
+
     def talk(self) -> str:
+        """Talk to the nearest NPC that isn't a merchant or a creature (travelling to one if
+        none is in view); pick the first choice of a choice box."""
+        try:
+            return self._talk()
+        except BotError:
+            distance = self._travel_to_npc(lambda n: not n.creature and not n.is_merchant, "townsperson")
+            return f"(travelled {distance:.0f} units) " + self._talk()
+
+    def _talk(self) -> str:
         """Talk to the nearest NPC that isn't a merchant or a creature; pick the first choice
         of a choice box."""
         for npc in self.nearest(lambda e: not e.merchant and e.alive)[:8]:
@@ -625,8 +650,12 @@ class BotClient:
         """Open the nearest merchant, buy the cheapest item; scribe it if it's a scroll, else
         sell it back."""
         merchants = self.nearest(lambda e: e.merchant)
+        travelled = ""
         if not merchants:
-            raise BotError("no merchant in view")
+            travelled = f"(travelled {self._travel_to_npc(lambda n: n.is_merchant, 'merchant'):.0f} units) "
+            merchants = self.nearest(lambda e: e.merchant)
+            if not merchants:
+                raise BotError("travelled to a merchant but none is in view")
         merchant = merchants[0]
         self.walk_to(merchant.x, merchant.z)
         self.send(MERCHANT_DIALOG, struct.pack("<I", merchant.object_id))
@@ -641,7 +670,7 @@ class BotClient:
         if ADD_ITEM not in {op for op, _ in got}:
             raise BotError(f"buying {item['name']}: {self._names(got)}")
         bought = capture_reader.item_record([p for op, p in got if op == ADD_ITEM][-1], 0)[0]
-        detail = f"{merchant.name}: bought {item['name']} for {item['cost'] * buy // 100}"
+        detail = f"{travelled}{merchant.name}: bought {item['name']} for {item['cost'] * buy // 100}"
         if bought["icon"] == SCROLL_ICON and bought["slot"] == -1:
             self.send(INTERACT_ITEM, struct.pack("<II", bought["key"], 0) + b"\x00")
             got = self.expect({ADD_SPELL, CLIENT_MESSAGE})
@@ -769,7 +798,8 @@ class BotClient:
                 counts["problems"] += 1
                 self.report.notes.append(f"while staying: {exc}")
             self.settle(rng.uniform(0.5, 2.0))
-        return ", ".join(f"{value} {key}" for key, value in counts.items())
+        return (", ".join(f"{value} {key}" for key, value in counts.items())
+                + f"; level {self.level} ({self.levels_gained} gained)")
 
     def leave(self) -> str:
         self.world.send(messages=self.world.reliable(DISCONNECT))
@@ -810,6 +840,13 @@ class BotClient:
             name = GAME_OPCODES.get(opcode, f"0x{opcode:04X}")
             self.report.received[name] = self.report.received.get(name, 0) + 1
             self.inbox.append((opcode, payload))
+            if opcode == GRANT_XP and payload:
+                from .protocol import _read_zigzag
+
+                level = _read_zigzag(payload, 0)[0]
+                if level > self.level:
+                    self.levels_gained += level - self.level
+                self.level = max(self.level, level)
             if opcode == ADD_ITEM:
                 try:
                     item = capture_reader.item_record(payload, 0)[0]

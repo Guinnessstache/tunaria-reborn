@@ -416,6 +416,41 @@ TANK_CLASSES = {0, 2, 3}  # Warrior, Paladin, Shadowknight
 CASTER_CLASSES = {7, 8, 9, 10, 11, 12, 13, 14}
 
 
+# XP to go from each level to the next (EQOAReturnHome's CharacterUtilities.CharXPDict).
+XP_TO_NEXT = (0, 424, 2187, 6976, 17125, 35640, 66199, 113152, 181521, 277000, 405955, 575424, 793117,
+              1067416, 1407375, 1822720, 2323849, 2921832, 3628411, 4456000, 5417685, 6527224, 7799047,
+              9248256, 10890625, 12742600, 14821299, 17144512, 19730701, 22599000, 25769215, 29261824,
+              33097977, 37299496, 41888875, 46889280, 52324549, 58219192, 64598391, 71488000, 78914545,
+              86905224, 95487907, 104691136, 114544125, 125076760, 136319599, 148303872, 161061481,
+              174625000, 189027675, 204303424, 220486837, 237613176, 255718375, 274839040, 295012449,
+              316276552, 338669971, 362232000)
+
+
+def xp_at_level(level: int) -> int:
+    """Total XP a character has on reaching a level."""
+    return sum(XP_TO_NEXT[1:max(1, min(level, MAX_LEVEL))])
+
+
+def xp_in_level(character: "Character") -> int:
+    """XP earned since the character's current level (what GrantXP and the MemoryDump carry:
+    Sandstorm's went 10 at level 2, 25 at level 3). `experience` is the total."""
+    return max(0, character.experience - xp_at_level(character.level))
+
+
+def gain_experience(character: "Character", xp: int) -> list[int]:
+    """Add XP and level up while it reaches the next level. Returns the levels reached. A
+    character whose level was set by hand counts from the start of that level."""
+    character.experience = max(character.experience, xp_at_level(character.level)) + xp
+    reached = []
+    while character.level < MAX_LEVEL and character.experience >= xp_at_level(character.level + 1):
+        character.level += 1
+        reached.append(character.level)
+    if reached:
+        character.max_hp, character.max_mana = level_vitals(character.klass, character.level)
+        character.hp, character.mana = character.max_hp, character.max_mana
+    return reached
+
+
 def level_vitals(klass: int, level: int) -> tuple[int, int]:
     """(max HP, max power) for a class at a level: 100 + 6 per level and a little more each
     level (more for tanks; a level 4 warrior had 124 HP on Sandstorm); power at least three
