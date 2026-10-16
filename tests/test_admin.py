@@ -114,6 +114,16 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(self.request("/api/selftest/reset-live", {})[0], 200)
         self.assertEqual(self.game_server().ignored_opcodes, {})
 
+    def test_bot_session_from_the_panel(self):
+        self.login()
+        status, body = self.request("/api/bot/run", {"walk": 1})
+        self.assertEqual(status, 200)
+        deadline = time.time() + 60
+        while body["running"] and time.time() < deadline:
+            time.sleep(0.5)
+            body = self.request("/api/bot")[1]
+        self.assertTrue(body["report"]["ok"], body["text"])
+
     def game_server(self):
         return self.services.game_server
 

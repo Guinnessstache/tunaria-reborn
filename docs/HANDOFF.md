@@ -97,6 +97,7 @@ redirects to it.
 | `items.py` | Item and spell patterns and records. Starting kit (`STARTING_KIT_VERSION = 2`). Equip slots, armor and models (`model_for`, overrides in `data/item_models.json`), search and describe. |
 | `npcs.py` | NPC placements (`reference_data/npcs.json.gz`). Nearest-23 grid lookup and `build_npc_update` from the capture's channel-8 template. |
 | `merchants.py` | Merchant stock fitted from the guide's descriptions, and the price formula. |
+| `bot_client.py` | A headless client that plays over the network like the PS2 game (see "Bot player"). |
 | `dialogue.py` | NPC conversations and quests learned from the captures in `data/captures` (see "Talking to NPCs"). |
 | `selftest.py`, `capture_reader.py` | The self-test bot and report; reliable game messages of both sides out of a pcap/pcapng. |
 | `combat.py`, `loot.py`, `pets.py` | Creature fights, corpse loot (creature parts + named drops), summoned pets. |
@@ -343,6 +344,20 @@ to learn them."
   answered 0x16 + 0x18 (`00 00000000`); the client's 0x16 closes it.
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
+
+### Bot player (`bot_client.py`, stage 1 of 4)
+
+A headless client: auth over TCP, server list, character select (makes its character
+if needed), world entry, walking (client updates), logout, with the packet shapes of a
+capture of the PS2 client talking to this server (the module docstring has them all).
+It acks reliable messages and channels like the client and reports each step, what the
+server sent, and the names on its entity channels. Run from the admin panel (Self-test
+tab, "Bot player", account bot1) or `python3 -m eqoa_server.bot_client --host
+192.168.1.65 --walk 30`. Only private addresses unless `--allow-remote` (only for
+servers whose rules allow bots; Sandstorm's rule 12 forbids automation). The server
+picks the character list by the latest login (`store.latest_account`), so a bot logging
+in while a person is at character select can switch their list. Planned: 2 playing
+(fight, loot, shop, quests), 3 many bots / soak, 4 a Bots tab.
 
 ### Talking to NPCs and quests (Sandstorm capture of a new druid in Tethelin, 2026-10-15)
 

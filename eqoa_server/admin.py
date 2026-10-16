@@ -183,11 +183,19 @@ class AdminContext:
     started_at: float = field(default_factory=time.time)
     exit_code: int = 0
     selftest: SelfTestRunner | None = None
+    _bot: object = None
 
     def self_test(self) -> SelfTestRunner:
         if self.selftest is None:
             self.selftest = SelfTestRunner(self.config.data_path.parent / "captures")
         return self.selftest
+
+    def bot(self):
+        from .bot_client import BotRunner
+
+        if getattr(self, "_bot", None) is None:
+            object.__setattr__(self, "_bot", BotRunner(self.services.port("auth"), self.services.port("game")))
+        return self._bot
 
     def ignored_opcodes(self) -> dict:
         game = self.services.game_server
@@ -284,6 +292,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/settings": self._settings,
             "/api/update": self._update_status,
             "/api/selftest": lambda: self.ctx.self_test().status(),
+            "/api/bot": lambda: self.ctx.bot().status(),
         }
         if url.path == "/api/network":
             self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
@@ -482,6 +491,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             started = ctx.self_test().start(bool(body.get("quick")), ctx.ignored_opcodes)
             print(f"ADMIN self-test {'started' if started else 'already running'}")
             self._json({"ok": started, **ctx.self_test().status()})
+        elif parts == ["bot", "run"]:
+            walk = max(1.0, min(600.0, float(body.get("walk", 20))))
+            started = ctx.bot().start(walk, str(body.get("character") or "Botty")[:20], int(body.get("klass", 7)),
+                                      int(body.get("race", 1)))
+            print(f"ADMIN bot session {'started' if started else 'already running'}")
+            self._json({"ok": started, **ctx.bot().status()})
         elif parts == ["selftest", "reset-live"]:
             game = ctx.services.game_server
             if game is not None:

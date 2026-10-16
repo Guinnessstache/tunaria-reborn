@@ -328,6 +328,15 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         <p class="error" id="selftest-error"></p>
       </section>
       <section class="card" style="margin-top:16px">
+        <h2>Bot player <span class="actions"><button class="btn primary" id="bot-run">Run a bot session</button></span></h2>
+        <p class="hint">A bot logs in over the network like the PS2 game (account "bot1"), makes or picks its character, enters the world, walks for the time below and logs out, then reports any step that failed. It plays on this live server, so you may see it in game.</p>
+        <div class="inline">
+          <label>Walk for <input type="text" id="bot-walk" value="20" style="width:60px"> s</label>
+          <label>Character <input type="text" id="bot-name" value="Botty" style="width:120px"></label>
+        </div>
+        <pre id="bot-report" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:10px">No bot session yet.</pre>
+      </section>
+      <section class="card" style="margin-top:16px">
         <h2>Captures to compare with</h2>
         <p class="hint">Add a .pcap / .pcapng of the game talking to Sandstorm or another official-style server. Captures of this server are skipped.</p>
         <div class="inline"><input type="file" id="capture-file" accept=".pcap,.pcapng"><button class="btn" id="capture-upload">Upload</button></div>
@@ -425,7 +434,7 @@ $("#tabs").addEventListener("click", (e) => {
   document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
   if (tab === "settings") { loadSettings(); loadNetwork(); }
   if (tab === "updates") loadUpdates();
-  if (tab === "selftest") loadSelfTest();
+  if (tab === "selftest") { loadSelfTest(); loadBot(); }
   if (tab === "accounts") loadModels().catch(() => {});
   refresh();
 });
@@ -955,6 +964,18 @@ async function loadSelfTest() {
 async function startSelfTest(quick) {
   try { renderSelfTest(await api("/api/selftest/run", { quick })); } catch (err) { if (err.message !== "login required") toast(err.message); }
 }
+let botTimer = null;
+function renderBot(b) {
+  $("#bot-run").disabled = b.running;
+  $("#bot-report").textContent = b.running ? "The bot is playing…" : (b.text || "No bot session yet.");
+  clearTimeout(botTimer);
+  if (b.running && activeTab === "selftest") botTimer = setTimeout(loadBot, 1500);
+}
+async function loadBot() { try { renderBot(await api("/api/bot")); } catch (err) { /* shown elsewhere */ } }
+$("#bot-run").onclick = async () => {
+  try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty" })); }
+  catch (err) { toast(err.message); }
+};
 $("#selftest-run").onclick = () => startSelfTest(false);
 $("#selftest-quick").onclick = () => startSelfTest(true);
 $("#selftest-reset").onclick = async () => {
