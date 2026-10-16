@@ -163,21 +163,25 @@ def read_capture(path: Path, game_port: int = GAME_PORT) -> list[CapturedMessage
     if not packets:
         return []
     start = packets[0][0]
-    seen_client: set[int] = set()
-    seen_server: set[int] = set()
-    pending = b""
+    # Message numbers restart with each connection (character select, then the world), told
+    # apart by the packets' endpoint pair.
+    seen_client: dict[tuple, set[int]] = {}
+    seen_server: dict[tuple, set[int]] = {}
+    pieces_by: dict[tuple, dict[int, bytes]] = {}
     out: list[CapturedMessage] = []
     for stamp, _src, source_port, _dst, _dest_port, payload in packets:
         when = stamp - start
+        stream = tuple(sorted((payload[0:2], payload[2:4])))
         if source_port != game_port:
             try:
                 packet = parse_udp_packet(payload)
             except Exception:
                 continue
             for message in packet.messages:
-                if message.opcode is None or message.message_number is None or message.message_number in seen_client:
+                seen = seen_client.setdefault(stream, set())
+                if message.opcode is None or message.message_number is None or message.message_number in seen:
                     continue
-                seen_client.add(message.message_number)
+                seen.add(message.message_number)
                 out.append(CapturedMessage(when, True, message.message_number, message.opcode, bytes(message.payload)))
             continue
         try:
@@ -187,13 +191,21 @@ def read_capture(path: Path, game_port: int = GAME_PORT) -> list[CapturedMessage
         for kind, number, body in messages:
             if kind not in (0xFA, 0xFB):
                 continue
-            if number in seen_server:
+            seen = seen_server.setdefault(stream, set())
+            pieces = pieces_by.setdefault(stream, {})
+            if number in seen:
                 continue
-            seen_server.add(number)
+            seen.add(number)
             if kind == 0xFA:
-                pending += body
+                pieces[number] = body
                 continue
-            full, pending = pending + body, b""
+            # A segmented message: the 0xFA pieces numbered just before its closing 0xFB, in
+            # number order (they can arrive out of order or be resent).
+            parts, earlier = [body], (number - 1) & 0xFFFF
+            while earlier in pieces:
+                parts.append(pieces.pop(earlier))
+                earlier = (earlier - 1) & 0xFFFF
+            full = b"".join(reversed(parts))
             if len(full) >= 2:
                 out.append(CapturedMessage(when, False, number, struct.unpack_from("<H", full, 0)[0], full[2:]))
     return out

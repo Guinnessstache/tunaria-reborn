@@ -20,8 +20,11 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertIn(0x2A, client)  # SelectedCharacter
         self.assertIn(0x2C, server)  # CharacterSelect
         self.assertLess(messages[-1].time, 120)  # seconds (the file's clock is in nanoseconds)
-        numbers = [m.number for m in messages if not m.from_client]
-        self.assertEqual(len(numbers), len(set(numbers)))  # resends count once
+        dumps = [m for m in messages if m.opcode == 0x0D and not m.from_client]
+        self.assertEqual(len(dumps), 1)  # resent pieces count once; numbering restarts in the world
+        from eqoa_server.capture_template import sandstorm_memory_dump_payload
+
+        self.assertEqual(dumps[0].payload, sandstorm_memory_dump_payload())
 
 
     def test_names_entities_from_their_channel_updates(self):
