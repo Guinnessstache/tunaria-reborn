@@ -80,6 +80,44 @@ class BotSessionTests(unittest.TestCase):
         self.assertEqual(len(self.store.characters), 1)
 
 
+class AccountTests(BotSessionTests):
+    test_logs_in_makes_a_character_enters_walks_and_leaves = None
+
+    def test_each_connection_lists_its_own_account(self):
+        from unittest import mock
+
+        other = self.store.create_account("someone", "secret")
+        self.store.create_character(other.account_id, "Someone", race=0, klass=0)
+        # Someone else logging in last used to switch the bot's character list to theirs.
+        with mock.patch.object(self.store, "latest_account", return_value=other):
+            report = self.bot().run(walk_seconds=1)
+        self.assertTrue(report.ok, report.text())
+        self.assertIn("picked Botty", report.steps[2].detail)
+        bot_account = self.store.account_named("bot1")
+        self.assertEqual([c.name for c in self.store.list_characters(bot_account.account_id)], ["Botty"])
+        self.assertEqual([c.name for c in self.store.list_characters(other.account_id)], ["Someone"])
+
+
+class FleetTests(BotSessionTests):
+    test_logs_in_makes_a_character_enters_walks_and_leaves = None
+
+    def test_several_bots_stay_in_the_world_together(self):
+        from unittest import mock
+
+        with mock.patch.object(bot_client, "CAST_EVERY", 2.0):
+            reports, summary = bot_client.run_fleet(
+                "127.0.0.1", 3, walk_seconds=1, soak_minutes=0.15, auth_port=self.auth.server_address[1],
+                game_port=self.game.server_address[1], log=lambda line: None)
+        self.assertTrue(all(r.ok for r in reports), summary)
+        self.assertEqual(sorted(r.character.split(" #")[0] for r in reports), ["Botty", "Botty2", "Botty3"])
+        self.assertIn("3 bot(s)", summary)
+        self.assertIn("server answers", summary)
+        stay = [step for r in reports for step in r.steps if step.name.startswith("stay")]
+        self.assertTrue(all("casts" in step.detail for step in stay))
+        self.assertEqual(len(self.store.accounts), 3)
+        self.assertEqual(self.game.sessions, {})
+
+
 class BotPlayTests(BotSessionTests):
     def test_casts_talks_shops_fights_and_loots(self):
         from unittest import mock

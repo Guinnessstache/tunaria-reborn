@@ -82,6 +82,7 @@ class GameSession:
     phase3_last_client_arrival: int = 0
     phase3_last_server_ping_arrival: int = 0
     selected_character: Character | None = None
+    account_id: int | None = None  # whose characters this connection lists (Authenticate2's username)
     # Reliable phase3 bundles the server has sent: (highest message number, inner body).
     phase3_reliable: list[tuple[int, bytes]] = field(default_factory=list)
     phase3_next_message: int = 1
@@ -244,7 +245,9 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     server.discovery[self.client_address].on_server_list = False
                 session = GameSession(packet.client_endpoint, instance_id)
                 server.sessions[self.client_address] = session
-                account = server.store.latest_account()
+                auth = next(msg for msg in packet.messages if msg.opcode == 0x0001)
+                account = server.account_for(auth.payload)
+                session.account_id = account.account_id if account is not None else None
                 characters = server.store.list_characters(account.account_id) if account is not None else []
                 character_list = build_character_list_payload(characters)
                 ack = build_phase2_character_select_ack(packet.client_endpoint, instance_id, character_list)
@@ -277,7 +280,7 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                 session.next_arrival += 1
                 fields = parse_create_character(create_msg.payload)
                 server.dialogue.refresh()  # starting abilities a capture showed for the class
-                account = server.store.latest_account()
+                account = server.store.get_account(session.account_id) if session.account_id else server.store.latest_account()
                 account_id = account.account_id if account is not None else 1
                 character = server.store.create_character(
                     account_id,
@@ -343,10 +346,14 @@ class GameUDPHandler(socketserver.BaseRequestHandler):
                     if selected_id is not None:
                         previous_character = session.selected_character
                         session.selected_character = server.store.get_character(selected_id)
+                        if (session.selected_character is not None and session.account_id is not None
+                                and session.selected_character.account_id != session.account_id):
+                            session.selected_character = None  # not this player's character
                         if session.selected_character is None:
                             session.selected_character = previous_character
                         if session.selected_character is None:
-                            account = server.store.latest_account()
+                            account = (server.store.get_account(session.account_id) if session.account_id
+                                       else server.store.latest_account())
                             if account is not None:
                                 characters = server.store.list_characters(account.account_id)
                                 session.selected_character = characters[0] if characters else None
@@ -783,6 +790,22 @@ class GameUDPServer(socketserver.ThreadingUDPServer):
             )
             self.send_phase3(session, body, reliable_message=number)
         return number
+
+    def account_for(self, authenticate2: bytes):
+        """The account a connection is for: Authenticate2 carries the username (byte 0, int32 3,
+        int32 4, "EQOA", int32 length, name, ...), the one the client logged in with over TCP.
+        Without one, the latest login (as before; one player at a time)."""
+        try:
+            offset = 1 + 4 + 4 + 4
+            length = struct.unpack_from("<i", authenticate2, offset)[0]
+            name = authenticate2[offset + 4:offset + 4 + length].decode("ascii")
+        except (struct.error, UnicodeDecodeError):
+            name = ""
+        if authenticate2[9:13] == b"EQOA" and 0 < len(name) <= 32:
+            account = self.store.account_named(name)
+            if account is not None:
+                return account
+        return self.store.latest_account()
 
     def handle_game_message(self, session: GameSession, opcode: int | None, payload: bytes) -> list[str] | None:
         """One reliable in-world message from the client. Returns log notes, or None when the

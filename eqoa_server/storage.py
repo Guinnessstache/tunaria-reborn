@@ -176,6 +176,10 @@ class JsonStore:
             self.save()
             return True
 
+    def account_named(self, username: str) -> Account | None:
+        with self._lock:
+            return self.accounts.get(username.strip().lower())
+
     def get_account(self, account_id: int) -> Account | None:
         with self._lock:
             return next((a for a in self.accounts.values() if a.account_id == account_id), None)

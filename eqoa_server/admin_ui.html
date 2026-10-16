@@ -329,11 +329,13 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
       </section>
       <section class="card" style="margin-top:16px">
         <h2>Bot player <span class="actions"><button class="btn primary" id="bot-run">Run a bot session</button></span></h2>
-        <p class="hint">A bot logs in over the network like the PS2 game (account "bot1"), makes or picks its character, enters the world and walks for the time below. With "Play" on it also uses an ability, talks to an NPC, shops, travels to a creature of its level and fights it, and loots it, then logs out and reports every step (a fight can take a minute or two). It plays on this live server, so you may see it in game.</p>
+        <p class="hint">A bot logs in over the network like the PS2 game (account "bot1"), makes or picks its character, enters the world and walks for the time below. With "Play" on it also uses an ability, talks to an NPC, shops, travels to a creature of its level and fights it, and loots it, then logs out and reports every step (a fight can take a minute or two). "Bots" runs up to 10 at once (accounts bot1, bot2…); "Stay in the world" keeps them wandering, casting and (playing) fighting for that many minutes, and the report says how fast the server answered and whether anything got stuck. It plays on this live server, so you may see it in game.</p>
         <div class="inline">
           <label>Walk for <input type="text" id="bot-walk" value="20" style="width:60px"> s</label>
           <label>Character <input type="text" id="bot-name" value="Botty" style="width:120px"></label>
           <label><input type="checkbox" id="bot-play" checked> Play: cast, talk, shop, fight and loot</label>
+          <label>Bots <input type="text" id="bot-count" value="1" style="width:40px"></label>
+          <label>Stay in the world <input type="text" id="bot-soak" value="0" style="width:50px"> min</label>
         </div>
         <pre id="bot-report" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:10px">No bot session yet.</pre>
       </section>
@@ -974,7 +976,7 @@ function renderBot(b) {
 }
 async function loadBot() { try { renderBot(await api("/api/bot")); } catch (err) { /* shown elsewhere */ } }
 $("#bot-run").onclick = async () => {
-  try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty", play: $("#bot-play").checked })); }
+  try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty", play: $("#bot-play").checked, count: Number($("#bot-count").value) || 1, soak: Number($("#bot-soak").value) || 0 })); }
   catch (err) { toast(err.message); }
 };
 $("#selftest-run").onclick = () => startSelfTest(false);

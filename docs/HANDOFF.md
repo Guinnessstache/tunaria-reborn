@@ -345,7 +345,7 @@ to learn them."
 - In the spell record, the hotbar slot is the 4th field ("where"); the 3rd is
   1 when it's on the hotbar.
 
-### Bot player (`bot_client.py`, stages 1-2 of 4)
+### Bot player (`bot_client.py`, stages 1-3 of 4)
 
 A headless client: auth over TCP, server list, character select (makes its character
 if needed), world entry, walking (client updates), logout, with the packet shapes of a
@@ -354,9 +354,11 @@ It acks reliable messages and channels like the client and reports each step, wh
 server sent, and the names on its entity channels. Run from the admin panel (Self-test
 tab, "Bot player", account bot1) or `python3 -m eqoa_server.bot_client --host
 192.168.1.65 --walk 30`. Only private addresses unless `--allow-remote` (only for
-servers whose rules allow bots; Sandstorm's rule 12 forbids automation). The server
-picks the character list by the latest login (`store.latest_account`), so a bot logging
-in while a person is at character select can switch their list. Stage 2 (`play`,
+servers whose rules allow bots; Sandstorm's rule 12 forbids automation). Each game
+connection lists the characters of the account named in its Authenticate2
+(`account_for` in game_udp, `store.account_named`; falls back to the latest login), so
+bots and people logging in together no longer see each other's lists, and
+SelectedCharacter refuses another account's character. Stage 2 (`play`,
 panel checkbox, `--play`): it casts its first ability, talks to the nearest plain NPC
 (first choice of a choice box), buys the cheapest thing from the nearest merchant
 (scribes a scroll, else sells it back), finds a creature (SelectTarget reply 00 04 01;
@@ -364,8 +366,15 @@ if none in view it travels at 150 units/s to the nearest one of its level in the
 table) and fights it to the death, then loots. It tracks entities from its channels
 (position, alive, level, NPC type), its stats from 0x42, its spells and items from the
 MemoryDump. Local run: Botty the druid walked from Tethelin to a level 5 rook ~3,000
-units away and killed it in 31 s (11 hits landed, 10 taken). Planned: 3 many bots /
-soak, 4 a Bots tab.
+units away and killed it in 31 s (11 hits landed, 10 taken). A fight also ends when
+the target's object update shows it dead (someone else's kill: only the killer gets
+TargetDied 0xD9 and may loot). Stage 3 (`run_fleet`, panel "bots" and "soak minutes",
+`--count N --soak M`, up to 10): accounts bot1..botN with characters Botty, Botty2...
+each run the steps, then stay in the world for the soak: wander, cast every 20 s, fight
+every 2 min, and flag a stall when the server says nothing for 30 s. The summary lists
+failed steps, stuck bots and server answer times (median, 95%, slowest). Local 5-bot
+soak: no crashes or stuck sessions, answers median 1-2 ms, 95% 3-5 ms, server ~95 MB.
+Planned: 4 a Bots tab.
 
 ### Talking to NPCs and quests (Sandstorm capture of a new druid in Tethelin, 2026-10-15)
 

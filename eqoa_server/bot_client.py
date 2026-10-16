@@ -97,6 +97,7 @@ class Report:
     start: list[float] = field(default_factory=list)
     end: list[float] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    waits: list[float] = field(default_factory=list)  # seconds the server took to answer, per request
 
     @property
     def ok(self) -> bool:
@@ -230,6 +231,10 @@ FIGHT_LIMIT = 120.0  # seconds before a fight counts as stuck
 SEARCH_LEGS = 6  # how far to wander looking for a creature (legs of SEARCH_STEP units)
 SEARCH_STEP = 120.0
 REACH = 3.0  # how close it walks to what it acts on
+CAST_EVERY = 20.0  # seconds between ability uses while staying in the world
+FIGHT_EVERY = 120.0  # and between fights (playing)
+WANDER = 40.0  # how far it wanders from where it stays
+QUIET_LIMIT = 30.0  # the server sends pings; this long without anything is a problem
 TRAVEL_SPEED = 150.0  # units/s when crossing the map to find creatures (the server doesn't check speed)
 
 
@@ -369,6 +374,7 @@ class BotClient:
         self.inbox: list[tuple[int, bytes]] = []  # world messages not yet looked at
         self.spells: list[tuple[int, str]] = []
         self.level = 1
+        self.last_heard = time.monotonic()
         self.items: dict[int, dict] = {}  # key -> item record
         self.report = Report(host)
         self.world: Connection | None = None
@@ -377,7 +383,7 @@ class BotClient:
 
     # -- steps ----------------------------------------------------------------------------
 
-    def run(self, walk_seconds: float = 20.0, play: bool = False) -> Report:
+    def run(self, walk_seconds: float = 20.0, play: bool = False, soak_minutes: float = 0.0) -> Report:
         """Log in, select, enter the world, walk, (play,) leave. Getting in stops at the first
         failed step; each playing step runs whatever the one before did."""
         try:
@@ -392,6 +398,8 @@ class BotClient:
                                        ("shop", self.shop), ("fight a creature", self.fight),
                                        ("loot the corpse", self.loot)):
                         self._step(name, step)
+                if soak_minutes > 0:
+                    self._step(f"stay in the world {soak_minutes:g} min", lambda: self.soak(soak_minutes, play))
                 self._step("leave", self.leave)
         finally:
             self.sock.close()
@@ -523,13 +531,15 @@ class BotClient:
     def expect(self, wanted: set[int], seconds: float = 4.0, until=None) -> list[tuple[int, bytes]]:
         """The world messages that arrive until one of ``wanted`` does (or ``until(op, payload)``
         holds); raises BotError if none in ``seconds``."""
-        got, deadline = [], time.monotonic() + seconds
+        started = time.monotonic()
+        got, deadline = [], started + seconds
         while time.monotonic() < deadline:
             self._pump()
             while self.inbox:
                 opcode, payload = self.inbox.pop(0)
                 got.append((opcode, payload))
                 if opcode in wanted or (until is not None and until(opcode, payload)):
+                    self.report.waits.append(time.monotonic() - started)
                     return got
         names = ", ".join(GAME_OPCODES.get(op, f"0x{op:04X}") for op in sorted(wanted))
         raise BotError(f"no {names} within {seconds:.0f} s (got: {self._names(got) or 'nothing'})")
@@ -650,6 +660,10 @@ class BotClient:
         start, hits, taken, deadline = time.monotonic(), 0, 0, time.monotonic() + FIGHT_LIMIT
         while time.monotonic() < deadline:
             current = self.entities.get(creature.object_id, creature)
+            if not current.alive:  # its object update shows a corpse: someone else got the kill
+                self.kill_was_ours = False
+                return (f"{creature.name} (L{creature.level}) was killed by someone else after "
+                        f"{time.monotonic() - start:.0f} s ({hits} hits landed, {taken} taken)")
             if math.hypot(current.x - self.position[1], current.z - self.position[3]) > REACH + 1:
                 self.walk_to(current.x, current.z)
             self._pump()
@@ -664,6 +678,7 @@ class BotClient:
                 elif opcode == SET_POSITION:
                     raise BotError(f"died fighting {creature.name} (L{creature.level}) after {time.monotonic() - start:.0f} s")
                 elif opcode == TARGET_DIED:
+                    self.kill_was_ours = True
                     return (f"killed {creature.name} (L{creature.level}) in {time.monotonic() - start:.0f} s: "
                             f"{hits} hits landed, {taken} taken")
         raise BotError(f"{creature.name} still alive after {FIGHT_LIMIT:.0f} s ({hits} hits landed, {taken} taken)")
@@ -706,6 +721,10 @@ class BotClient:
         corpse = getattr(self, "target", None)
         if corpse is None:
             raise BotError("nothing killed to loot")
+        if getattr(self, "kill_was_ours", True) is False:
+            self.send(LOOT_REQUEST, struct.pack("<I", corpse.object_id))
+            got = self.expect({LOOT_BOX, 0x0085})
+            return "not our kill: " + ("refused (LootOptions)" if got[-1][0] == 0x0085 else "box answered")
         self.send(LOOT_REQUEST, struct.pack("<I", corpse.object_id))
         got = self.expect({LOOT_BOX})
         box = [p for op, p in got if op == LOOT_BOX][-1]
@@ -718,6 +737,39 @@ class BotClient:
         self.send(LOOT_CLOSE)
         self.expect({LOOT_CLOSE}, 3)
         return f"took {', '.join(taken)}" if taken else "nothing on it"
+
+    def soak(self, minutes: float, play: bool) -> str:
+        """Stay in the world: wander near where it is, use its ability every CAST_EVERY s and
+        (playing) fight and loot every FIGHT_EVERY s. Problems are noted, not fatal; the
+        server going quiet for QUIET_LIMIT s is."""
+        end = time.monotonic() + minutes * 60
+        _, ax, _, az, _ = self.position
+        counts = {"walks": 0, "casts": 0, "fights": 0, "problems": 0}
+        next_cast = time.monotonic() + CAST_EVERY
+        next_fight = time.monotonic() + (FIGHT_EVERY if play else float("inf"))
+        rng = random.Random(self.endpoint)
+        while time.monotonic() < end:
+            angle, reach = rng.uniform(0, 2 * math.pi), rng.uniform(10, WANDER)
+            self.walk_to(ax + reach * math.sin(angle), az + reach * math.cos(angle), 0)
+            counts["walks"] += 1
+            if time.monotonic() - self.last_heard > QUIET_LIMIT:
+                raise BotError(f"the server went quiet for {QUIET_LIMIT:.0f} s ({counts})")
+            try:
+                if time.monotonic() >= next_cast:
+                    next_cast = time.monotonic() + CAST_EVERY
+                    self.cast()
+                    counts["casts"] += 1
+                if time.monotonic() >= next_fight:
+                    next_fight = time.monotonic() + FIGHT_EVERY
+                    self.fight()
+                    self.loot()
+                    counts["fights"] += 1
+                    _, ax, _, az, _ = self.position
+            except BotError as exc:
+                counts["problems"] += 1
+                self.report.notes.append(f"while staying: {exc}")
+            self.settle(rng.uniform(0.5, 2.0))
+        return ", ".join(f"{value} {key}" for key, value in counts.items())
 
     def leave(self) -> str:
         self.world.send(messages=self.world.reliable(DISCONNECT))
@@ -748,6 +800,7 @@ class BotClient:
             data, _ = self.sock.recvfrom(65536)
         except socket.timeout:
             return got
+        self.last_heard = time.monotonic()
         connection = self.world
         if connection is None:
             return got
@@ -823,8 +876,68 @@ def _private(host: str) -> bool:
     return address.is_private or address.is_loopback
 
 
+def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = False, soak_minutes: float = 0.0, *,
+              auth_port: int = AUTH_PORT, game_port: int = GAME_PORT, allow_remote: bool = False, klass: int = 7,
+              race: int = 1, log=print) -> tuple[list[Report], str]:
+    """Several bots at once (accounts bot1..botN, characters Botty, Botty2...), each in its
+    own thread, started a second apart. Returns their reports and a summary."""
+    import threading
+
+    reports: list[Report | None] = [None] * count
+    started = time.monotonic()
+
+    def one(index: int) -> None:
+        name = "Botty" if index == 0 else f"Botty{index + 1}"
+        try:
+            bot = BotClient(host, f"bot{index + 1}", f"bot{index + 1}", name, race, klass, auth_port=auth_port,
+                            game_port=game_port, allow_remote=allow_remote,
+                            log=lambda line, n=name: log(f"[{n}] {line}"))
+            reports[index] = bot.run(walk_seconds, play, soak_minutes)
+        except Exception as exc:  # noqa: BLE001 - reported
+            failed = Report(host)
+            failed.steps.append(Step("start", False, 0.0, f"{type(exc).__name__}: {exc}"))
+            reports[index] = failed
+
+    threads = []
+    for index in range(count):
+        thread = threading.Thread(target=one, args=(index,), name=f"bot-{index + 1}", daemon=True)
+        thread.start()
+        threads.append(thread)
+        time.sleep(1.0)
+    for thread in threads:
+        thread.join()
+    done = [r for r in reports if r is not None]
+    return done, fleet_summary(done, time.monotonic() - started)
+
+
+def fleet_summary(reports: list[Report], seconds: float) -> str:
+    good = sum(1 for r in reports if r.ok)
+    lines = [f"{len(reports)} bot(s) in {seconds / 60:.1f} min: {good} with every step ok, {len(reports) - good} with problems"]
+    failures: dict[str, list[str]] = {}
+    for report in reports:
+        for step in report.steps:
+            if not step.ok:
+                failures.setdefault(step.name, []).append(f"{report.character or '?'}: {step.detail}")
+    for name, details in failures.items():
+        lines.append(f"  FAILED {name} x{len(details)}: {details[0]}")
+    waits = sorted(w for r in reports for w in r.waits)
+    if waits:
+        pick = lambda q: waits[min(len(waits) - 1, int(q * len(waits)))]  # noqa: E731
+        lines.append(f"  server answers: {len(waits)} requests, median {pick(0.5) * 1000:.0f} ms, "
+                     f"95% {pick(0.95) * 1000:.0f} ms, slowest {waits[-1] * 1000:.0f} ms")
+    notes = [n for r in reports for n in r.notes]
+    if notes:
+        lines.append(f"  {len(notes)} note(s), e.g. {notes[0]}")
+    for report in reports:
+        lines += ["", report.text()]
+    return "\n".join(lines)
+
+
 class BotRunner:
-    """One bot session at a time for the admin panel, against this server's own ports."""
+    """One bot run at a time for the admin panel (one bot or several), against this server's
+    own ports."""
+
+    MAX_BOTS = 10
 
     def __init__(self, auth_port: int, game_port: int) -> None:
         self.auth_port, self.game_port = auth_port, game_port
@@ -833,19 +946,26 @@ class BotRunner:
         self.text = ""
 
     def start(self, walk_seconds: float = 20.0, character: str = "Botty", klass: int = 7, race: int = 1,
-              play: bool = False) -> bool:
+              play: bool = False, count: int = 1, soak_minutes: float = 0.0) -> bool:
         import threading
 
         if self.running:
             return False
         self.running = True
+        count = max(1, min(self.MAX_BOTS, int(count)))
 
         def run() -> None:
             try:
-                bot = BotClient("127.0.0.1", "bot1", "bot1", character, race, klass, auth_port=self.auth_port,
-                                game_port=self.game_port)
-                report = bot.run(walk_seconds, play)
-                self.report, self.text = asdict(report) | {"ok": report.ok}, report.text()
+                if count == 1:
+                    bot = BotClient("127.0.0.1", "bot1", "bot1", character, race, klass, auth_port=self.auth_port,
+                                    game_port=self.game_port)
+                    report = bot.run(walk_seconds, play, soak_minutes)
+                    self.report, self.text = asdict(report) | {"ok": report.ok}, report.text()
+                else:
+                    reports, summary = run_fleet("127.0.0.1", count, walk_seconds, play, soak_minutes,
+                                                 auth_port=self.auth_port, game_port=self.game_port, klass=klass,
+                                                 race=race, log=lambda line: None)
+                    self.report, self.text = {"ok": all(r.ok for r in reports), "bots": len(reports)}, summary
             except Exception as exc:  # noqa: BLE001 - shown in the panel
                 self.report, self.text = {"ok": False}, f"Bot couldn't run: {exc}"
             finally:
@@ -868,13 +988,21 @@ def main() -> None:
     parser.add_argument("--klass", type=int, default=7, help="class number (7 = druid)")
     parser.add_argument("--walk", type=float, default=20.0, help="seconds to walk")
     parser.add_argument("--play", action="store_true", help="also cast, talk, shop, fight and loot")
+    parser.add_argument("--count", type=int, default=1, help="bots at once (accounts bot1..botN)")
+    parser.add_argument("--soak", type=float, default=0.0, help="minutes to stay in the world")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--allow-remote", action="store_true",
                         help="connect to a non-private address (only where the server allows bots)")
     args = parser.parse_args()
+    if args.count > 1:
+        reports, summary = run_fleet(args.host, args.count, args.walk, args.play, args.soak,
+                                     allow_remote=args.allow_remote, klass=args.klass, race=args.race,
+                                     log=lambda line: None if args.json else print(line))
+        print(json.dumps([asdict(r) for r in reports], indent=1) if args.json else summary)
+        sys.exit(0 if all(r.ok for r in reports) else 1)
     bot = BotClient(args.host, args.user, args.password, args.character, args.race, args.klass,
                     allow_remote=args.allow_remote, log=lambda line: None if args.json else print(line))
-    report = bot.run(args.walk, args.play)
+    report = bot.run(args.walk, args.play, args.soak)
     print(json.dumps(asdict(report), indent=1) if args.json else report.text())
     sys.exit(0 if report.ok else 1)
 
