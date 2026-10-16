@@ -413,6 +413,11 @@ own-character template (model, gear, name) and animates the moves. With 100 bots
 crowded together this cost about a third more server CPU (40% of a core) and the bots'
 answers slowed (median 20 ms), mostly the bot process decoding 8 players each.
 
+Bots have no terrain, so each update's height is guessed from things standing on the
+ground: the nearest three creatures / townsfolk in view and in the NPC table (within 400
+units), weighted by distance (`BotClient.ground_y`). Before, a bot kept the height it
+entered at and floated once it travelled (seen in game, 2026-10-16).
+
 Players tab, "Teleport": move one in-world character next to another (`summon_to`: 3
 units to the side, same facing and zone, SetPosition 0xB2, then "You have been moved to
 <name>."); `/api/sessions/teleport {mover, target}` take session addresses.

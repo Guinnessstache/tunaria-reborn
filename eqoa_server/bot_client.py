@@ -388,6 +388,7 @@ class BotClient:
         self.level = 1
         self.levels_gained = 0
         self.spread = 0  # this bot's number in a fleet
+        self._ground_at = (math.inf, math.inf)  # where the ground height was last guessed
         self.last_heard = time.monotonic()
         self.items: dict[int, dict] = {}  # key -> item record
         self.report = Report(host)
@@ -848,8 +849,28 @@ class BotClient:
         token = hashlib.sha256(self.password.encode()).digest()
         return b"\x00" + struct.pack("<II", 3, 4) + b"EQOA" + struct.pack("<I", len(name)) + name + b"\x01" + token
 
+    def ground_y(self, x: float, z: float) -> float | None:
+        """The bot has no terrain, so it guesses the ground's height from things standing on it:
+        the creatures and townsfolk in view and the server's NPC table, weighted to the nearest
+        three (keeping the height it entered the world at left it floating once it travelled)."""
+        points = [(e.x, e.y, e.z) for e in self.entities.values() if e.object_id < PLAYER_IDS]
+        points += _npc_points(int(self.position[0]))
+        near = sorted(((math.hypot(px - x, pz - z), py) for px, py, pz in points), key=lambda pair: pair[0])[:3]
+        if not near or near[0][0] > GROUND_RANGE:
+            return None
+        if near[0][0] < 1.0:
+            return near[0][1]
+        weights = [1.0 / d for d, _ in near if d <= GROUND_RANGE]
+        return sum(w * py for w, (_, py) in zip(weights, near)) / sum(weights)
+
     def _send_update(self) -> None:
         self.update_number += 1
+        _, x, _, z, _ = self.position
+        if math.hypot(x - self._ground_at[0], z - self._ground_at[1]) > 5.0:
+            self._ground_at = (x, z)
+            ground = self.ground_y(x, z)
+            if ground is not None:
+                self.position[2] = ground
         world, x, y, z, heading = self.position
         self.world.bundle += 1
         data = packet(self.endpoint, self.endpoint, self.instance, 0, self.world.bundle,
@@ -944,6 +965,20 @@ def _private(host: str) -> bool:
     except (OSError, ValueError):
         return False
     return address.is_private or address.is_loopback
+
+
+PLAYER_IDS = 0x01000000  # object ids from here up are other players (game_udp.PLAYER_OBJECT_ID_BASE)
+GROUND_RANGE = 400.0  # guess the ground's height only from things this close
+_NPC_POINTS: dict[int, list[tuple[float, float, float]]] = {}
+
+
+def _npc_points(world: int) -> list[tuple[float, float, float]]:
+    """(x, y, z) of every placeable NPC in a world, shared by all bots."""
+    if world not in _NPC_POINTS:
+        from . import npcs
+
+        _NPC_POINTS[world] = [(n.x, n.y, n.z) for n in npcs.all_npcs() if n.world == world and npcs.placeable(n)]
+    return _NPC_POINTS[world]
 
 
 REQUEST_RESEND = 1.5  # seconds without an answer before the bot sends its request again
