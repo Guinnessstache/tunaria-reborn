@@ -140,10 +140,10 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 class WebHost:
     """The page's files and the relay, on one HTTP port."""
 
-    def __init__(self, dist: Path | None, target: RelayTarget, *, log=print) -> None:
+    def __init__(self, dist: Path | None, target: RelayTarget, *, log=None) -> None:
         self.dist = dist.resolve() if dist else None
         self.target = target
-        self.log = log
+        self.log = log or (lambda line: print(line, flush=True))
         self.connections = 0
 
     # -- HTTP -----------------------------------------------------------------------
@@ -200,6 +200,7 @@ class WebHost:
         if not query.get("name"):
             await self._reply(writer, 400, b"name?")
             return
+        self.log(f"WEB resolve {query['name'][0]} -> {self.target.address()}")
         await self._reply(writer, 200, self.target.address().encode())
 
     async def _file(self, writer, path: str, head_only: bool) -> None:
@@ -226,8 +227,13 @@ class WebHost:
         if not key or headers.get("sec-websocket-version") != "13":
             await self._reply(writer, 400, b"not a websocket")
             return
-        origin, host = headers.get("origin", ""), headers.get("host", "")
-        if origin and urlsplit(origin).netloc != host:  # only pages served from here
+        origin = headers.get("origin", "")
+        hosts = {h.split(":")[0].lower() for h in (headers.get("host", ""), headers.get("x-forwarded-host", "")) if h}
+        peer = writer.get_extra_info("peername")
+        self.log(f"WEB relay {route} from {headers.get('x-forwarded-for', peer[0] if peer else '?')} "
+                 f"origin={origin or '-'} host={','.join(sorted(hosts)) or '-'}")
+        if origin and (urlsplit(origin).hostname or "").lower() not in hosts:  # only pages served from here
+            self.log(f"WEB relay refused: origin {origin} isn't this host")
             await self._reply(writer, 403, b"this relay serves its own page only")
             return
         accept = base64.b64encode(hashlib.sha1(key.encode() + WS_GUID).digest()).decode()
@@ -292,12 +298,14 @@ class WebHost:
             port = int(query.get("port", ["0"])[0])
         except ValueError:
             port = 0
+        self.log(f"WEB relay tcp to {query.get('host', ['?'])[0]}:{port}")
         if port not in self.target.tcp_ports:
             await ws.send_text(f"err port {port} isn't this server's")
             return
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(self.target.address(), port), 10)
         except (OSError, asyncio.TimeoutError) as exc:
+            self.log(f"WEB relay tcp to port {port} failed: {exc}")
             await ws.send_text(f"err {exc}")
             return
         local = writer.get_extra_info("sockname")
