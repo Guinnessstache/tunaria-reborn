@@ -1,0 +1,77 @@
+# Builds the browser client: DabDavis's MIT-licensed Rust/WebAssembly port of the PS2
+# client, from the repository and commit pinned in webclient/UPSTREAM. The build job
+# runs that code with a read-only token; the publish job only commits the built files
+# to the webclient-dist branch, which the web host serves. No game data is built in:
+# players pick their own disc image in the page.
+name: webclient
+on:
+  push:
+    branches: [main]
+    paths: [webclient/UPSTREAM, .github/workflows/webclient.yml]
+  workflow_dispatch:
+concurrency:
+  group: webclient
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch the client source at the pinned commit
+        run: |
+          read -r REPO COMMIT < webclient/UPSTREAM
+          git clone --filter=blob:none "https://github.com/$REPO.git" upstream
+          git -C upstream checkout --quiet "$COMMIT"
+          test "$(git -C upstream rev-parse HEAD)" = "$COMMIT"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/registry
+            ~/.cargo/git
+            upstream/target
+          key: webclient-${{ hashFiles('webclient/UPSTREAM') }}
+          restore-keys: webclient-
+      - name: Toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          V=$(grep -A1 '^name = "wasm-bindgen"$' upstream/Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')
+          wasm-bindgen --version 2>/dev/null | grep -q "$V" || cargo install wasm-bindgen-cli --version "$V" --locked --force
+          sudo apt-get update -qq && sudo apt-get install -y -qq binaryen
+      - name: Build
+        run: sh upstream/web/build.sh
+      - name: Package
+        run: |
+          read -r REPO COMMIT < webclient/UPSTREAM
+          cp upstream/LICENSE upstream/web/dist/LICENSE.txt
+          printf '{"upstream":"%s","commit":"%s"}\n' "$REPO" "$COMMIT" > upstream/web/dist/upstream.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webclient-dist
+          path: upstream/web/dist
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: webclient-dist
+          path: dist
+      - name: Commit the built page to webclient-dist
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          git init -q -b webclient-dist
+          git add -A
+          git -c user.name="webclient build" -c user.email="actions@users.noreply.github.com" \
+            commit -q -m "Web client built from $(cat upstream.json)"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" webclient-dist
