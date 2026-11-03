@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>EQOA</title>
+<link rel="icon" type="image/svg+xml" href="./v/aa86b670c538/disc.svg">
+<!-- the page as an installed app (main.js "installing"): opened from the Home Screen or the apps, full screen -->
+<link rel="manifest" href="./v/aa86b670c538/manifest.json">
+<link rel="apple-touch-icon" href="./v/aa86b670c538/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<style>
+  :root { color-scheme: dark; --bg: #0b0d10; --panel: #151a20; --raised: #1c232b; --line: #2a323c; --text: #e6e9ee; --dim: #9aa4b1; --accent: #d9a441; --bad: #e0745f; --good: #79c08a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; overflow: hidden; }
+  /* the visible area (dvh): a phone browser's 100vh is the height with its toolbars hidden, which put the
+     bottom of the game (the touch pad's lowest buttons) under them; 100vh where dvh is unknown */
+  canvas#eqoa { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; outline: none; touch-action: none; }
+  #panel { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; overflow: auto; }
+  .card { width: min(460px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; box-sizing: border-box; }
+  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .02em; }
+  h2 { margin: 0 0 12px; font-size: 18px; }
+  p.lede { margin: 0 0 14px; color: var(--dim); font-size: 13px; }
+  label { display: block; margin: 12px 0 4px; color: var(--dim); font-size: 13px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 9px 10px; background: #0e1217; color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  input[type=file] { padding: 7px; }
+  details { margin-top: 14px; color: var(--dim); font-size: 13px; }
+  .row { display: flex; gap: 10px; margin-top: 18px; }
+  button { flex: 1; padding: 10px; font: inherit; font-weight: 600; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: #1a1406; border-color: var(--accent); }
+  button.small { flex: 0 0 auto; padding: 6px 10px; font-weight: 500; }
+  button:disabled { opacity: .5; cursor: default; }
+  .error { color: var(--bad); font-size: 13px; min-height: 1.2em; margin-top: 10px; }
+  .ok { color: var(--good); }
+  .note { color: var(--dim); font-size: 12px; margin-top: 12px; }
+  .gfx { margin: 0 0 6px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+  .gfx .state { font-weight: 600; }
+  .gfx .state.ok { color: var(--good); }
+  .gfx .state.meh { color: var(--accent); }
+  .gfx p { margin: 6px 0 0; color: var(--dim); }
+  .gfx ol { margin: 8px 0 0; padding-left: 20px; color: var(--dim); }
+  .gfx li { margin-top: 6px; }
+  .gfx .flag { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+  .gfx code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 12px ui-monospace, monospace; color: var(--text); background: #0e1217; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
+  [hidden] { display: none !important; }
+  #status { position: fixed; left: 12px; bottom: 10px; color: var(--dim); font-size: 12px; pointer-events: none; text-shadow: 0 1px 2px #000; }
+  body.playing #status { left: auto; right: 12px; text-align: right; }
+  #iso-what:empty, #iso2002-what:empty { display: none; }
+  .note.ok { color: var(--good); }
+  .note.warn { color: var(--accent); }
+  .link { flex: 0 0 auto; padding: 4px 0; background: none; border: none; color: var(--dim); font: 500 13px system-ui, sans-serif; text-decoration: underline; cursor: pointer; }
+  .row.end { justify-content: flex-end; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px; }
+  #notices { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 20; width: min(560px, calc(100% - 32px)); display: grid; gap: 8px; pointer-events: none; }
+  .notice { pointer-events: auto; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; font-size: 13px; box-shadow: 0 4px 16px #0009; }
+  .notice.bad { border-left-color: var(--bad); }
+  .notice .text { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; white-space: pre-line; max-height: 45vh; overflow-y: auto; }
+  .notice button { flex: 0 0 auto; padding: 6px 10px; font-weight: 500; }
+  label.check { display: flex; gap: 8px; align-items: center; color: var(--text); }
+  label.check input { width: auto; }
+  .row.again { margin-top: 6px; }
+  .row.again button { flex: 0 1 auto; text-align: left; overflow-wrap: anywhere; }
+  #install .row { margin-top: 10px; }
+  #install .note { color: var(--text); }
+  #install-go { flex: 0 1 auto; }
+</style>
+</head>
+<body>
+<canvas id="eqoa" tabindex="0"></canvas>
+<div id="notices" aria-live="polite"></div>
+<div id="panel">
+
+  <form id="gate" class="card" autocomplete="on">
+    <h1>EverQuest Online Adventures</h1>
+    <p class="lede">A client in your browser, from your own <i>Frontiers</i> disc image. The image stays on your computer: it is read here, never uploaded. You sign in on the game's own Station screen.</p>
+    <div class="gfx" id="gfx">
+      <div class="state" id="gfx-state">Checking graphics…</div>
+      <p>Recommended browser: a Chromium-based one (Chrome, Edge, Brave, Opera, Chromium) with WebGPU.</p>
+      <div id="gfx-help"></div>
+    </div>
+    <label for="iso">Disc image (SLUS-20744, .iso)</label>
+    <input id="iso" type="file" accept=".iso,.bin,.img" required>
+    <div class="row again" id="iso-again-row" hidden><button type="button" class="small" id="iso-again"></button></div>
+    <div class="note" id="iso-what"></div>
+    <label class="check" id="remember-row" hidden><input id="remember" type="checkbox"> Remember my disc images in this browser</label>
+    <div class="note" id="remember-what" hidden>The browser keeps where the images are on your computer, not the images themselves: next visit, press Start (it may ask you to allow it once). A disc chosen before ticking is asked for once more. Nothing is uploaded.</div>
+    <label for="iso2002">The 2002 disc, for its art on F9 (optional: EverQuest Online Adventures (USA), SLUS-20470, .iso)</label>
+    <input id="iso2002" type="file" accept=".iso,.bin,.img">
+    <div class="row again" id="iso2002-again-row" hidden><button type="button" class="small" id="iso2002-again"></button></div>
+    <div class="note" id="iso2002-what"></div>
+    <details>
+      <summary>Server and viewer</summary>
+      <label for="relay">Relay</label>
+      <input id="relay" placeholder="wss://host/eqoa/relay">
+      <label for="server">Game server, when the game's Network Setup names none (blank: this page's host)</label>
+      <input id="server">
+      <label for="viewargs">Offline viewer: file and what to show</label>
+      <input id="viewargs" placeholder="CHAR.ESF 0x70D898C6 · LAVASTM.ESF walk 0">
+      <div class="row"><button type="button" id="view">View offline</button></div>
+    </details>
+    <div class="error" id="gate-error"></div>
+    <div class="row"><button type="submit" id="go" class="primary">Start</button></div>
+    <div id="install" hidden>
+      <div class="row"><button type="button" id="install-go" hidden>Install EQOA as an app</button></div>
+      <div class="note" id="install-what"></div>
+    </div>
+    <div class="row end"><a class="link" href="./spellfx.html" target="_blank" rel="noopener">Help match spell visuals</a></div>
+  </form>
+
+</div>
+<div id="status">loading…</div>
+<script>
+  // The page's own scripts: when one does not load (a cache that kept a page
+  // whose files are gone, a deploy caught half way), nothing after it runs.
+  // notices.js says so; this says so if it cannot.
+  addEventListener('error', (e) => {
+    const t = e.target;
+    if (t && t.tagName === 'SCRIPT' && !window.eqoaNotices) {
+      document.getElementById('status').textContent = 'The client\u2019s files did not load (' + t.src + '). Reload the page; if it happens again, the site may be in the middle of an update: wait a minute.';
+    }
+  }, true);
+</script>
+<script type="module" src="./v/aa86b670c538/notices.js"></script>
+<script type="module" src="./v/aa86b670c538/main.js"></script>
+</body>
+</html>
