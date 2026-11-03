@@ -612,3 +612,24 @@ Minor Healing); we do that too.
 
 - The Prima guide text came from the PDF the user uploaded. The user also has
   ITEM.ESF and CHAR.ESF from their disc and can upload them again.
+
+### Web client and Render (2026-11-03)
+
+The browser client is DabDavis's MIT-licensed Rust/WebAssembly port of the PS2 client
+(`webclient/README.md`), built by `.github/workflows/webclient.yml` from the commit in
+`webclient/UPSTREAM` (the build job has a read-only token; a second job commits the built
+page to the `webclient-dist` branch). Players pick their own Frontiers disc image in the
+page; nothing of the game is served.
+
+`eqoa_server/webhost.py` serves that page and the relay it expects at `/eqoa/relay` on the
+page's own host (stdlib asyncio + a small WebSocket server): `/udp` (text `ok <addr>
+<port>`, then datagrams behind a 6-byte IPv4 + port header), `/tcp?host=&port=` (the
+Station login), `GET /resolve?name=`. It reaches only this server's own ports whatever
+address the page names, answers in the address the page used, and refuses pages from
+other origins. `--with-game` runs the game server on localhost in the same process.
+
+Render: web service `tunaria-reborn-web` (free, Virginia), https://tunaria-reborn-web.onrender.com,
+auto-deploys main. Build: `pip install .` and clone `webclient-dist` into
+`webclient/dist`; start: `python -m eqoa_server.webhost --with-game --dist webclient/dist`.
+Free tier: sleeps after ~15 min idle, and the save file is lost on every restart or
+deploy. Over HTTPS the page uses WebGPU; served over plain http on a LAN it needs WebGL2.
