@@ -390,6 +390,21 @@ def run_in_thread(host: str, port: int, dist: Path | None, target: RelayTarget) 
     return thread, webhost, box["port"]
 
 
+def _save_on_exit(store) -> None:
+    """Render stops a service with SIGTERM: write the save (and wait for the database)
+    before going."""
+    import signal
+    import sys
+
+    def stop(_signum, _frame) -> None:
+        print("Stopping: saving", flush=True)
+        store.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
+
 def _start_game_and_admin(data_path: Path, shard_name: str) -> int | None:
     """The game server on localhost, and its admin panel when EQOA_ADMIN_PASSWORD is set
     (a web host has no console to show a generated password on). Returns the admin
@@ -405,7 +420,9 @@ def _start_game_and_admin(data_path: Path, shard_name: str) -> int | None:
     load_settings(config)
     config.public_host = "127.0.0.1"  # the relay is the only way in
     logs = install_log_buffer()
-    store = JsonStore(config.data_path)
+    store = JsonStore(config.data_path, database_url=os.environ.get("DATABASE_URL"))
+    print(f"Save: {'Postgres (DATABASE_URL)' if store.database else config.data_path}", flush=True)
+    _save_on_exit(store)
     items.configure_overrides(config.data_path.parent / "item_models.json")
     services = ServiceManager(config, store)
     services.start_enabled()

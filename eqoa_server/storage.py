@@ -78,8 +78,15 @@ SAVE_EVERY = 5.0  # seconds between saves of save_soon() changes
 
 
 class JsonStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, database_url: str | None = None):
+        """The save lives in ``path``, or with ``database_url`` (DATABASE_URL) in Postgres
+        (dbsave.py): for hosts whose files don't last."""
         self.path = path
+        self.database = None
+        if database_url:
+            from .dbsave import DatabaseSave
+
+            self.database = DatabaseSave(database_url)
         self._lock = threading.RLock()
         self.accounts: dict[str, Account] = {}
         self.characters: dict[int, Character] = {}
@@ -90,9 +97,17 @@ class JsonStore:
 
     def load(self) -> None:
         with self._lock:
-            if not self.path.exists():
+            if self.database is not None:
+                text = self.database.read()
+                if text is None and self.path.exists():  # first start on a database: bring the file's save
+                    text = self.path.read_text(encoding="utf-8")
+                if text is None:
+                    return
+                payload = json.loads(text)
+            elif not self.path.exists():
                 return
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            else:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
             self.accounts = {
                 row["username"].lower(): Account(**{k: v for k, v in row.items() if k in Account.__dataclass_fields__})
                 for row in payload.get("accounts", [])
@@ -113,17 +128,27 @@ class JsonStore:
 
     def save(self) -> None:
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.database is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "next_account_id": self._next_account_id,
                 "next_character_id": self._next_character_id,
                 "accounts": [asdict(account) for account in self.accounts.values()],
                 "characters": [asdict(character) for character in self.characters.values()],
             }
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            if self.database is not None:
+                self.database.write(json.dumps(payload, separators=(",", ":")))
+            else:
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                tmp.replace(self.path)
             self._dirty, self._last_save = False, monotonic()
+
+    def close(self) -> None:
+        """Save what's waiting and, on a database, wait until it's written."""
+        self.save()
+        if self.database is not None and not self.database.wait():
+            print("DB save: the last save wasn't confirmed before shutdown")
 
     def save_soon(self) -> None:
         """Note a change that can wait for flush() (positions, XP): with many players online,

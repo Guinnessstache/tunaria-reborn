@@ -635,3 +635,9 @@ Free tier: sleeps after ~15 min idle, and the save file is lost on every restart
 deploy or spin-down (no persistent disks on free services). The admin panel runs on
 localhost and the web host passes `/admin` and `/api/...` to it, only when
 EQOA_ADMIN_PASSWORD is set (no console there to show a generated password). Over HTTPS the page uses WebGPU; served over plain http on a LAN it needs WebGL2.
+
+Saves in Postgres: with DATABASE_URL set (Render: a Neon database), JsonStore keeps the
+save in one row of `tunaria_save` (dbsave.py, pg8000, pure Python) instead of the file;
+a file save is carried over on the first start. Writes go out on a thread of their own,
+newest first, retried with backoff; SIGTERM (Render stopping the service) saves and waits
+for the write. tests/test_dbsave.py runs when TUNARIA_TEST_DATABASE_URL names a database.

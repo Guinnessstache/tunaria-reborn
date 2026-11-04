@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import threading
@@ -59,7 +60,7 @@ def main() -> None:
     config = parse_args()
     load_settings(config)
     logs = install_log_buffer()
-    store = JsonStore(config.data_path)
+    store = JsonStore(config.data_path, database_url=os.environ.get("DATABASE_URL"))
     items.configure_overrides(config.data_path.parent / "item_models.json")
     services = ServiceManager(config, store)
     stop = threading.Event()
@@ -103,7 +104,7 @@ def main() -> None:
         pass
     print("Shutting down...")
     services.stop_all()
-    store.save()  # positions and XP noted since the last save
+    store.close()  # positions and XP noted since the last save (and, on a database, written)
     if admin is not None:
         admin.shutdown()
         admin.server_close()

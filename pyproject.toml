@@ -12,6 +12,9 @@ license = { text = "AGPL-3.0-only" }
 authors = [{ name = "GuinnessStache" }]
 keywords = ["eqoa", "everquest", "ps2", "private-server", "reverse-engineering", "protocol", "tunaria"]
 
+# pg8000: only used when DATABASE_URL is set (dbsave.py); pure Python.
+dependencies = ["pg8000>=1.30"]
+
 [project.optional-dependencies]
 pcap = ["scapy>=2.5"]
 admin = ["psutil>=5.9"]
