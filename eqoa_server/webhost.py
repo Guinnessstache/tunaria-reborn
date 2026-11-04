@@ -140,8 +140,10 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 class WebHost:
     """The page's files and the relay, on one HTTP port."""
 
-    def __init__(self, dist: Path | None, target: RelayTarget, *, log=None) -> None:
+    def __init__(self, dist: Path | None, target: RelayTarget, *, log=None, admin_port: int | None = None) -> None:
         self.dist = dist.resolve() if dist else None
+        # The admin panel on localhost, offered here at /admin (its calls are /api/...).
+        self.admin_port = admin_port
         self.target = target
         self.log = log or (lambda line: print(line, flush=True))
         self.connections = 0
@@ -171,7 +173,9 @@ class WebHost:
             if headers.get("upgrade", "").lower() == "websocket" and path.startswith(RELAY + "/"):
                 await self._websocket(path[len(RELAY):], query, headers, reader, writer)
                 return
-            if method not in ("GET", "HEAD"):
+            if self.admin_port and (path in ("/admin", "/admin/") or path.startswith("/api/")):
+                await self._proxy_admin(method, target, path, headers, reader, writer)
+            elif method not in ("GET", "HEAD"):
                 await self._reply(writer, 405, b"method not allowed")
             elif path == RELAY + "/resolve":
                 await self._resolve(writer, query)
@@ -187,12 +191,38 @@ class WebHost:
 
     async def _reply(self, writer, status: int, body: bytes, content_type: str = "text/plain; charset=utf-8",
                      extra: dict[str, str] | None = None, head_only: bool = False) -> None:
-        reason = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed"}.get(status, "")
+        reason = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+                  502: "Bad Gateway"}.get(status, "")
         lines = [f"HTTP/1.1 {status} {reason}", f"Content-Type: {content_type}", f"Content-Length: {len(body)}",
                  "Connection: close", "X-Content-Type-Options: nosniff"]
         lines += [f"{k}: {v}" for k, v in (extra or {}).items()]
         writer.write(("\r\n".join(lines) + "\r\n\r\n").encode() + (b"" if head_only else body))
         await writer.drain()
+
+    async def _proxy_admin(self, method: str, target: str, path: str, headers, reader, writer) -> None:
+        """Pass a request to the admin panel on localhost and its answer back."""
+        length = int(headers.get("content-length", "0") or 0)
+        if length > MAX_MESSAGE:
+            await self._reply(writer, 400, b"too large")
+            return
+        body = await reader.readexactly(length) if length else b""
+        upstream_target = "/" + target[len(path):] if path in ("/admin", "/admin/") else target
+        keep = ("cookie", "content-type", "x-eqoa-admin", "accept", "user-agent")
+        lines = [f"{method} {upstream_target} HTTP/1.1", f"Host: 127.0.0.1:{self.admin_port}", "Connection: close",
+                 f"Content-Length: {len(body)}"] + [f"{k}: {headers[k]}" for k in keep if k in headers]
+        try:
+            up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", self.admin_port), 10)
+        except (OSError, asyncio.TimeoutError):
+            await self._reply(writer, 502, b"the admin panel isn't running")
+            return
+        try:
+            up_writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body)
+            await up_writer.drain()
+            while chunk := await up_reader.read(65536):
+                writer.write(chunk)
+                await writer.drain()
+        finally:
+            up_writer.close()
 
     async def _resolve(self, writer, query) -> None:
         """Every name resolves to this server: the page's host (a web address like
@@ -360,6 +390,37 @@ def run_in_thread(host: str, port: int, dist: Path | None, target: RelayTarget) 
     return thread, webhost, box["port"]
 
 
+def _start_game_and_admin(data_path: Path, shard_name: str) -> int | None:
+    """The game server on localhost, and its admin panel when EQOA_ADMIN_PASSWORD is set
+    (a web host has no console to show a generated password on). Returns the admin
+    panel's port, or None."""
+    from . import items
+    from .admin import AdminContext, AdminCredentials, start_admin
+    from .config import ServerConfig, load_settings
+    from .services import ServiceManager, install_log_buffer
+    from .storage import JsonStore
+
+    config = ServerConfig(host="127.0.0.1", public_host="127.0.0.1", shard_name=shard_name,
+                          data_path=data_path, log_packets=False, admin_host="127.0.0.1")
+    load_settings(config)
+    config.public_host = "127.0.0.1"  # the relay is the only way in
+    logs = install_log_buffer()
+    store = JsonStore(config.data_path)
+    items.configure_overrides(config.data_path.parent / "item_models.json")
+    services = ServiceManager(config, store)
+    services.start_enabled()
+    print(f"Game server on localhost: auth {config.auth_port}, game {config.game_port}", flush=True)
+    if not os.environ.get("EQOA_ADMIN_PASSWORD"):
+        print("Admin panel off: set EQOA_ADMIN_PASSWORD to open it at /admin", flush=True)
+        return None
+    context = AdminContext(config, store, services, logs, AdminCredentials.load(config), threading.Event())
+    admin = start_admin(context)
+    if admin is None:
+        return None
+    print(f"Admin panel at /admin (localhost:{config.admin_port})", flush=True)
+    return config.admin_port
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve the browser client and its relay.")
     parser.add_argument("--host", default="0.0.0.0")
@@ -371,22 +432,13 @@ def main() -> None:
     parser.add_argument("--data-path", type=Path, default=Path("data/server_state.json"))
     parser.add_argument("--shard-name", default="Tunaria")
     args = parser.parse_args()
+    admin_port = None
     if args.with_game:
-        from . import items
-        from .config import ServerConfig
-        from .services import ServiceManager
-        from .storage import JsonStore
-
-        config = ServerConfig(host="127.0.0.1", public_host="127.0.0.1", shard_name=args.shard_name,
-                              data_path=args.data_path, log_packets=False)
-        store = JsonStore(config.data_path)
-        items.configure_overrides(config.data_path.parent / "item_models.json")
-        ServiceManager(config, store).start_enabled()
-        print(f"Game server on localhost: auth {config.auth_port}, game {config.game_port}")
+        admin_port = _start_game_and_admin(args.data_path, args.shard_name)
     target = RelayTarget(args.game_host)
     if not (args.dist / "index.html").is_file():
         print(f"No web client in {args.dist} (fetch the webclient-dist branch there); serving the relay only.")
-    webhost = WebHost(args.dist if args.dist.is_dir() else None, target)
+    webhost = WebHost(args.dist if args.dist.is_dir() else None, target, admin_port=admin_port)
 
     async def serve() -> None:
         server = await webhost.serve(args.host, args.port)

@@ -154,6 +154,36 @@ class WebHostTests(unittest.TestCase):
         self.assertTrue(_recv(sock)[1].startswith(b"err "))
         sock.close()
 
+    def test_admin_paths_go_to_the_admin_panel(self):
+        import http.server
+
+        seen = []
+
+        class Admin(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Cookie")))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"admin page")
+
+            def log_message(self, *args):
+                pass
+
+        admin = http.server.HTTPServer(("127.0.0.1", 0), Admin)
+        threading.Thread(target=admin.serve_forever, daemon=True).start()
+        self.addCleanup(admin.shutdown)
+        self.host.admin_port = admin.server_address[1]
+        self.addCleanup(setattr, self.host, "admin_port", None)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            sock.sendall(b"GET /api/status HTTP/1.1\r\nHost: x\r\nCookie: s=1\r\n\r\n")
+            out = b""
+            while chunk := sock.recv(65536):
+                out += chunk
+        self.assertTrue(out.endswith(b"admin page"))
+        self.assertIn(b"admin page", self.http("/admin"))
+        self.assertEqual(seen, [("/api/status", "s=1"), ("/", None)])
+        self.assertIn(b"<title>EQOA</title>", self.http("/"))  # the game's page stays the game's
+
     def test_pages_from_elsewhere_cant_use_the_relay(self):
         sock, answer = _client(self.port, "/eqoa/relay/udp", "https://example.com")
         self.assertIn(b"403", answer.split(b"\r\n")[0])

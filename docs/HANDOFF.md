@@ -631,5 +631,7 @@ other origins. `--with-game` runs the game server on localhost in the same proce
 Render: web service `tunaria-reborn-web` (free, Virginia), https://tunaria-reborn-web.onrender.com,
 auto-deploys main. Build: `pip install .` and clone `webclient-dist` into
 `webclient/dist`; start: `python -m eqoa_server.webhost --with-game --dist webclient/dist`.
-Free tier: sleeps after ~15 min idle, and the save file is lost on every restart or
-deploy. Over HTTPS the page uses WebGPU; served over plain http on a LAN it needs WebGL2.
+Free tier: sleeps after ~15 min idle, and the save file is lost on every restart,
+deploy or spin-down (no persistent disks on free services). The admin panel runs on
+localhost and the web host passes `/admin` and `/api/...` to it, only when
+EQOA_ADMIN_PASSWORD is set (no console there to show a generated password). Over HTTPS the page uses WebGPU; served over plain http on a LAN it needs WebGL2.
