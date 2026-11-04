@@ -17,6 +17,7 @@ import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
 TABLE = "tunaria_save"
+FILES = "tunaria_files"  # files a host without a lasting disk keeps here (the height map)
 SAVE_KEY = "server_state"
 
 
@@ -67,6 +68,21 @@ class DatabaseSave:
 
     def _connection(self) -> "_Open":
         return DatabaseSave._Open(self.url)
+
+    def put_file(self, name: str, data: bytes) -> None:
+        """Keep a file (the height map) in the database, beside the save."""
+        with self._connection() as db:
+            db.run(f"CREATE TABLE IF NOT EXISTS {FILES} (name text PRIMARY KEY, data bytea NOT NULL, "
+                   "updated timestamptz NOT NULL DEFAULT now())")
+            db.run(f"INSERT INTO {FILES} (name, data, updated) VALUES (:name, :data, now()) "
+                   "ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated = now()", name=name, data=data)
+
+    def get_file(self, name: str) -> bytes | None:
+        with self._connection() as db:
+            db.run(f"CREATE TABLE IF NOT EXISTS {FILES} (name text PRIMARY KEY, data bytea NOT NULL, "
+                   "updated timestamptz NOT NULL DEFAULT now())")
+            rows = db.run(f"SELECT data FROM {FILES} WHERE name = :name", name=name)
+        return bytes(rows[0][0]) if rows else None
 
     def read(self) -> str | None:
         with self._connection() as db:

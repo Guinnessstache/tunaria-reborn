@@ -355,6 +355,10 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
           <label>Disc image <input type="text" id="heights-iso" list="heights-isos" placeholder="/path/to/frontiers.iso" style="width:360px"></label>
           <datalist id="heights-isos"></datalist>
         </div>
+        <div class="inline" style="margin-top:8px">
+          <label>Or upload one made elsewhere <input type="file" id="heights-file" accept=".bin"></label>
+          <button class="btn" id="heights-upload">Upload</button>
+        </div>
         <div id="heights-state" class="muted" style="margin-top:8px">…</div>
         <pre id="heights-log" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px" hidden></pre>
       </section>
@@ -1032,6 +1036,19 @@ function renderHeights(h) {
   if (h.running && activeTab === "selftest") heightsTimer = setTimeout(loadHeights, 2000);
 }
 async function loadHeights() { try { renderHeights(await api("/api/heights")); } catch (err) { /* shown elsewhere */ } }
+$("#heights-upload").onclick = async () => {
+  const file = $("#heights-file").files[0];
+  if (!file) { toast("Choose your heights.bin first"); return; }
+  try {
+    $("#heights-state").textContent = `Uploading ${(file.size / 1048576).toFixed(1)} MB…`;
+    const res = await fetch("/api/heights/upload", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/octet-stream", "X-EQOA-Admin": "1" }, body: file });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    toast("Height map in use");
+    renderHeights(data);
+  } catch (err) { toast(err.message); loadHeights(); }
+};
 $("#heights-make").onclick = async () => {
   try {
     const res = await api("/api/heights/make", { iso: $("#heights-iso").value });

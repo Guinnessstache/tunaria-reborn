@@ -38,6 +38,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 RELAY = "/eqoa/relay"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # RFC 6455
 MAX_MESSAGE = 1 << 20  # the client's datagrams and login messages are far smaller
+MAX_UPLOAD = 256 << 20  # what the admin panel takes in one request (a height map, a capture)
 TYPES = {".wasm": "application/wasm", ".js": "text/javascript", ".mjs": "text/javascript",
          ".json": "application/json", ".md": "text/markdown; charset=utf-8", ".svg": "image/svg+xml",
          ".html": "text/html; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
@@ -202,21 +203,28 @@ class WebHost:
     async def _proxy_admin(self, method: str, target: str, path: str, headers, reader, writer) -> None:
         """Pass a request to the admin panel on localhost and its answer back."""
         length = int(headers.get("content-length", "0") or 0)
-        if length > MAX_MESSAGE:
+        if length > MAX_UPLOAD:
             await self._reply(writer, 400, b"too large")
             return
-        body = await reader.readexactly(length) if length else b""
         upstream_target = "/" + target[len(path):] if path in ("/admin", "/admin/") else target
         keep = ("cookie", "content-type", "x-eqoa-admin", "accept", "user-agent")
         lines = [f"{method} {upstream_target} HTTP/1.1", f"Host: 127.0.0.1:{self.admin_port}", "Connection: close",
-                 f"Content-Length: {len(body)}"] + [f"{k}: {headers[k]}" for k in keep if k in headers]
+                 f"Content-Length: {length}"] + [f"{k}: {headers[k]}" for k in keep if k in headers]
         try:
             up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", self.admin_port), 10)
         except (OSError, asyncio.TimeoutError):
             await self._reply(writer, 502, b"the admin panel isn't running")
             return
         try:
-            up_writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body)
+            up_writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+            left = length  # the body passed on as it comes (an upload can be large)
+            while left:
+                chunk = await reader.read(min(left, 1 << 16))
+                if not chunk:
+                    break
+                up_writer.write(chunk)
+                await up_writer.drain()
+                left -= len(chunk)
             await up_writer.drain()
             while chunk := await up_reader.read(65536):
                 writer.write(chunk)
@@ -423,6 +431,9 @@ def _start_game_and_admin(data_path: Path, shard_name: str) -> int | None:
     store = JsonStore(config.data_path, database_url=os.environ.get("DATABASE_URL"))
     print(f"Save: {'Postgres (DATABASE_URL)' if store.database else config.data_path}", flush=True)
     _save_on_exit(store)
+    from . import heights
+
+    heights.restore(config.data_path.parent, store)
     items.configure_overrides(config.data_path.parent / "item_models.json")
     services = ServiceManager(config, store)
     services.start_enabled()

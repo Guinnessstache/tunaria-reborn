@@ -61,6 +61,9 @@ def main() -> None:
     load_settings(config)
     logs = install_log_buffer()
     store = JsonStore(config.data_path, database_url=os.environ.get("DATABASE_URL"))
+    from . import heights
+
+    heights.restore(config.data_path.parent, store)
     items.configure_overrides(config.data_path.parent / "item_models.json")
     services = ServiceManager(config, store)
     stop = threading.Event()

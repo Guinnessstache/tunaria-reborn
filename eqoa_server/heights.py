@@ -141,3 +141,42 @@ def load(path: Path) -> Heights | None:
             heights = None
         _cache[path] = (stamp, heights)
         return heights
+
+
+FILE_NAME = "heights.bin"
+
+
+def install(data: bytes, data_dir: Path, store=None) -> Heights:
+    """Put an uploaded height map in place (checked first), and in the database when the
+    save lives there (a host whose files don't last, like Render's free services)."""
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    tmp = data_dir / (FILE_NAME + ".upload")
+    tmp.write_bytes(data)
+    try:
+        heights = read(tmp)
+    except (ValueError, zlib.error, struct.error) as exc:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(f"that isn't a height map from tools/heightmap ({exc})") from None
+    tmp.replace(data_dir / FILE_NAME)
+    if store is not None and getattr(store, "database", None) is not None:
+        store.database.put_file(FILE_NAME, data)
+    return heights
+
+
+def restore(data_dir: Path, store) -> bool:
+    """On a host whose files don't last: bring the height map back from the database."""
+    path = Path(data_dir) / FILE_NAME
+    if path.exists() or getattr(store, "database", None) is None:
+        return False
+    try:
+        data = store.database.get_file(FILE_NAME)
+    except Exception as exc:  # noqa: BLE001 - the server runs without it
+        print(f"HEIGHTS couldn't read the height map from the database: {exc}", flush=True)
+        return False
+    if data is None:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    print(f"HEIGHTS restored {path} from the database ({len(data) // 1024} KB)", flush=True)
+    return True

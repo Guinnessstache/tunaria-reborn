@@ -344,6 +344,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if url.path == "/api/selftest/capture":
             self._upload_capture(parse_qs(url.query))
             return
+        if url.path == "/api/heights/upload":
+            self._upload_heights()
+            return
         try:
             body = self._body()
         except (ValueError, UnicodeDecodeError):
@@ -533,6 +536,25 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._error(404, "not found")
 
     # -- actions ----------------------------------------------------------
+    MAX_HEIGHTS = 256 * 1024 * 1024
+
+    def _upload_heights(self) -> None:
+        """POST /api/heights/upload: a heights.bin made with tools/heightmap elsewhere (the
+        disc image isn't on this machine), as the body."""
+        from . import heights
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if not 0 < length <= self.MAX_HEIGHTS:
+            self._error(413, "that file is too big for a height map")
+            return
+        try:
+            loaded = heights.install(self.rfile.read(length), self.ctx.config.data_path.parent, self.ctx.store)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+        print(f"ADMIN height map uploaded: {loaded.describe()}")
+        self._json({"ok": True, **self.ctx.heightmap().status()})
+
     def _upload_capture(self, query: dict) -> None:
         """POST /api/selftest/capture?name=...: the raw pcap or pcapng file as the body."""
         runner = self.ctx.self_test()

@@ -44,5 +44,19 @@ class DatabaseSaveTests(unittest.TestCase):
         self.assertIn("homeplayer", JsonStore(self.folder / "elsewhere.json", database_url=URL).accounts)
 
 
+    def test_an_uploaded_height_map_comes_back_on_a_fresh_machine(self):
+        from eqoa_server import heights
+        from tests.test_heights import make_map
+
+        data = make_map(self.folder / "made.bin", [[50.0, 52.0], [54.0, 56.0]]).read_bytes()
+        store = JsonStore(self.folder / "a" / "s.json", database_url=URL)
+        heights.install(data, self.folder / "a", store)
+        fresh = self.folder / "b"
+        self.assertTrue(heights.restore(fresh, JsonStore(fresh / "s.json", database_url=URL)))
+        self.assertAlmostEqual(heights.read(fresh / "heights.bin").ground(0, 104.0, 204.0), 53.0)
+        with self.assertRaises(ValueError):
+            heights.install(b"not a map", self.folder / "c", store)
+
+
 if __name__ == "__main__":
     unittest.main()
