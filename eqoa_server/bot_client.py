@@ -239,6 +239,7 @@ INTERACT_ITEM, ADD_ITEM, REMOVE_ITEM, PLAYER_TUNAR, ADD_SPELL = 0x003E, 0x003B, 
 DIALOGUE_BOX, OPTION_BOX, OPTION_PICKED, QUEST_ADD = 0x0046, 0x0034, 0x0035, 0x007C
 HIT, TARGET_DIED, GRANT_XP, SET_POSITION, ABILITY_COOLDOWN, CLIENT_MESSAGE = 0x00DB, 0x00D9, 0x0020, 0x00B2, 0x00CD, 0x0A7A
 HOTBAR_ASSIGNED, CAST_EFFECT = 0x00B4, 0x00B1
+PLAYER_OBJECT_ID_BASE = 0x01000000  # game_udp's ids for other players
 FIGHT_LIMIT = 120.0  # seconds before a fight counts as stuck
 SEARCH_LEGS = 6  # how far to wander looking for a creature (legs of SEARCH_STEP units)
 SEARCH_STEP = 120.0
@@ -262,6 +263,11 @@ class Entity:
     alive: bool
     level: int
     kind: int  # NPC type (0x81 merchant)
+
+    @property
+    def player(self) -> bool:
+        """Another player (or bot): the server gives them ids from 0x01000000."""
+        return self.object_id >= PLAYER_OBJECT_ID_BASE
 
     @classmethod
     def from_update(cls, object_id: int, name: str, data: bytes) -> "Entity":
@@ -660,7 +666,7 @@ class BotClient:
     def _talk(self) -> str:
         """Talk to the nearest NPC that isn't a merchant or a creature; pick the first choice
         of a choice box."""
-        for npc in self.nearest(lambda e: not e.merchant and e.alive)[:8]:
+        for npc in self.nearest(lambda e: not e.merchant and e.alive and not e.player)[:8]:
             if self.select(npc)[1:2] == b"\x04":
                 continue  # a creature
             self.walk_to(npc.x, npc.z)
@@ -718,9 +724,13 @@ class BotClient:
 
     def fight(self) -> str:
         """Find a creature (wandering if none is in view), attack it until it dies."""
+        searching = time.monotonic()
+        self.travelled = 0.0
         creature = self._find_creature()
         self.target = creature
-        self.walk_to(creature.x, creature.z)
+        self.travelled += self.walk_to(creature.x, creature.z)
+        found = (f" (found after {time.monotonic() - searching:.0f} s, {self.travelled:.0f} units)"
+                 if time.monotonic() - searching > 30 else "")
         self.send(ATTACK, struct.pack("<I", creature.object_id))
         start, hits, taken, deadline = time.monotonic(), 0, 0, time.monotonic() + FIGHT_LIMIT
         while time.monotonic() < deadline:
@@ -745,7 +755,7 @@ class BotClient:
                 elif opcode == TARGET_DIED:
                     self.kill_was_ours = True
                     return (f"killed {creature.name} (L{creature.level}) in {time.monotonic() - start:.0f} s: "
-                            f"{hits} hits landed, {taken} taken")
+                            f"{hits} hits landed, {taken} taken{found}")
         raise BotError(f"{creature.name} still alive after {FIGHT_LIMIT:.0f} s ({hits} hits landed, {taken} taken)")
 
     def _find_creature(self) -> Entity:
@@ -755,7 +765,7 @@ class BotClient:
         level = max(1, self.level)
 
         def look() -> Entity | None:
-            near = self.nearest(lambda e: e.alive and not e.merchant and e.object_id not in tried
+            near = self.nearest(lambda e: e.alive and not e.merchant and not e.player and e.object_id not in tried
                                 and e.level <= level + 3)[:10]
             if near:  # each bot starts at a different one of the nearest, so a fleet spreads out
                 turn = self.spread % len(near)
@@ -783,6 +793,7 @@ class BotClient:
         for attempt in range(3):
             distance, x, z = spots[(self.spread + attempt * 7) % len(spots)]
             travelled += self.walk_to(x, z, 15, TRAVEL_SPEED)
+            self.travelled = travelled
             self.settle(2.0)  # the server fills our entity channels with what's here
             found = look()
             if found is not None:
