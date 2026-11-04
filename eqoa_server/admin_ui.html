@@ -349,6 +349,16 @@ select { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid
         <pre id="bot-report" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:10px">No bot session yet.</pre>
       </section>
       <section class="card" style="margin-top:16px">
+        <h2>Height map <span class="actions"><button class="btn" id="heights-make">Make it</button></span></h2>
+        <p class="hint">Bots don't know the terrain, so without a height map they guess the ground from the creatures around them and float or sink on hills. This reads every world's ground from your own Frontiers disc image (SLUS-20744), with the game's own floor test, into <code id="heights-path">data/heights.bin</code>. Nothing of the disc leaves this machine; it takes a while (every world, every 8 units). Do it once; bots use it from then on.</p>
+        <div class="inline">
+          <label>Disc image <input type="text" id="heights-iso" list="heights-isos" placeholder="/path/to/frontiers.iso" style="width:360px"></label>
+          <datalist id="heights-isos"></datalist>
+        </div>
+        <div id="heights-state" class="muted" style="margin-top:8px">…</div>
+        <pre id="heights-log" class="muted" style="white-space:pre-wrap;font-size:12px;margin-top:6px" hidden></pre>
+      </section>
+      <section class="card" style="margin-top:16px">
         <h2>Captures to compare with</h2>
         <p class="hint">Add a .pcap / .pcapng of the game talking to Sandstorm or another official-style server. Captures of this server are skipped.</p>
         <div class="inline"><input type="file" id="capture-file" accept=".pcap,.pcapng"><button class="btn" id="capture-upload">Upload</button></div>
@@ -446,7 +456,7 @@ $("#tabs").addEventListener("click", (e) => {
   document.querySelectorAll("[data-panel]").forEach((p) => p.hidden = p.dataset.panel !== tab);
   if (tab === "settings") { loadSettings(); loadNetwork(); }
   if (tab === "updates") loadUpdates();
-  if (tab === "selftest") { loadSelfTest(); loadBot(); }
+  if (tab === "selftest") { loadSelfTest(); loadBot(); loadHeights(); }
   if (tab === "accounts") loadModels().catch(() => {});
   refresh();
 });
@@ -1007,6 +1017,28 @@ function renderBot(b) {
   if (b.running && activeTab === "selftest") botTimer = setTimeout(loadBot, 1500);
 }
 async function loadBot() { try { renderBot(await api("/api/bot")); } catch (err) { /* shown elsewhere */ } }
+let heightsTimer = null;
+function renderHeights(h) {
+  $("#heights-make").disabled = h.running;
+  $("#heights-path").textContent = h.path;
+  $("#heights-state").textContent = h.running ? "Making the height map…"
+    : h.loaded ? `In use: ${h.loaded}.` + (h.check ? ` Against players' feet as they walk (${h.check.samples} places): off by ${h.check.median.toFixed(2)} typically, ${h.check.p95.toFixed(2)} at worst (95%).` : " Walk around in game to check it against your own feet.")
+    : "None yet: bots guess the ground.";
+  $("#heights-log").hidden = !h.lines.length;
+  $("#heights-log").textContent = h.lines.join("\n");
+  $("#heights-isos").innerHTML = h.isos.map((p) => `<option value="${esc(p)}">`).join("");
+  if (!$("#heights-iso").value && h.isos.length === 1) $("#heights-iso").value = h.isos[0];
+  clearTimeout(heightsTimer);
+  if (h.running && activeTab === "selftest") heightsTimer = setTimeout(loadHeights, 2000);
+}
+async function loadHeights() { try { renderHeights(await api("/api/heights")); } catch (err) { /* shown elsewhere */ } }
+$("#heights-make").onclick = async () => {
+  try {
+    const res = await api("/api/heights/make", { iso: $("#heights-iso").value });
+    if (!res.ok) toast(res.message);
+    renderHeights(res);
+  } catch (err) { toast(err.message); }
+};
 $("#bot-run").onclick = async () => {
   try { renderBot(await api("/api/bot/run", { walk: Number($("#bot-walk").value) || 20, character: $("#bot-name").value || "Botty", play: $("#bot-play").checked, count: Number($("#bot-count").value) || 1, soak: Number($("#bot-soak").value) || 0 })); }
   catch (err) { toast(err.message); }

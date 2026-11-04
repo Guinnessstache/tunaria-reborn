@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 import random
 import socketserver
 import struct
@@ -99,6 +100,7 @@ class GameSession:
     # Recent de-XORed client updates by message number (later updates are XORed with one).
     client_updates: dict[int, bytes] = field(default_factory=dict)
     last_position_save: float = 0.0
+    last_height_check: float = 0.0
     # Model browser in the admin panel: {"primary" / "secondary" / "shield": model id} drawn live.
     appearance_preview: dict[str, int] | None = None
     # Entity channels 1-0x17: who is drawn on each and the state last sent.
@@ -683,6 +685,9 @@ class GameUDPServer(socketserver.UDPServer):
         self.store = store
         self.server_endpoint = server_endpoint
         self.log_packets = log_packets
+        # How far real players' feet are from the height map's ground (heights.py): the
+        # map checked against the game's own clients as they walk.
+        self.height_errors: deque[float] = deque(maxlen=2000)
         self.sessions: dict[tuple[str, int], GameSession] = {}
         self.discovery: dict[tuple[str, int], DiscoverySession] = {}
         self.lock = threading.RLock()
@@ -1834,6 +1839,29 @@ class GameUDPServer(socketserver.UDPServer):
         session.phase3_self_update_acked = False
         session.phase3_last_self_update = 0.0
 
+    def check_height(self, session: GameSession, position) -> None:
+        """Note how far a real player's feet are from the height map's ground there (bots
+        take their height from the map, so only players count)."""
+        character = session.selected_character
+        account = next((a for a in self.store.accounts.values()
+                        if character is not None and a.account_id == character.account_id), None)
+        if account is None or account.username.lower().startswith("bot"):
+            return
+        from . import heights
+
+        found = heights.load(self.config.data_path.parent / "heights.bin")
+        ground = found.ground(position.world, position.x, position.z, position.y) if found else None
+        if ground is not None and abs(position.y - ground) < 50:  # far off: in the air, a teleport
+            self.height_errors.append(position.y - ground)
+
+    def height_check(self) -> dict | None:
+        """The map against players' feet: how many places, and the error's median and 95%."""
+        errors = sorted(abs(e) for e in self.height_errors)
+        if not errors:
+            return None
+        return {"samples": len(errors), "median": errors[len(errors) // 2],
+                "p95": errors[min(len(errors) - 1, int(len(errors) * 0.95))]}
+
     def session_in_world(self, character_id: int) -> GameSession | None:
         with self.lock:
             return next(
@@ -1867,6 +1895,9 @@ class GameUDPServer(socketserver.UDPServer):
         character.heading = position.heading
         session.motion = (position.velocity_x, position.velocity_z, position.animation)
         now = time.monotonic()
+        if now - session.last_height_check >= HEIGHT_CHECK_INTERVAL:
+            session.last_height_check = now
+            self.check_height(session, position)
         if now - session.last_position_save >= POSITION_SAVE_INTERVAL:
             session.last_position_save = now
             self.store.save_soon()
@@ -2144,6 +2175,7 @@ POSITION_SAVE_INTERVAL = 15.0
 ENTITY_CHANNELS = 0x17  # client object channels 1-0x17; 0 is the player's own character
 ENTITY_RANGE = 200.0
 ENTITY_REFRESH_INTERVAL = 1.0
+HEIGHT_CHECK_INTERVAL = 2.0  # how often a player's feet are checked against the height map
 PLAYER_REFRESH_INTERVAL = 0.5  # other players' positions on a client's channels
 PLAYER_SLOTS = 8  # of the 23 channels, at most this many show other players
 PLAYER_OBJECT_ID_BASE = 0x01000000  # other players' object ids (NPCs' start at 0x10000)

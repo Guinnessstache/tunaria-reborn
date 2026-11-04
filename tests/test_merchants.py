@@ -625,6 +625,20 @@ class OtherPlayersTests(InWorldCase):
         self.assertEqual(self.sent[-1][0], 0x10)
 
 
+class HeightCheckTests(InWorldCase):
+    def test_a_players_feet_are_checked_against_the_height_map(self):
+        from eqoa_server.protocol import ClientPosition
+        from tests.test_heights import make_map
+
+        make_map(self.store.path.parent / "heights.bin", [[50.0, 50.0], [50.0, 50.0]], x0=0.0, z0=0.0)
+        self.server.config.data_path = self.store.path
+        self.server.check_height(self.session, ClientPosition(0, 4.0, 50.4, 4.0, 0.0))
+        self.server.check_height(self.session, ClientPosition(0, 4.0, 49.8, 4.0, 0.0))
+        check = self.server.height_check()
+        self.assertEqual(check["samples"], 2)
+        self.assertAlmostEqual(check["p95"], 0.4, places=3)
+
+
 class CombatTests(CombatCase):
     """Fighting a creature, in the message shapes of the Sandstorm capture."""
 

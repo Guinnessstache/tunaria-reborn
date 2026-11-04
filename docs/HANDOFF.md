@@ -641,3 +641,22 @@ save in one row of `tunaria_save` (dbsave.py, pg8000, pure Python) instead of th
 a file save is carried over on the first start. Writes go out on a thread of their own,
 newest first, retried with backoff; SIGTERM (Render stopping the service) saves and waits
 for the write. tests/test_dbsave.py runs when TUNARIA_TEST_DATABASE_URL names a database.
+
+### Height map (2026-11-03)
+
+Bots had no terrain and guessed their height from nearby NPCs (floating, sinking on hills).
+`tools/heightmap` (Rust) reads every world from the user's own Frontiers disc image with
+DabDavis's client crates (pinned in its Cargo.toml) and probes each grid point every 8
+units with the game's own floor test (`World::collide_sphere`, `FilterKind::WalkFloor`,
+which passes through characters), keeping every floor top-down (up to 4: roofs, floors,
+bridges, trees over grass, caves). Format in its main.rs; zlib, i16 heights x16.
+`.github/workflows/heightmap.yml` builds Linux and Windows programs with a read-only token
+and commits them to the `heightmap-dist` branch with SHA256SUMS. Admin panel, Self-test tab,
+"Height map": give the disc image's path, Make it: the server downloads the program,
+checks its SHA256, runs it into data/heights.bin (never committed: made from the disc).
+`heights.py` reads it (reloaded when the file changes) and answers the floor nearest under
+a given height (STEP_UP 3), blending the grid's four corners unless they're more than 1.5 x
+the step apart (walls, roof edges). Bots use it when it's there (ground checked every 0.5
+units moved), else they guess as before. The game server checks real players' feet
+against the map every 2 s (accounts not named bot*) and the admin box shows the typical
+and 95% error.

@@ -378,7 +378,7 @@ class Connection:
 class BotClient:
     def __init__(self, host: str, username: str = "bot1", password: str = "bot1", character: str = "Botty",
                  race: int = 1, klass: int = 7, *, auth_port: int = AUTH_PORT, game_port: int = GAME_PORT,
-                 allow_remote: bool = False, timeout: float = 10.0, log=print) -> None:
+                 allow_remote: bool = False, timeout: float = 10.0, log=print, heights_path=None) -> None:
         if not allow_remote and not _private(host):
             raise BotError(f"{host} isn't on a private network. Bots only connect to your own server unless "
                            "allow_remote is set, and only where the server's rules allow bots.")
@@ -387,6 +387,8 @@ class BotClient:
         self.username, self.password, self.character_name = username, password, character
         self.race, self.klass = race, klass
         self.timeout, self.log = timeout, log
+        # the server's height map (data/heights.bin, made from the disc: heights.py), if any
+        self.heights_path = heights_path
         self.endpoint = 0x8000 | random.randrange(0x7FFF)
         self.instance = (0x07 << 16) | self.endpoint
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -858,10 +860,26 @@ class BotClient:
         token = hashlib.sha256(self.password.encode()).digest()
         return b"\x00" + struct.pack("<II", 3, 4) + b"EQOA" + struct.pack("<I", len(name)) + name + b"\x01" + token
 
+    def _has_heights(self) -> bool:
+        if not self.heights_path:
+            return False
+        from . import heights
+
+        return heights.load(self.heights_path) is not None
+
     def ground_y(self, x: float, z: float) -> float | None:
-        """The bot has no terrain, so it guesses the ground's height from things standing on it:
-        the creatures and townsfolk in view and the server's NPC table, weighted to the nearest
-        three (keeping the height it entered the world at left it floating once it travelled)."""
+        """The ground's height at (x, z): from the server's height map (the game's own floors,
+        the one under the bot's feet) when there is one; else guessed from things standing on
+        it: the creatures and townsfolk in view and the server's NPC table, weighted to the
+        nearest (keeping the height it entered the world at left it floating once it travelled)."""
+        if self.heights_path:
+            from . import heights
+
+            found = heights.load(self.heights_path)
+            if found is not None:
+                y = found.ground(int(self.position[0]), x, z, self.position[2])
+                if y is not None:
+                    return y
         points = [(e.x, e.y, e.z) for e in self.entities.values() if e.object_id < PLAYER_IDS]
         points += _npc_points(int(self.position[0]))
         near = sorted(((math.hypot(px - x, pz - z), py) for px, py, pz in points
@@ -877,7 +895,7 @@ class BotClient:
     def _send_update(self, velocity: tuple[float, float] = (0.0, 0.0), animation: int = STANDING) -> None:
         self.update_number += 1
         _, x, _, z, _ = self.position
-        if math.hypot(x - self._ground_at[0], z - self._ground_at[1]) > 5.0:
+        if math.hypot(x - self._ground_at[0], z - self._ground_at[1]) > (0.5 if self._has_heights() else 5.0):
             self._ground_at = (x, z)
             ground = self.ground_y(x, z)
             if ground is not None:
@@ -1001,7 +1019,7 @@ FULL_REPORTS = 10  # fleets this size or smaller get every bot's full report; bi
 
 def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = False, soak_minutes: float = 0.0, *,
               auth_port: int = AUTH_PORT, game_port: int = GAME_PORT, allow_remote: bool = False, klass: int = 7,
-              race: int = 1, log=print) -> tuple[list[Report], str]:
+              race: int = 1, log=print, heights_path=None) -> tuple[list[Report], str]:
     """Several bots at once (accounts bot1..botN, characters Botty, Botty2...), each in its
     own thread, started a second apart. Returns their reports and a summary."""
     import threading
@@ -1013,7 +1031,7 @@ def run_fleet(host: str, count: int, walk_seconds: float = 10.0, play: bool = Fa
         name = "Botty" if index == 0 else f"Botty{index + 1}"
         try:
             bot = BotClient(host, f"bot{index + 1}", f"bot{index + 1}", name, race, klass, auth_port=auth_port,
-                            game_port=game_port, allow_remote=allow_remote,
+                            game_port=game_port, allow_remote=allow_remote, heights_path=heights_path,
                             log=lambda line, n=name: log(f"[{n}] {line}"))
             bot.spread = index
             reports[index] = bot.run(walk_seconds, play, soak_minutes)
@@ -1073,8 +1091,9 @@ class BotRunner:
 
     MAX_BOTS = 100
 
-    def __init__(self, auth_port: int, game_port: int) -> None:
+    def __init__(self, auth_port: int, game_port: int, heights_path=None) -> None:
         self.auth_port, self.game_port = auth_port, game_port
+        self.heights_path = heights_path
         self.running = False
         self.report: dict | None = None
         self.text = ""
@@ -1092,7 +1111,7 @@ class BotRunner:
             try:
                 if count == 1:
                     bot = BotClient("127.0.0.1", "bot1", "bot1", character, race, klass, auth_port=self.auth_port,
-                                    game_port=self.game_port)
+                                    game_port=self.game_port, heights_path=self.heights_path)
                     report = bot.run(walk_seconds, play, soak_minutes)
                     self.report, self.text = asdict(report) | {"ok": report.ok}, report.text()
                 else:
@@ -1103,7 +1122,8 @@ class BotRunner:
                     command = [sys.executable, "-m", "eqoa_server.bot_client", "--host", "127.0.0.1",
                                "--auth-port", str(self.auth_port), "--game-port", str(self.game_port),
                                "--count", str(count), "--walk", str(walk_seconds), "--soak", str(soak_minutes),
-                               "--klass", str(klass), "--race", str(race), "--quiet"] + (["--play"] if play else [])
+                               "--klass", str(klass), "--race", str(race), "--quiet"] + (["--play"] if play else []) \
+                        + (["--heights", str(self.heights_path)] if self.heights_path else [])
                     self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                     text=True, cwd=str(Path(__file__).resolve().parents[1]))
                     output, _ = self.process.communicate()
@@ -1135,6 +1155,8 @@ def main() -> None:
     parser.add_argument("--soak", type=float, default=0.0, help="minutes to stay in the world")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--quiet", action="store_true", help="print only the report")
+    parser.add_argument("--heights", type=Path, default=Path("data/heights.bin"),
+                        help="the server's height map (made from your disc by tools/heightmap), if there is one")
     parser.add_argument("--auth-port", type=int, default=AUTH_PORT)
     parser.add_argument("--game-port", type=int, default=GAME_PORT)
     parser.add_argument("--allow-remote", action="store_true",
@@ -1142,13 +1164,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.count > 1:
         reports, summary = run_fleet(args.host, args.count, args.walk, args.play, args.soak,
-                                     auth_port=args.auth_port, game_port=args.game_port,
+                                     auth_port=args.auth_port, game_port=args.game_port, heights_path=args.heights,
                                      allow_remote=args.allow_remote, klass=args.klass, race=args.race,
                                      log=lambda line: None if args.json or args.quiet else print(line))
         print(json.dumps([asdict(r) for r in reports], indent=1) if args.json else summary)
         sys.exit(0 if all(r.ok for r in reports) else 1)
     bot = BotClient(args.host, args.user, args.password, args.character, args.race, args.klass,
                     auth_port=args.auth_port, game_port=args.game_port, allow_remote=args.allow_remote,
+                    heights_path=args.heights,
                     log=lambda line: None if args.json or args.quiet else print(line))
     report = bot.run(args.walk, args.play, args.soak)
     print(json.dumps(asdict(report), indent=1) if args.json else report.text())

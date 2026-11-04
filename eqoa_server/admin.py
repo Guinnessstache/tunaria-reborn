@@ -184,17 +184,26 @@ class AdminContext:
     exit_code: int = 0
     selftest: SelfTestRunner | None = None
     _bot: object = None
+    _heightmap: object = None
 
     def self_test(self) -> SelfTestRunner:
         if self.selftest is None:
             self.selftest = SelfTestRunner(self.config.data_path.parent / "captures")
         return self.selftest
 
+    def heightmap(self):
+        from .heightmap_job import HeightmapJob
+
+        if getattr(self, "_heightmap", None) is None:
+            object.__setattr__(self, "_heightmap", HeightmapJob(self.config.data_path.parent))
+        return self._heightmap
+
     def bot(self):
         from .bot_client import BotRunner
 
         if getattr(self, "_bot", None) is None:
-            object.__setattr__(self, "_bot", BotRunner(self.services.port("auth"), self.services.port("game")))
+            object.__setattr__(self, "_bot", BotRunner(self.services.port("auth"), self.services.port("game"),
+                                                       self.config.data_path.parent / "heights.bin"))
         return self._bot
 
     def ignored_opcodes(self) -> dict:
@@ -293,6 +302,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/update": self._update_status,
             "/api/selftest": lambda: self.ctx.self_test().status(),
             "/api/bot": lambda: self.ctx.bot().status(),
+            "/api/heights": lambda: {**self.ctx.heightmap().status(),
+                                     "check": self.ctx.services.game_server.height_check()
+                                     if self.ctx.services.game_server else None},
         }
         if url.path == "/api/network":
             self._json(self._network_status(refresh=(query.get("refresh") or ["1"])[0] != "0"))
@@ -493,6 +505,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             started = ctx.self_test().start(bool(body.get("quick")), ctx.ignored_opcodes)
             print(f"ADMIN self-test {'started' if started else 'already running'}")
             self._json({"ok": started, **ctx.self_test().status()})
+        elif parts == ["heights", "make"]:
+            started, message = ctx.heightmap().start(str(body.get("iso", "")).strip())
+            print(f"ADMIN height map: {message}")
+            self._json({"ok": started, "message": message, **ctx.heightmap().status()})
         elif parts == ["bot", "run"]:
             walk = max(1.0, min(600.0, float(body.get("walk", 20))))
             started = ctx.bot().start(walk, str(body.get("character") or "Botty")[:20], int(body.get("klass", 7)),
