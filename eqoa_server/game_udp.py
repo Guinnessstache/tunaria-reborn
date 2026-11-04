@@ -1214,10 +1214,35 @@ class GameUDPServer(socketserver.UDPServer):
             result = f"equipped {name}"
         elif items.is_scroll(entry["item"]):
             return self.scribe(session, index)
+        elif items.consumable(entry["item"]) is not None:
+            return self.eat(session, index)
         else:
             return [f"used {name} (not handled yet)"]
         self.refresh_appearance(session)
         return [result]
+
+    def eat(self, session: GameSession, index: int) -> list[str]:
+        """Eat or drink one from a stack, as Sandstorm did: RemoveItem (0x3C, middle byte 0),
+        a cast look on yourself with no cast time (0xB1, effect 0xCF84F260), then a "Food"
+        buff healing every tick, each tick shown as a hit on yourself (0xDB)."""
+        character = session.selected_character
+        entry = character.inventory[index]
+        item = items.item_patterns()[entry["item"]]
+        kind = items.consumable(entry["item"])
+        position = items.client_index(character.inventory, index)
+        if entry.get("stack", 1) > 1:
+            entry["stack"] -= 1
+            self.store.save_soon()
+        else:
+            self.store.remove_item(character.character_id, index)
+        self.send_reliable(session, REMOVE_INVENTORY_ITEM_OPCODE, bytes([position & 0xFF, 0]) + _write_zigzag(1))
+        self.send_reliable(session, CAST_EFFECT_OPCODE, struct.pack("<II", PHASE3_SESSION_ID, PHASE3_SESSION_ID)
+                           + b"\x00" + struct.pack("<iI", 0, MEAL_EFFECT))
+        meal = ability_effects.eat(session.buffs, kind, item["level"], time.monotonic())
+        notes = self.run_buffs(session, time.monotonic())
+        self.update_player_channels(session)
+        return [f"{'ate' if kind == items.FOOD else 'drank'} {item['name']} "
+                f"({meal.change} {'HP' if kind == items.FOOD else 'power'} a tick for {ability_effects.MEAL_SECONDS:.0f} s)"] + notes
 
     def scribe(self, session: GameSession, index: int) -> list[str]:
         """Use a spell scroll: the character learns the spell and the scroll is used up.
@@ -1787,7 +1812,12 @@ class GameUDPServer(socketserver.UDPServer):
         character = session.selected_character
         if character is None or not session.buffs:
             return []
+        hp_before = character.hp
         changed, said = ability_effects.tick(character, session.buffs, now)
+        if character.hp > hp_before and any(buff.spell == items.FOOD for buff in session.buffs):
+            # Sandstorm showed each food tick as a hit on yourself of the heal's size
+            self.send_reliable(session, HIT_OPCODE, struct.pack("<I", PHASE3_SESSION_ID)
+                               + _write_varuint(character.hp - hp_before) + struct.pack("<I", PHASE3_SESSION_ID))
         for line in said:
             self.send_client_message(session, line)
         self.sync_speed(session)
@@ -2241,6 +2271,7 @@ SET_POSITION_OPCODE = 0x00B2
 ADD_SPELL_OPCODE = 0x00B3
 HOTBAR_ASSIGNED_OPCODE = 0x00B4
 CAST_EFFECT_OPCODE = 0x00B1
+MEAL_EFFECT = 0xCF84F260  # the cast look Sandstorm sent when eating
 ATTACK_OPCODE = 0x000F
 LOOT_OPCODE = 0x0015
 LOOT_CLOSE_OPCODE = 0x0016

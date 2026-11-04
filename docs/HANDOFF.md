@@ -642,6 +642,18 @@ a file save is carried over on the first start. Writes go out on a thread of the
 newest first, retried with backoff; SIGTERM (Render stopping the service) saves and waits
 for the write. tests/test_dbsave.py runs when TUNARIA_TEST_DATABASE_URL names a database.
 
+### Food and drink (2026-11-03)
+
+From the Sandstorm capture (an Elf druid, level 2, using thicket rations): InteractItem
+0x3E with the stack's key, then RemoveItem 0x3C (position, 0, zigzag 1), CastEffect 0xB1
+from yourself to yourself with no cast time and effect 0xCF84F260, a "Food" buff (icon
+0x828563AF) listed about 30 s, and 6 HP every ~6 s, each shown as 0xDB on yourself.
+`items.consumable` says FOOD for "... health regeneration" items and rations, DRINK for
+"... power regeneration" (quest items like bat meat are neither); `GameUDPServer.eat` does
+the above, `ability_effects.eat` starts the buff (a new meal replaces the old). Not known:
+how the amount grows with the item's level (we use 4 + 2 x level: 6 for rations), and
+drinks (taken to work the same on power, with the same look and icon). It works mid-fight.
+
 ### Height map (2026-11-03)
 
 Bots had no terrain and guessed their height from nearby NPCs (floating, sinking on hills).

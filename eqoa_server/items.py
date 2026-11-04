@@ -376,6 +376,24 @@ def is_scroll(item_id: int) -> bool:
     return item is not None and _scribes(item) is not None
 
 
+FOOD, DRINK = "Food", "Drink"
+
+
+def consumable(item_id: int) -> str | None:
+    """FOOD or DRINK for things you eat or drink (by the item's own description: "...
+    increase health regeneration" / "... power regeneration", and the starting rations),
+    else None. Quest items that only mention food ("a chunk of bat meat") aren't."""
+    item = item_patterns().get(item_id)
+    if item is None or item.get("slot", -1) != -1 or item.get("max_stack", 1) <= 1:
+        return None
+    text = f"{item['name']} {item.get('description', '')}".lower()
+    if "power regeneration" in text:
+        return DRINK
+    if "health regeneration" in text or item_id in RATIONS_BY_RACE.values() or "ration" in text:
+        return FOOD
+    return None
+
+
 def scroll_spell(item_id: int, klass: int) -> int | None:
     """The spell id a scroll teaches a character of ``klass``, or None when the class
     can't scribe it."""

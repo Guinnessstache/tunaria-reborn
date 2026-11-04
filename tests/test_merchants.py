@@ -129,6 +129,32 @@ class MerchantHandlerTests(unittest.TestCase):
         self.assertIn(ability["name"].encode("utf-16-le"), add_spell)
         self.assertIn("scribed", notes[0])
 
+    def test_eating_uses_one_and_heals_over_time_as_on_sandstorm(self):
+        from eqoa_server import ability_effects
+
+        rations = items.RATIONS_BY_RACE[1]  # thicket rations, eaten on Sandstorm
+        self.character.inventory = []
+        entry = self.store.give_item(self.character.character_id, rations, stack=5)
+        self.character.hp = 10
+        notes = self.server.interact_item(self.session, struct.pack("<I", entry["key"]) + b"\0\0\0\0" + zigzag(0))
+        self.assertIn("ate thicket rations", notes[0])
+        self.assertEqual(self.character.inventory[0]["stack"], 4)
+        ops = [op for op, _ in self.sent]
+        self.assertEqual(ops[:3], [0x3C, 0xB1, 0xDB])  # used one, the look, the first tick
+        self.assertEqual(self.sent[0][1], bytes([0, 0]) + zigzag(1))
+        self.assertEqual(self.sent[1][1][8:], b"\0" + struct.pack("<iI", 0, 0xCF84F260))
+        self.assertEqual(self.character.hp, 16)  # 6 a tick, as Sandstorm healed
+        names = ability_effects.buff_list(self.character, self.session.buffs)
+        self.assertEqual(names, [(ability_effects.MEAL_ICON, "Food")])
+        self.server.run_buffs(self.session, self.session.buffs[0].next_tick)
+        self.assertEqual(self.character.hp, 22)
+        self.server.run_buffs(self.session, self.session.buffs[0].expires + 1)
+        self.assertEqual(self.session.buffs, [])  # worn off after 30 s: a tick at once, then every 6 s
+        self.assertEqual(self.character.hp, 46)
+        water = next(k for k, v in items.item_patterns().items() if v["name"] == "well water")
+        self.assertEqual(items.consumable(water), items.DRINK)
+        self.assertIsNone(items.consumable(1121))  # "a chunk of brown bat meat": a quest item
+
     def test_items_are_named_by_key_after_one_is_used_up(self):
         # In game a level 16 Magician scroll did nothing after another scroll was scribed:
         # the client still names items by their record keys, but our positions had shifted.

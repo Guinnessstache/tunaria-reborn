@@ -33,6 +33,25 @@ class Buff:
     next_tick: float = 0.0
 
 
+# Eating or drinking (seen on Sandstorm: thicket rations at level 2): a "Food" buff for
+# about 30 s healing 6 every tick, with icon 0x828563AF. Drinks are taken to work the same
+# on power. How the amount grows with the item's level isn't known: 4 + 2 x its level.
+MEAL_SECONDS = 30.0
+MEAL_ICON = 0x828563AF
+
+
+def meal_amount(item_level: int) -> int:
+    return 4 + 2 * max(1, item_level)
+
+
+def eat(buffs: list[Buff], kind: str, item_level: int, now: float) -> Buff:
+    """Start a meal (items.FOOD or items.DRINK): replaces one already going, ticks at once."""
+    buffs[:] = [buff for buff in buffs if buff.spell != kind]
+    meal = Buff(kind, "HoT" if kind == items.FOOD else "PoT", meal_amount(item_level), now + MEAL_SECONDS, now)
+    buffs.append(meal)
+    return meal
+
+
 def guide_row(character: Character, spell_name: str) -> dict | None:
     """The guide's row for one of the character's abilities, by name."""
     if not 0 <= character.klass < len(items.CLASS_NAMES):
@@ -71,7 +90,8 @@ def buff_list(character: Character, buffs: list[Buff]) -> list[tuple[int, str]]:
     seen: dict[str, int] = {}
     for buff in buffs:
         if buff.spell not in seen:
-            seen[buff.spell] = items.spell_icon(buff.spell, character.klass)
+            seen[buff.spell] = (MEAL_ICON if buff.spell in (items.FOOD, items.DRINK)
+                                else items.spell_icon(buff.spell, character.klass))
     return [(icon, name) for name, icon in seen.items()]
 
 
