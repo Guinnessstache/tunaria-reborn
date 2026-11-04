@@ -136,8 +136,12 @@ def parse_auth_request(data: bytes) -> AuthRequest:
         return AuthRequest(length, message_type, username, password)
 
     if message_type == SUBMIT_ACCT_CREATE:
-        username, offset = _read_fixed_ascii(data, 0x0C, 20)
-        password = data[0x2C:0x40].hex() if len(data) >= 0x40 else ""
+        # CreateAccount (476 bytes): the name at 0x0C (32 bytes), the password DES-encrypted
+        # at 0x2C (32 bytes), as the login request's at 48, so read the same way: an
+        # account made here must take the same password at login (it used to keep a hex of
+        # 20 of its bytes, and the login that follows was refused as a wrong password).
+        username, offset = _read_fixed_ascii(data, 0x0C, 32)
+        password, offset = _read_fixed_ascii(data, 0x2C, 32)
         return AuthRequest(length, message_type, username, password)
 
     if message_type == CHANGE_PASSWORD:

@@ -22,6 +22,28 @@ def fixed(value: str, size: int) -> bytes:
 
 
 class AuthTests(unittest.TestCase):
+    def test_an_account_made_with_create_account_logs_in_with_its_password(self):
+        import os
+        from pathlib import Path
+        import tempfile
+
+        secret = os.urandom(32)  # the client's DES-encrypted password, the same in both requests
+        create = bytearray(476)
+        struct.pack_into(">II", create, 0, 476, SUBMIT_ACCT_CREATE)
+        create[0x0C:0x0C + 32] = fixed("webplayer", 32)
+        create[0x2C:0x4C] = secret
+        login = bytearray(148)
+        struct.pack_into(">II", login, 0, 148, LOGIN_REQUEST)
+        login[16:48] = fixed("webplayer", 32)
+        login[48:80] = secret
+        store = JsonStore(Path(tempfile.mkdtemp()) / "s.json")
+        server = AuthServer.__new__(AuthServer)
+        server.store, server.config, server._last_username_by_client = store, ServerConfig(), {}
+        server.process_auth_request(parse_auth_request(bytes(create)))
+        self.assertIn("webplayer", store.accounts)
+        reply = server.process_auth_request(parse_auth_request(bytes(login)))
+        self.assertEqual(struct.unpack_from(">II", reply, 4), (LOGIN_RESPONSE, 0))
+
     def test_parse_login_request(self):
         body = (
             struct.pack(">II", 0, LOGIN_REQUEST)
