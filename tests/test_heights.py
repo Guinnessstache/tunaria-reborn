@@ -71,6 +71,28 @@ class HeightTests(unittest.TestCase):
         self.assertAlmostEqual(bot.ground_y(104.0, 204.0), 53.0)
 
 
+class CreatureHeightTests(unittest.TestCase):
+    def test_a_chasing_creature_runs_over_the_hill_and_goes_home_to_its_spawn_height(self):
+        from dataclasses import replace
+
+        from eqoa_server import combat, npcs
+
+        folder = Path(tempfile.mkdtemp())
+        hm = heights.read(make_map(folder / "h.bin", [[50.0, 52.0, 54.0], [50.0, 52.0, 54.0]]))
+        npc = npcs.Npc(1, "a rat", 0, 100.0, 50.0, 200.0, 0, 1, 1, 0, (0, 0, 0), (), (), creature=True)
+        mob = combat.new_mob(npc)
+        ground = lambda x, z, near: hm.ground(0, x, z, near)  # noqa: E731
+        self.assertTrue(combat.step_toward(mob, 120.0, 204.0, 1.0, speed=8.0, stop=0.0, ground=ground))
+        self.assertAlmostEqual(mob.height, hm.ground(0, mob.x, mob.z), places=3)
+        self.assertGreater(mob.height, 51.0)  # up the slope, not at its spawn's 50
+        update = combat.update_bytes(mob)
+        self.assertEqual(update, combat.update_bytes(replace(mob)))  # the same mob draws the same
+        combat.step_toward(mob, 5000.0, 204.0, 1.0, speed=8.0, stop=0.0, ground=lambda *a: 900.0)
+        self.assertLess(mob.height, 60.0)  # a "ground" far off isn't stepped onto
+        combat.send_home(mob)
+        self.assertEqual((mob.x, mob.height, mob.z, mob.target), (100.0, 50.0, 200.0, None))
+
+
 class HeightmapJobTests(unittest.TestCase):
     def test_runs_the_program_on_the_disc_and_the_map_is_used(self):
         import sys

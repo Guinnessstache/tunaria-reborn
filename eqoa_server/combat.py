@@ -80,10 +80,15 @@ class Mob:
     rooted_until: float = 0.0  # can't move until then (roots: "Statistic Absolute" Speed)
     slowed_until: float = 0.0  # moves at ``slow`` x its speed until then (snares)
     slow: float = 1.0
+    y: float | None = None  # its height off the spawn spot (the ground under it, from the height map)
 
     @property
     def object_id(self) -> int:
         return self.npc.object_id
+
+    @property
+    def height(self) -> float:
+        return self.npc.y if self.y is None else self.y
 
 
 def max_hp_for(level: int) -> int:
@@ -100,7 +105,7 @@ def update_bytes(mob: Mob, facing: int | None = None) -> bytes:
     if facing is not None:
         mob.facing = facing
     moved = npcs.Npc(**{**{f: getattr(mob.npc, f) for f in mob.npc.__dataclass_fields__},
-                        "x": mob.x, "z": mob.z, "facing": mob.npc.facing if mob.facing is None else mob.facing})
+                        "x": mob.x, "y": mob.height, "z": mob.z, "facing": mob.npc.facing if mob.facing is None else mob.facing})
     update = bytearray(npcs.build_npc_update(moved))
     update[npcs.HP] = max(0, min(255, round(255 * mob.hp / mob.max_hp))) if mob.state == ALIVE else 0
     update[npcs.HP_SHOWN] = 1 if mob.state == ALIVE else 3
@@ -129,8 +134,10 @@ STOP_DISTANCE = 2.0  # how close a chaser gets (Sandstorm: 1-2 units)
 
 
 def step_toward(mob: Mob, x: float, z: float, seconds: float, stop: float = STOP_DISTANCE,
-                speed: float = MOB_SPEED) -> bool:
-    """Move toward (x, z), stopping ``stop`` short. True if it moved (and sets its velocity)."""
+                speed: float = MOB_SPEED, ground=None) -> bool:
+    """Move toward (x, z), stopping ``stop`` short. True if it moved (and sets its velocity).
+    ``ground(x, z, near)`` gives the ground's height there (the height map), so it runs over
+    hills instead of floating or sinking at its spawn height; None where there's no map."""
     gap = distance(x, z, mob) - stop
     if gap <= 0.05:
         mob.velocity = (0.0, 0.0)
@@ -142,7 +149,20 @@ def step_toward(mob: Mob, x: float, z: float, seconds: float, stop: float = STOP
     step = min(gap, speed * seconds)
     mob.x += step * math.sin(angle)
     mob.z += step * math.cos(angle)
+    if ground is not None:
+        y = ground(mob.x, mob.z, mob.height)
+        if y is not None and abs(y - mob.height) < GROUND_JUMP:
+            mob.y = y
     return True
+
+
+GROUND_JUMP = 50.0  # a ground further than this from where it is isn't its ground (off the map's edge)
+
+
+def send_home(mob: Mob) -> None:
+    """Back to its spawn spot, whole, forgetting whoever it was after."""
+    mob.target, mob.x, mob.y, mob.z, mob.hp, mob.dots = None, mob.npc.x, None, mob.npc.z, mob.max_hp, []
+    mob.animation, mob.facing, mob.velocity = 0, None, (0.0, 0.0)
 
 
 def player_swing(level: int, strength: int, weapon_damage: int, rng: random.Random) -> int:

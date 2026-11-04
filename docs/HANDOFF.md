@@ -659,4 +659,9 @@ a given height (STEP_UP 3), blending the grid's four corners unless they're more
 the step apart (walls, roof edges). Bots use it when it's there (ground checked every 0.5
 units moved), else they guess as before. The game server checks real players' feet
 against the map every 2 s (accounts not named bot*) and the admin box shows the typical
-and 95% error.
+and 95% error. Checked on Render: 108 places, median 0.08, 95% 0.59.
+
+Creatures and pets use it too: `combat.Mob.y` (None = the spawn's height; `Mob.height`)
+is set from `GameUDPServer.ground_for(world)` each step a chaser or pet moves (a ground
+more than 50 away is ignored), and the object update sends it. `combat.send_home` puts a
+creature back at its spawn spot and height when it gives up or its target dies.

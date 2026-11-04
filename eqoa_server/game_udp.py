@@ -1617,7 +1617,7 @@ class GameUDPServer(socketserver.UDPServer):
         session = self._session_of(mob.target)
         character = session.selected_character if session is not None else None
         if character is None or math.hypot(character.x - mob.npc.x, character.z - mob.npc.z) > combat.LEASH:
-            mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing, mob.velocity = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None, (0.0, 0.0)
+            combat.send_home(mob)
             self.refresh_mob(mob)
             return notes + [f"{mob.npc.name} gives up"]
         if now < mob.rooted_until:
@@ -1625,7 +1625,8 @@ class GameUDPServer(socketserver.UDPServer):
             mob.velocity = (0.0, 0.0)
         else:
             pace = combat.MOB_SPEED * (mob.slow if now < mob.slowed_until else 1.0)
-            moved = combat.step_toward(mob, character.x, character.z, seconds, speed=pace)
+            moved = combat.step_toward(mob, character.x, character.z, seconds, speed=pace,
+                                        ground=self.ground_for(mob.npc.world))
         if moved:
             mob.animation = combat.RUN
             self.refresh_mob(mob, combat.facing_toward(mob, character.x, character.z))
@@ -1686,7 +1687,8 @@ class GameUDPServer(socketserver.UDPServer):
             foe = next((m for m in self.mobs.values()
                         if m.state == combat.ALIVE and m.target == character.character_id), None)
         if foe is not None:
-            if combat.step_toward(pet, foe.x, foe.z, seconds, speed=combat.MOB_SPEED * 1.5):
+            if combat.step_toward(pet, foe.x, foe.z, seconds, speed=combat.MOB_SPEED * 1.5,
+                                 ground=self.ground_for(character.zone_id)):
                 pet.animation = combat.RUN
                 self.refresh_mob(pet, combat.facing_toward(pet, foe.x, foe.z))
                 return []
@@ -1699,7 +1701,8 @@ class GameUDPServer(socketserver.UDPServer):
             return []
         far = combat.distance(character.x, character.z, pet) > pets.FOLLOW_DISTANCE
         if (far or pet.animation == combat.RUN) and combat.step_toward(
-                pet, character.x, character.z, seconds, stop=pets.FOLLOW_STOP, speed=combat.MOB_SPEED * 1.5):
+                pet, character.x, character.z, seconds, stop=pets.FOLLOW_STOP, speed=combat.MOB_SPEED * 1.5,
+                ground=self.ground_for(character.zone_id)):
             pet.animation = combat.RUN
             self.refresh_mob(pet, combat.facing_toward(pet, character.x, character.z))
         elif pet.animation == combat.RUN:
@@ -1717,7 +1720,7 @@ class GameUDPServer(socketserver.UDPServer):
         character.hp, character.mana = character.max_hp, character.max_mana
         for mob in self.mobs.values():
             if mob.target == character.character_id:
-                mob.target, mob.x, mob.z, mob.hp, mob.dots, mob.animation, mob.facing, mob.velocity = None, mob.npc.x, mob.npc.z, mob.max_hp, [], 0, None, (0.0, 0.0)
+                combat.send_home(mob)
                 self.refresh_mob(mob)
         world, x, y, z, facing = bind_point(character)
         self.teleport(session, world, x, y, z, facing)
@@ -1853,6 +1856,15 @@ class GameUDPServer(socketserver.UDPServer):
         ground = found.ground(position.world, position.x, position.z, position.y) if found else None
         if ground is not None and abs(position.y - ground) < 50:  # far off: in the air, a teleport
             self.height_errors.append(position.y - ground)
+
+    def ground_for(self, world: int):
+        """``ground(x, z, near)`` in ``world`` from data/heights.bin, or None without a map."""
+        from . import heights
+
+        found = heights.load(self.config.data_path.parent / "heights.bin")
+        if found is None or int(world) not in found.worlds:
+            return None
+        return lambda x, z, near: found.ground(world, x, z, near)
 
     def height_check(self) -> dict | None:
         """The map against players' feet: how many places, and the error's median and 95%."""
