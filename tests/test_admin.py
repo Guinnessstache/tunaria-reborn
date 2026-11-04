@@ -226,7 +226,7 @@ class AdminPanelTests(unittest.TestCase):
         names = [items.spell_patterns()[s["spell"]]["name"] for s in self.store.get_character(warrior.character_id).spells]
         for expected in ("Kick", "Concentration", "Tough Skin", "Taunt"):  # warrior levels 3-5 in the guide
             self.assertIn(expected, names)
-        self.assertEqual(result["learned"], len(names) - 3)
+        self.assertEqual(result["learned"], len(names) - 2)  # besides Quick Strike and Return Home
         self.assertEqual(self.store.get_character(warrior.character_id).level, 5)
         self.assertEqual(self.request(base, {"level": 61})[0], 409)
         self.assertEqual(self.request(base, {"level": 30, "learn_abilities": False})[1]["learned"], 0)

@@ -498,6 +498,12 @@ price (Sandstorm's MerchantBox sent 100/100 with the price as cost). New charact
 abilities too: a capture of a level 1 character's world entry shows its spell
 book (`capture_template.memory_dump_spells`); on Sandstorm a new druid had only
 Minor Healing and a warrior (level 4) only Quick Strike, besides Return Home.
+Those two are also written into `items.SANDSTORM_START`, so a server with no captures
+(Render) starts druids and warriors that way too. The Prima guide doesn't say what any
+class starts with (only that the beginning quests and merchants' scrolls give the rest),
+nor do ReturnHome's defaults (every class gets spells 178/179) or the Jadiction quest
+guides; the other 13 classes still start with every level 1 ability until a capture shows
+theirs.
 Classes a capture shows start with just those (`items.set_learned_start`), and
 fitted spell merchants then sell their other level 1 scrolls; other classes
 still start with every level 1 ability. Only captures of an official-style

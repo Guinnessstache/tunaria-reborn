@@ -25,8 +25,9 @@ class StartingKitTests(unittest.TestCase):
         store = JsonStore(Path(tempfile.mkdtemp()) / "state.json")
         warrior = store.create_character(1, "Brute", klass=WARRIOR, race=0)
         self.assertEqual(warrior.inventory, [{"item": 8395, "stack": 20, "equip": items.NOT_EQUIPPED}])  # plains rations
-        self.assertEqual([s["spell"] for s in warrior.spells], [686, 178, items.RETURN_HOME])  # Fortitude, Quick Strike
-        self.assertEqual([s["hotbar"] for s in warrior.spells], [0, 1, -1])
+        # Quick Strike only, as a new Sandstorm warrior had (Fortitude comes from a scroll)
+        self.assertEqual([s["spell"] for s in warrior.spells], [178, items.RETURN_HOME])
+        self.assertEqual([s["hotbar"] for s in warrior.spells], [0, -1])
         enchanter = store.create_character(1, "Chanty", klass=ENCHANTER, race=2)
         self.assertEqual(enchanter.inventory[0]["item"], 8392)  # travel cuisine, sold in Neriak
         names = [items.spell_patterns()[s["spell"]]["name"] for s in enchanter.spells]
@@ -36,7 +37,7 @@ class StartingKitTests(unittest.TestCase):
     def test_every_class_starts_with_its_level_one_abilities(self):
         for klass, name in enumerate(items.CLASS_NAMES):
             spells = items.starting_spells(klass)
-            self.assertGreaterEqual(len(spells), 3, name)
+            self.assertGreaterEqual(len(spells), 2, name)  # at least one ability and Return Home
             for order, entry in enumerate(spells):
                 record = items.spell_record(entry, order)
                 self.assertEqual(_skip_spell(record, 0), len(record), name)

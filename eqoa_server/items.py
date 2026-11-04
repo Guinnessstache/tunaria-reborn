@@ -251,9 +251,15 @@ def set_learned_start(by_class: dict[int, list[str]]) -> None:
     _learned_start.update(by_class)
 
 
+# What Sandstorm's new characters started with (their captures' MemoryDumps), so a server
+# with no captures of its own (Render) starts them the same way.
+SANDSTORM_START = {"Druid": ["Minor Healing"], "Warrior": ["Quick Strike"]}
+
+
 def starting_ability_names(klass: int) -> set[str] | None:
     """Lower-case names a new character of the class starts with, if a capture showed it."""
-    names = _learned_start.get(klass)
+    names = _learned_start.get(klass) or (
+        SANDSTORM_START.get(CLASS_NAMES[klass]) if 0 <= klass < len(CLASS_NAMES) else None)
     return {name.lower() for name in names} if names else None
 
 

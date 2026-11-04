@@ -178,12 +178,13 @@ class LearnedStartTests(unittest.TestCase):
     def test_a_captured_class_starts_with_what_the_capture_showed(self):
         from eqoa_server import merchants
 
-        everything = [items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(7)]
-        self.assertGreater(len(everything), 2)
-        items.set_learned_start({7: ["Minor Healing"]})
+        everything = [items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(9)]
+        self.assertGreater(len(everything), 2)  # a cleric: no capture, so its level 1 abilities
+        items.set_learned_start({7: ["Minor Healing"], 9: ["Minor Healing"]})
         merchants.set_learned({}, {})
-        self.assertEqual([items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(7)],
-                         ["Minor Healing", "Return Home"])
+        for klass in (7, 9):
+            self.assertEqual([items.spell_patterns()[e["spell"]]["name"] for e in items.starting_spells(klass)],
+                             ["Minor Healing", "Return Home"])
         self.assertEqual(len(items.starting_spells(0)), len(items.starting_spells(0)))  # others unchanged
 
 
