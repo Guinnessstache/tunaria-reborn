@@ -1,0 +1,73 @@
+# Builds tools/heightmap (ground heights from your own Frontiers disc image, using the
+# game's own zone reader from DabDavis's MIT-licensed client, pinned in its Cargo.toml).
+# The build jobs run that code with a read-only token; the publish job only commits the
+# built programs to the heightmap-dist branch. No game data is built in.
+name: heightmap
+on:
+  push:
+    branches: [main]
+    paths: [tools/heightmap/**, .github/workflows/heightmap.yml]
+  workflow_dispatch:
+concurrency:
+  group: heightmap
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04  # an older glibc, so it runs on older Linux servers too
+            file: tunaria-heightmap
+            name: tunaria-heightmap-linux-x86_64
+          - os: windows-latest
+            file: tunaria-heightmap.exe
+            name: tunaria-heightmap-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/heightmap/target
+          key: heightmap-${{ matrix.os }}-${{ hashFiles('tools/heightmap/Cargo.toml') }}
+          restore-keys: heightmap-${{ matrix.os }}-
+      - name: Build
+        working-directory: tools/heightmap
+        run: cargo build --release
+      - name: Name it
+        shell: bash
+        run: mkdir -p out && cp "tools/heightmap/target/release/${{ matrix.file }}" "out/${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: out/${{ matrix.name }}
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Commit the programs to heightmap-dist
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          chmod +x tunaria-heightmap-linux-x86_64
+          sha256sum * > SHA256SUMS
+          git init -q -b heightmap-dist
+          git add -A
+          git -c user.name="heightmap build" -c user.email="actions@users.noreply.github.com" \
+            commit -q -m "tunaria-heightmap built from ${{ github.sha }}"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" heightmap-dist

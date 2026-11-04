@@ -1,0 +1,20 @@
+[package]
+name = "tunaria-heightmap"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Ground heights of the EQOA worlds from your own Frontiers disc image, for Tunaria Reborn's bots"
+publish = false
+
+# The game's own zone reader and collision, from DabDavis's MIT-licensed client
+# (the same commit webclient/UPSTREAM pins).
+[dependencies]
+iso = { git = "https://github.com/DabDavis/eqoa-rust-client-vanilla", rev = "0c98e48d3bf87c8be69bda8b686ab6419e6b2d84" }
+esf = { git = "https://github.com/DabDavis/eqoa-rust-client-vanilla", rev = "0c98e48d3bf87c8be69bda8b686ab6419e6b2d84" }
+vi = { git = "https://github.com/DabDavis/eqoa-rust-client-vanilla", rev = "0c98e48d3bf87c8be69bda8b686ab6419e6b2d84" }
+flate2 = "1"
+
+[profile.release]
+opt-level = 3
+
+[workspace]
