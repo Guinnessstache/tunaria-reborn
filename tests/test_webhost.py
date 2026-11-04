@@ -108,6 +108,17 @@ class WebHostTests(unittest.TestCase):
         self.assertIn(b"immutable", wasm)
         self.assertIn(b"404", self.http("/../../etc/passwd").split(b"\r\n")[0])
 
+    def test_handshake_answers_as_rfc_6455_says(self):
+        sock, answer = _client(self.port, "/eqoa/relay/nothing")
+        # RFC 6455's own example key and its answer (browsers check it; a wrong GUID
+        # once made every browser drop the socket while this suite's client passed)
+        sock.close()
+        import base64, hashlib
+        key = "dGhlIHNhbXBsZSBub25jZQ=="
+        self.assertEqual(base64.b64encode(hashlib.sha1(key.encode() + webhost.WS_GUID).digest()),
+                         b"s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        self.assertIn(b"101", answer.split(b"\r\n")[0])
+
     def test_resolve_names_this_server(self):
         self.assertTrue(self.http("/eqoa/relay/resolve?name=tunaria.onrender.com").endswith(b"127.0.0.1"))
 

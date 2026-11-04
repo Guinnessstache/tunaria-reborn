@@ -36,7 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 RELAY = "/eqoa/relay"
-WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC11B85"
+WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # RFC 6455
 MAX_MESSAGE = 1 << 20  # the client's datagrams and login messages are far smaller
 TYPES = {".wasm": "application/wasm", ".js": "text/javascript", ".mjs": "text/javascript",
          ".json": "application/json", ".md": "text/markdown; charset=utf-8", ".svg": "image/svg+xml",
